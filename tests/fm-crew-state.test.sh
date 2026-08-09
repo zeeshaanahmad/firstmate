@@ -25,6 +25,10 @@
 #       This is the direct regression pair for the 2026-07-02 herdr incident,
 #       proving the watcher's own absorb-only-when-provably-working predicate
 #       benefits from the fix in both directions.
+#   (l) a run lookup KILLED before answering (primary or coarse, and whether or
+#       not it wrote output before wedging) -> unknown, timeout named, never a
+#       stale status-log verb or an unattributed partial run record; an ANSWERED
+#       empty lookup and a busy pane are unaffected and keep their prior verdict
 set -u
 
 # shellcheck source=tests/lib.sh
