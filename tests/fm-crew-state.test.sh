@@ -127,12 +127,14 @@ SH
 }
 
 # Replace make_fakebin's `no-mistakes` with one that HANGS on exactly one lookup
-# ("axi-status" or "runs") and otherwise answers identically, so a test can time
-# out ONE bounded call while the rest of the surface stays live. Every invocation
-# is recorded in <case-dir>/no-mistakes.calls, so a test can prove the hanging
-# lookup was really attempted (and really bounded) instead of silently skipped -
-# without that, a timeout case could pass vacuously on a fake never called.
-make_hanging_nm() {  # <case-dir> <axi-status|runs>
+# ("axi-status", "runs", or "axi-status-after-output") and otherwise answers
+# identically, so a test can time out ONE bounded call while the rest of the
+# surface stays live. Every invocation is recorded in <case-dir>/no-mistakes.calls,
+# so a test can prove the hanging lookup was really attempted (and really bounded)
+# instead of silently skipped - without that, a timeout case could pass vacuously
+# on a fake never called. "axi-status-after-output" writes its whole answer FIRST
+# and only then wedges, the shape that leaves a killed call holding real bytes.
+make_hanging_nm() {  # <case-dir> <axi-status|axi-status-after-output|runs>
   local fb="$1/fakebin"
   FM_FAKE_NM_CALLS="$1/no-mistakes.calls"
   FM_FAKE_NM_HANG=$2
@@ -151,7 +153,8 @@ case "${1:-}" in
         [ "${FM_FAKE_NM_HANG:-}" = axi-status ] && hang
         shift
         if [ "${1:-}" = --run ]; then printf '%s\n' "${FM_FAKE_AXI_STATUS_RUN:-}"
-        else printf '%s\n' "${FM_FAKE_AXI_STATUS:-}"; fi ;;
+        else printf '%s\n' "${FM_FAKE_AXI_STATUS:-}"; fi
+        [ "${FM_FAKE_NM_HANG:-}" = axi-status-after-output ] && hang ;;
       logs)
         printf '%s\n' "${FM_FAKE_CI_LOGS:-}" ;;
     esac
@@ -1207,6 +1210,39 @@ test_lookup_timeout_never_reports_terminal_status_log_state() {
   pass "a timed-out run lookup reports unknown instead of a stale terminal event"
 }
 
+# A killed call can still have WRITTEN before it wedged - `axi status` emitting a
+# whole run record and only then hanging - and those bytes must not be attributed.
+# Nothing proves such a record was complete rather than truncated at a field
+# boundary that changes its meaning, so trusting it would publish a terminal
+# run-step state and walk straight around the unknown-on-timeout rule, which is
+# the one thing this whole guard exists to prevent. The fixture is deliberately
+# the hostile shape: a terminal record whose branch and head BOTH bind to this
+# worktree, so it would be attributed if the output were trusted at all.
+test_timeout_after_output_is_not_attributed() {
+  reset_fakes
+  local d out head
+  d=$(new_case timeout-after-output)
+  make_repo_on_branch "$d/wt" fm/feat-partial
+  head=$(git -C "$d/wt" rev-parse HEAD)
+  make_fakebin "$d" >/dev/null
+  make_hanging_nm "$d" axi-status-after-output
+  fm_write_meta "$d/state/partial.meta" "window=fm:fm-partial" \
+    "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: implementation committed, validating\n' > "$d/state/partial.status"
+  FM_FAKE_AXI_STATUS="$(printf 'run:\n  id: "01RUN"\n  branch: fm/feat-partial\n  status: failed\n  head: "%s"\n  outcome: failed\n' "$head")"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" partial
+  FM_CREW_STATE_NM_TIMEOUT=1
+  out=$(run_crew_state "$d" partial)
+  assert_not_contains "$out" "state: failed" "bytes from a killed call must never become a terminal verdict"
+  assert_not_contains "$out" "source: run-step" "a killed call's record must not be attributed"
+  assert_contains "$out" "state: unknown" "a killed call reports unknown even when it wrote first"
+  assert_contains "$out" "timed out" "the verdict names the timeout as the reason"
+  [ "$(nm_calls_matching "$d" 'axi status')" -ge 1 ] \
+    || fail "the lookup was never attempted (nothing to time out)"
+  pass "a lookup killed after writing its answer is not attributed"
+}
+
 # The SECOND bounded lookup reaches the same fall-through: `axi status` answered
 # for another crew's branch (routine once several crews validate the same
 # underlying repo), so attribution moves to the coarse runs list - and that call
@@ -1525,6 +1561,7 @@ test_dead_window_still_reports_terminal_run_step
 test_dead_window_still_reports_active_run_step
 test_no_timeout_uses_perl_bound
 test_lookup_timeout_never_reports_terminal_status_log_state
+test_timeout_after_output_is_not_attributed
 test_coarse_lookup_timeout_never_reports_terminal_status_log_state
 test_answered_empty_lookup_still_maps_terminal_status_log_state
 test_lookup_timeout_still_reports_busy_pane

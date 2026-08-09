@@ -196,16 +196,24 @@ NM_RC_TIMEOUT=124
 # opposite things: the second is information the fallback path can act on, the
 # first is an absence of any information about whether a run exists at all.
 NM_LOOKUP_TIMED_OUT=0
-# Like nm_run, but reports a timeout through its OWN exit status instead of
-# swallowing it. Callers read that status rather than having this set the flag
+# Like nm_run, but a killed call yields NOTHING: no output, and its own exit
+# status instead of a swallowed one. Discarding the output is the load-bearing
+# half. A call killed mid-flight can still have written bytes on its way out -
+# `axi status` emitting a whole run record and then wedging is the obvious shape -
+# and those bytes are not a trustworthy answer: nothing proves the record was
+# complete rather than truncated at a field boundary that changes its meaning.
+# Left in place they would flow straight into attribution and publish a terminal
+# run-step state, bypassing the unknown-on-timeout guard below. Emptying the
+# output here keeps that rule in ONE place, so no attribution site has to
+# remember it. Callers read the status rather than having this set the flag
 # directly, because every call site is a command substitution - a subshell, whose
 # variable assignments would be discarded.
 nm_run_timed() {  # <args...>
   local out rc
   out=$(fm_nm_run_checked "$WT" "$NM_TIMEOUT" "$@")
   rc=$?
-  printf '%s' "$out"
   [ "$rc" = "$NM_RC_TIMEOUT" ] && return "$NM_RC_TIMEOUT"
+  printf '%s' "$out"
   return 0
 }
 
