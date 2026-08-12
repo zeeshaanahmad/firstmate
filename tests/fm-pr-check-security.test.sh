@@ -1651,19 +1651,19 @@ test_complete_single_link_validation() {
   FM_HOME="$dir/home" "$REGISTER" custom >/dev/null \
     || fail "could not register the custom check single-link fixture"
   ln "$state/custom.check.sh" "$alias"
-  ! fm_custom_check_registered "$state" custom \
+  ! fm_task_script_registered "$state" custom check \
     || fail "registered custom check remained authenticated after source hard-linking"
-  ! fm_custom_check_snapshot_prepare "$state" custom \
+  ! fm_task_script_snapshot_prepare "$state" custom check \
     || fail "watcher snapshot accepted a hard-linked custom check source"
-  fm_custom_check_snapshot_cleanup
+  fm_task_script_snapshot_cleanup
   rm -f "$alias"
   alias="$dir/custom-trust.alias"
   ln "$state/custom.check-trust" "$alias"
-  ! fm_custom_check_registered "$state" custom \
+  ! fm_task_script_registered "$state" custom check \
     || fail "hard-linked custom check trust remained authenticated"
-  ! fm_custom_check_snapshot_prepare "$state" custom \
+  ! fm_task_script_snapshot_prepare "$state" custom check \
     || fail "watcher snapshot accepted a hard-linked custom check trust record"
-  fm_custom_check_snapshot_cleanup
+  fm_task_script_snapshot_cleanup
   [ -e "$alias" ] || fail "custom-check hard-link refusal removed the external alias"
 
   dir=$(make_case private-custom-check-source)
@@ -1680,11 +1680,11 @@ test_complete_single_link_validation() {
   FM_HOME="$dir/home" "$REGISTER" custom >/dev/null \
     || fail "could not register private custom check fixture"
   chmod 0755 "$state/custom.check.sh"
-  ! fm_custom_check_registered "$state" custom \
+  ! fm_task_script_registered "$state" custom check \
     || fail "registered custom check remained authenticated after becoming non-private"
-  ! fm_custom_check_snapshot_prepare "$state" custom \
+  ! fm_task_script_snapshot_prepare "$state" custom check \
     || fail "watcher snapshot accepted a non-private custom check source"
-  fm_custom_check_snapshot_cleanup
+  fm_task_script_snapshot_cleanup
 
   dir=$(make_case single-link-teardown-quarantine)
   state="$dir/home/state"
@@ -2506,7 +2506,7 @@ SH
     i=$((i + 1))
   done
   [ -s "$child_pid_file" ] || fail "watcher did not start the custom check child"
-  find "$state" -maxdepth 1 -name '.fm-custom-check.*' -print | grep . >/dev/null \
+  find "$state" -maxdepth 1 -name '.fm-task-script.*' -print | grep . >/dev/null \
     || fail "watcher did not create the custom check snapshot"
   child_pid=$(cat "$child_pid_file")
   kill -TERM "$pid" 2>/dev/null || fail "could not signal watcher during custom check"
@@ -2524,7 +2524,7 @@ SH
   wait "$pid" || rc=$?
   [ "$rc" -ne 0 ] || fail "signaled watcher exited successfully"
   ! kill -0 "$child_pid" 2>/dev/null || fail "signaled watcher left the custom check child running"
-  ! find "$state" -maxdepth 1 -name '.fm-custom-check.*' -print | grep . >/dev/null \
+  ! find "$state" -maxdepth 1 -name '.fm-task-script.*' -print | grep . >/dev/null \
     || fail "signaled watcher left a private custom check snapshot"
   ! find "$state" -maxdepth 1 -name '.fm-check-output.*' -print | grep . >/dev/null \
     || fail "signaled watcher left a private check output file"
@@ -2607,7 +2607,7 @@ SH
     wait "$child_pid" 2>/dev/null || true
     [ "$alive" -eq 0 ] || fail "$backend watcher left a returned check descendant alive"
     [ ! -e "$sentinel" ] || fail "$backend returned check descendant reached its sentinel"
-    ! find "$state" -maxdepth 1 -name '.fm-custom-check.*' -print | grep . >/dev/null \
+    ! find "$state" -maxdepth 1 -name '.fm-task-script.*' -print | grep . >/dev/null \
       || fail "$backend watcher left a private custom check snapshot"
     ! find "$state" -maxdepth 1 -name '.fm-check-output.*' -print | grep . >/dev/null \
       || fail "$backend watcher left a private check output file"

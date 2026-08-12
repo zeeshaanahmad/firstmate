@@ -180,6 +180,18 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # shellcheck source=bin/fm-busy-lib.sh
 . "$FM_DAEMON_DIR/fm-busy-lib.sh"
 
+# Declared long-running external work as a liveness instrument, applied to this
+# daemon's stale recheck exactly as the always-on watcher applies it to its
+# wedge timer, so away mode and normal supervision reach the same verdict on the
+# same evidence. fm-pr-lib.sh and fm-check-lib.sh come with it: a registered
+# source is arbitrary code, and they own the byte binding that lets it run.
+# shellcheck source=bin/fm-pr-lib.sh
+. "$FM_DAEMON_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-check-lib.sh
+. "$FM_DAEMON_DIR/fm-check-lib.sh"
+# shellcheck source=bin/fm-liveness-lib.sh
+. "$FM_DAEMON_DIR/fm-liveness-lib.sh"
+
 # --- tunables ---------------------------------------------------------------
 # Supervisor backends this daemon knows how to inject into today. zellij, orca,
 # and cmux are real backends elsewhere in firstmate (bin/fm-backend.sh) but this
@@ -959,7 +971,7 @@ _oldest_line_age() {  # <buf> -> seconds since the oldest buffered item first ar
 #  3) heartbeat scan: every HEARTBEAT_SCAN_SECS, grep state/*.status for a
 #     captain-relevant line the per-wake classifier missed and escalate it.
 housekeeping() {  # <state>
-  local state=$1 now due f key task win marker age last max_defer oldest pause_secs
+  local state=$1 now due f key task win marker age last max_defer oldest pause_secs liveness_age
   now=$(_now)
   migrate_watcher_pause_markers "$state"
 
@@ -1012,6 +1024,18 @@ housekeeping() {  # <state>
     fi
     age=$(( now - $(cat "$marker" 2>/dev/null || echo "$now") ))
     [ "$age" -ge "${FM_STALE_ESCALATE_SECS:-$STALE_ESCALATE_SECS_DEFAULT}" ] || continue
+    # A worker handed to a validation pipeline, or blocked on a long gate, is
+    # told to stop polling and wait: its endpoint is quiet by design and says
+    # nothing about the work. Ask the declared work itself before calling this a
+    # wedge, and re-anchor the marker on that work's own last progress so the
+    # ordinary grace still applies from the moment it stops progressing.
+    # bin/fm-liveness-lib.sh owns the sources; no answer keeps this unchanged.
+    if liveness_age=$(fm_liveness_age "$state" "$task") \
+      && [ "$liveness_age" -lt "${FM_STALE_ESCALATE_SECS:-$STALE_ESCALATE_SECS_DEFAULT}" ]; then
+      printf '%s\n' "$(( now - liveness_age ))" > "$marker"
+      log "stale absorbed (declared external work made progress ${liveness_age}s ago): $win"
+      continue
+    fi
     stale_window_is_busy "$win" "$state"
     case "$?" in
       0) rm -f "$marker" ;;
