@@ -507,6 +507,53 @@ test_housekeeping_undeclared_work_keeps_pane_reading() {
   pass "away-mode housekeeping keeps the unchanged pane-based reading for a task that declared no external work"
 }
 
+# --- the deadlock quarantine must actually bound a TERM-ignoring process -----
+#
+# The suites reap real watchers, and a watcher that ignores TERM used to hang the
+# whole run forever (pre-existing signal/lock self-deadlock in bin/fm-watch.sh,
+# tracked by watcher-signal-deadlock-redesign). reap now bounds that and reports
+# it, so affected cases skip loudly instead of hanging or masking. Proven against
+# a real process that really ignores TERM, so the quarantine cannot go vacuous.
+# 0 once <pid> has spawned a child, which proves it finished exec'ing and reached
+# its loop body - and therefore that any signal disposition it sets is installed.
+# Signalling before that races the exec and the signal is simply lost.
+wait_process_ready() {  # <pid> [limit-ticks]
+  local pid=$1 limit=${2:-100} i=0
+  while [ "$i" -lt "$limit" ]; do
+    pgrep -P "$pid" >/dev/null 2>&1 && return 0
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+
+test_reap_bounds_a_term_ignoring_process() {
+  local pid started elapsed
+  bash -c 'trap "" TERM; while :; do sleep 0.1; done' &
+  pid=$!
+  wait_process_ready "$pid" || { reap "$pid"; fail "the TERM-ignoring fixture never started"; }
+  started=$(date +%s)
+  reap "$pid" 10
+  elapsed=$(( $(date +%s) - started ))
+  is_live_non_zombie "$pid" && fail "reap left a TERM-ignoring process alive"
+  [ -n "$FM_REAP_NEEDED_KILL" ] || fail "reap did not report that TERM was ignored"
+  [ "$elapsed" -lt 30 ] || fail "reap took ${elapsed}s to bound a TERM-ignoring process"
+  [ -n "$FM_SIGNAL_DEADLOCK_SKIP" ] || fail "no skip reason is available to document the quarantine"
+  case "$FM_SIGNAL_DEADLOCK_SKIP" in
+    skip:*watcher-signal-deadlock-redesign*) ;;
+    *) fail "the skip reason does not name the tracking task: $FM_SIGNAL_DEADLOCK_SKIP" ;;
+  esac
+
+  # A process that exits on TERM is the control: it must NOT be reported as
+  # needing KILL, or every reap would look like the deadlock.
+  bash -c 'while :; do sleep 0.1; done' &
+  pid=$!
+  wait_process_ready "$pid" || { reap "$pid"; fail "the ordinary fixture never started"; }
+  reap "$pid"
+  [ -z "$FM_REAP_NEEDED_KILL" ] || fail "an ordinary process was misreported as ignoring TERM"
+  pass "reap bounds a TERM-ignoring process, reports it, names the tracking task, and stays quiet for ordinary exits"
+}
+
 test_duration_parsing
 test_active_step_field_parsing
 test_registered_source_answers
@@ -521,3 +568,4 @@ test_undeclared_work_keeps_pane_reading
 test_housekeeping_live_declared_work_defers_and_reanchors
 test_housekeeping_dead_declared_work_still_escalates
 test_housekeeping_undeclared_work_keeps_pane_reading
+test_reap_bounds_a_term_ignoring_process

@@ -269,7 +269,42 @@ seen_sig() {
   if [ "$(uname)" = Darwin ]; then stat -f '%z:%Fm' "$1" 2>/dev/null; else stat -c '%s:%Y' "$1" 2>/dev/null; fi
 }
 
-reap() { kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
+# Stop a watcher this shell owns, without ever hanging on it.
+#
+# Plain `kill; wait` deadlocks the whole suite when the signalled watcher never
+# dies. That is reachable today: firstmate's locks are not reentrant and
+# bin/fm-watch.sh traps HUP/INT/TERM as `exit 1`, so a signal delivered while
+# the watcher holds a lock unwinds into watcher_cleanup, which re-acquires a
+# lock the interrupted flow still owns and spins in fm_lock_acquire_wait
+# forever. It is reachable on EVERY poll through _fm_recovery_marker_arm_check,
+# not only through fm_wake_append. Tracking task: watcher-signal-deadlock-redesign.
+#
+# So: TERM, wait a bounded time, then KILL so no case can hang. Sets
+# FM_REAP_NEEDED_KILL=1 when TERM was ignored, which is the deadlock's
+# signature. Cases that can hit it check that flag and skip explicitly rather
+# than asserting over a watcher that was killed mid-flight - the skip reason is
+# the documentation, so nothing is silently masked.
+# shellcheck disable=SC2034  # read by sourcing suites, not by this harness
+FM_REAP_NEEDED_KILL=
+reap() {  # <pid> [term-wait-ticks]
+  local pid=$1 limit=${2:-50} i=0
+  FM_REAP_NEEDED_KILL=
+  kill "$pid" 2>/dev/null || true
+  while [ "$i" -lt "$limit" ]; do
+    is_live_non_zombie "$pid" || { wait "$pid" 2>/dev/null || true; return 0; }
+    sleep 0.1
+    i=$((i + 1))
+  done
+  # shellcheck disable=SC2034  # read by sourcing suites, not by this harness
+  FM_REAP_NEEDED_KILL=1
+  kill -KILL "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  return 0
+}
+
+# Reason emitted wherever a case cannot continue because a watcher ignored TERM.
+# shellcheck disable=SC2034  # read by sourcing suites, not by this harness
+FM_SIGNAL_DEADLOCK_SKIP='skip: watcher did not exit on TERM - pre-existing signal/lock self-deadlock in bin/fm-watch.sh, tracked by watcher-signal-deadlock-redesign; this case cannot assert over a watcher killed mid-flight'
 
 # Portable mtime in epoch seconds. Platform-detected, never the
 # `stat -f || stat -c` fallback (which writes a partial filesystem dump on
