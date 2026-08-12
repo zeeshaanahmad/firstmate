@@ -32,6 +32,15 @@ set -u
 WATCH="$ROOT/bin/fm-watch.sh"
 DRAIN="$ROOT/bin/fm-wake-drain.sh"
 REGISTER="$ROOT/bin/fm-liveness-register.sh"
+DAEMON="$ROOT/bin/fm-supervise-daemon.sh"
+# Source the daemon's pure functions once, exactly as tests/fm-daemon.test.sh
+# does, so housekeeping()'s mirrored stale-recheck wiring can be driven
+# directly here alongside the watcher fixture above.
+if [ -z "${FM_TEST_DAEMON_SOURCED:-}" ]; then
+  export FM_TEST_DAEMON_SOURCED=1
+  # shellcheck source=bin/fm-supervise-daemon.sh
+  . "$DAEMON"
+fi
 
 TMP_ROOT=$(fm_test_tmproot fm-liveness-source-tests)
 
@@ -402,6 +411,102 @@ test_undeclared_work_keeps_pane_reading() {
   pass "a task that declared no external work keeps the existing pane-based staleness reading"
 }
 
+# --- away-mode daemon verdict ------------------------------------------------
+#
+# bin/fm-supervise-daemon.sh's housekeeping() consults the same fm_liveness_age
+# clock in its own stale-persistence recheck, so away mode reaches the same
+# verdict on the same evidence as the always-on watcher above. One fixture,
+# reused across all three cases, mirrors the watcher fixture: it differs only
+# in what the declared work reports.
+
+DAEMON_DIR=; DAEMON_STATE=; DAEMON_WIN=; DAEMON_TASK=; DAEMON_KEY=
+
+make_daemon_stale_case() {  # <name> - sets the DAEMON_* globals
+  DAEMON_DIR=$(make_case "$1")
+  DAEMON_STATE="$DAEMON_DIR/state"
+  DAEMON_WIN="test:fm-quiet"
+  DAEMON_TASK=quiet
+  DAEMON_KEY=$(_stale_key "$DAEMON_TASK")
+  fm_write_meta "$DAEMON_STATE/$DAEMON_TASK.meta" "window=$DAEMON_WIN" "kind=ship" "backend=tmux"
+  printf 'working: handed to validation\n' > "$DAEMON_STATE/$DAEMON_TASK.status"
+  # Already past the grace: the very next housekeeping tick decides
+  # suppress-and-reanchor or escalate.
+  echo $(( $(date +%s) - 500 )) > "$DAEMON_STATE/.subsuper-stale-$DAEMON_KEY"
+}
+
+# THE FALSE WEDGE, away-mode side. The registered source reported progress 20s
+# ago, so housekeeping must defer the wedge, re-anchor the marker on that
+# progress (not reset it to now), and log the suppression with the reported age
+# so an away-mode defer is debuggable from the daemon log.
+test_housekeeping_live_declared_work_defers_and_reanchors() {
+  local anchor now log_out
+  make_daemon_stale_case daemon-liveness-live
+  install_source "$DAEMON_STATE" "$DAEMON_TASK" 'echo "age: 20"'
+
+  LOG="$DAEMON_DIR/daemon.log" FM_STATE_OVERRIDE="$DAEMON_STATE" FM_STALE_ESCALATE_SECS=240 \
+    housekeeping "$DAEMON_STATE"
+
+  [ ! -s "$DAEMON_STATE/.subsuper-escalations" ] \
+    || fail "away-mode housekeeping escalated a wedge while declared external work was alive"
+  [ -e "$DAEMON_STATE/.subsuper-stale-$DAEMON_KEY" ] \
+    || fail "away-mode housekeeping dropped the stale marker instead of re-anchoring it"
+  anchor=$(cat "$DAEMON_STATE/.subsuper-stale-$DAEMON_KEY")
+  case "$anchor" in ''|*[!0-9]*) fail "the daemon's wedge timer lost its anchor: '$anchor'" ;; esac
+  now=$(date +%s)
+  [ "$(( now - anchor ))" -lt 240 ] \
+    || fail "the daemon's wedge timer was not re-anchored on the work's own progress ($(( now - anchor ))s)"
+  [ "$(( now - anchor ))" -ge 15 ] \
+    || fail "the daemon's wedge timer was reset to now instead of anchored on last progress"
+  log_out=$(cat "$DAEMON_DIR/daemon.log" 2>/dev/null || true)
+  printf '%s\n' "$log_out" | grep -F "declared external work made progress 20s ago" >/dev/null \
+    || fail "away-mode housekeeping did not log the stale-absorb suppression: $log_out"
+  printf '%s\n' "$log_out" | grep -F "$DAEMON_WIN" >/dev/null \
+    || fail "away-mode housekeeping's stale-absorb log omitted the window: $log_out"
+  pass "away-mode housekeeping defers a stale wedge whose declared external work is alive, re-anchors, and logs it"
+}
+
+# THE REAL WEDGE, away-mode side, same fixture. The registered source has gone
+# dead, so the ordinary pane-based reading stands and escalation happens within
+# the grace exactly as it did before this task declared anything.
+test_housekeeping_dead_declared_work_still_escalates() {
+  local pane
+  make_daemon_stale_case daemon-liveness-dead
+  install_source "$DAEMON_STATE" "$DAEMON_TASK" 'exit 0'
+  pane="$DAEMON_DIR/pane.txt"
+  printf 'idle prompt $\n' > "$pane"
+
+  PATH="$DAEMON_DIR/fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$DAEMON_WIN" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_STATE_OVERRIDE="$DAEMON_STATE" FM_STALE_ESCALATE_SECS=240 housekeeping "$DAEMON_STATE"
+
+  [ -s "$DAEMON_STATE/.subsuper-escalations" ] \
+    || fail "away-mode housekeeping did not escalate once declared external work went dead"
+  grep -F "possible wedge" "$DAEMON_STATE/.subsuper-escalations" >/dev/null \
+    || fail "away-mode escalation did not flag a possible wedge"
+  [ ! -e "$DAEMON_STATE/.subsuper-stale-$DAEMON_KEY" ] \
+    || fail "away-mode wedge marker survived escalation"
+  pass "away-mode housekeeping escalates within the ordinary grace once declared work goes dead"
+}
+
+# The specific case is added AHEAD of the pane reading, not in place of it: a
+# task that declared nothing behaves exactly as before under away mode too.
+test_housekeeping_undeclared_work_keeps_pane_reading() {
+  local pane
+  make_daemon_stale_case daemon-liveness-undeclared
+  pane="$DAEMON_DIR/pane.txt"
+  printf 'idle prompt $\n' > "$pane"
+  [ ! -e "$DAEMON_STATE/$DAEMON_TASK.liveness.sh" ] \
+    || fail "the undeclared fixture installed a liveness source"
+
+  PATH="$DAEMON_DIR/fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$DAEMON_WIN" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_STATE_OVERRIDE="$DAEMON_STATE" FM_STALE_ESCALATE_SECS=240 housekeeping "$DAEMON_STATE"
+
+  [ -s "$DAEMON_STATE/.subsuper-escalations" ] \
+    || fail "a task with no declared external work stopped escalating under away-mode housekeeping"
+  grep -F "possible wedge" "$DAEMON_STATE/.subsuper-escalations" >/dev/null \
+    || fail "the unchanged away-mode escalation lost its wedge reason"
+  pass "away-mode housekeeping keeps the unchanged pane-based reading for a task that declared no external work"
+}
+
 test_duration_parsing
 test_active_step_field_parsing
 test_registered_source_answers
@@ -413,3 +518,6 @@ test_live_declared_work_is_not_declared_stale
 test_dead_declared_work_still_escalates
 test_stalled_declared_work_escalates
 test_undeclared_work_keeps_pane_reading
+test_housekeeping_live_declared_work_defers_and_reanchors
+test_housekeeping_dead_declared_work_still_escalates
+test_housekeeping_undeclared_work_keeps_pane_reading

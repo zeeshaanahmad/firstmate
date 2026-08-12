@@ -1033,6 +1033,7 @@ housekeeping() {  # <state>
     if liveness_age=$(fm_liveness_age "$state" "$task") \
       && [ "$liveness_age" -lt "${FM_STALE_ESCALATE_SECS:-$STALE_ESCALATE_SECS_DEFAULT}" ]; then
       printf '%s\n' "$(( now - liveness_age ))" > "$marker"
+      log "stale absorbed (declared external work made progress ${liveness_age}s ago): $win"
       continue
     fi
     stale_window_is_busy "$win" "$state"
