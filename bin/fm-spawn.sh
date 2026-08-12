@@ -37,7 +37,12 @@
 #   --model <name> and --effort <low|medium|high|xhigh|max> are concrete profile
 #   axes chosen by firstmate at intake. They are only threaded into harnesses whose
 #   installed CLIs were verified to support that axis; unsupported axes are omitted
-#   from that harness's launch rather than guessed.
+#   from that harness's launch rather than guessed. The literal value "default"
+#   means the caller deliberately wants the harness's own default for that axis;
+#   it is the one way to express "omit this flag" once config/crew-dispatch.json
+#   makes the flag required (see the harness paragraph below), and it emits no
+#   --model/--effort flag at launch, identically to leaving the flag off when no
+#   dispatch profile file is active.
 #   --backend <name> is the explicit runtime session-provider backend for this
 #   exact task only (docs/configuration.md "Runtime backend" owns when that flag
 #   is authorized). Without it, the script resolves FM_BACKEND, then
@@ -100,8 +105,16 @@
 #   it; relaunch is exempt because the existing task's control lock covers it.
 #   With no harness arg, a crewmate/scout spawn resolves the CREW harness only when
 #   config/crew-dispatch.json is absent. When that file exists, crewmate/scout
-#   spawns require an explicit harness so firstmate cannot silently skip dispatch
-#   profile consultation. A --secondmate spawn is exempt and resolves the SECONDMATE
+#   spawns require an explicit harness, model, and effort (a batch's shared flags
+#   count for every pair) so firstmate cannot silently skip dispatch profile
+#   consultation on any of the three axes; refusing on any one alone would let the
+#   other two still inherit the session's own model/effort unnoticed. --model
+#   default and --effort default satisfy this without changing what launches. A
+#   --relaunch is exempt exactly like the harness axis: its recorded prior
+#   model/effort (an explicit value or the literal "default", both always present
+#   once a task has been spawned at least once) already answers the requirement,
+#   so recovering an existing task never fails this check. A --secondmate spawn
+#   is exempt and resolves the SECONDMATE
 #   harness (config/secondmate-harness -> config/crew-harness -> own), so the
 #   secondmate-vs-crewmate split is DURABLE across every respawn (recovery,
 #   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|grok|kimi|muse)
@@ -144,10 +157,11 @@
 #   source of truth; shared --scout/--harness/--model/--effort/--backend/--mode/--yolo
 #   applies to every pair. A ship batch therefore carries one delivery contract, and each
 #   pair still checks it against its own brief; a batch spanning modes is two invocations.
-#   If config/crew-dispatch.json exists, shared --harness is required for crewmate
-#   and scout batches. The loop lives here, in bash, so callers never hand-write a
-#   multi-task shell loop (the tool shell is zsh, which does not word-split unquoted
-#   $vars and silently breaks ad-hoc `for ... in $pairs` loops).
+#   If config/crew-dispatch.json exists, shared --harness, --model, and --effort
+#   are all required for crewmate and scout batches. The loop lives here, in
+#   bash, so callers never hand-write a multi-task shell loop (the tool shell is
+#   zsh, which does not word-split unquoted $vars and silently breaks ad-hoc
+#   `for ... in $pairs` loops).
 #   Launch templates live in launch_template() below; placeholders replaced before launch:
 #     __BRIEF__    absolute path to data/<task-id>/brief.md
 #     __PIBIN__    quoted concrete Pi-family executable path resolved from PATH
@@ -335,8 +349,8 @@ if [ "$TRACEPARENT_SET" -eq 1 ]; then
   }
 fi
 case "$EFFORT" in
-  ''|low|medium|high|xhigh|max) ;;
-  *) echo "error: --effort must be one of low, medium, high, xhigh, max" >&2; exit 1 ;;
+  ''|default|low|medium|high|xhigh|max) ;;
+  *) echo "error: --effort must be one of default, low, medium, high, xhigh, max" >&2; exit 1 ;;
 esac
 
 # --relaunch reuses an existing task's endpoint, worktree, project, and kind,
@@ -842,9 +856,19 @@ if [ "$RELAUNCH" -eq 1 ] && [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart"
   exit 1
 fi
 if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in */*) false ;; *) true ;; esac; then
-  if [ "$KIND" != secondmate ] && [ -z "$HARNESS_ARG" ] && [ -f "$CONFIG/crew-dispatch.json" ]; then
-    echo "error: config/crew-dispatch.json is active - pass an explicit harness resolved from the dispatch rules (the consultation backstop, so the rules are never silently skipped)." >&2
-    exit 1
+  if [ "$KIND" != secondmate ] && [ -f "$CONFIG/crew-dispatch.json" ]; then
+    if [ -z "$HARNESS_ARG" ]; then
+      echo "error: config/crew-dispatch.json is active - pass an explicit harness resolved from the dispatch rules (the consultation backstop, so the rules are never silently skipped)." >&2
+      exit 1
+    fi
+    if [ "$MODEL_SET" -eq 0 ]; then
+      echo "error: config/crew-dispatch.json is active - pass an explicit model resolved from the dispatch rules (the consultation backstop, so the rules are never silently skipped); pass --model default to deliberately use the harness's own default." >&2
+      exit 1
+    fi
+    if [ "$EFFORT_SET" -eq 0 ]; then
+      echo "error: config/crew-dispatch.json is active - pass an explicit effort resolved from the dispatch rules (the consultation backstop, so the rules are never silently skipped); pass --effort default to deliberately use the harness's own default." >&2
+      exit 1
+    fi
   fi
   rc=0
   shared_args=()
@@ -969,6 +993,8 @@ FIRSTMATE_HOME=
 # validation teardown uses, so a malformed, ambiguous, or foreign record
 # refuses here exactly as it refuses there.
 RELAUNCH_PRIOR_HARNESS=
+RELAUNCH_PRIOR_MODEL=
+RELAUNCH_PRIOR_EFFORT=
 if [ "$RELAUNCH" -eq 1 ]; then
   [ "${#POS[@]}" -eq 1 ] || {
     echo "error: --relaunch takes the task id only; its project or home comes from the task's own record" >&2
@@ -997,6 +1023,8 @@ if [ "$RELAUNCH" -eq 1 ]; then
     exit 1
   }
   RELAUNCH_PRIOR_HARNESS=$(fm_meta_get "$RELAUNCH_META" harness)
+  RELAUNCH_PRIOR_MODEL=$(fm_meta_get "$RELAUNCH_META" model)
+  RELAUNCH_PRIOR_EFFORT=$(fm_meta_get "$RELAUNCH_META" effort)
   KIND=$(fm_meta_get "$RELAUNCH_META" kind)
   [ -n "$KIND" ] || KIND=ship
   MODE=$(fm_meta_get "$RELAUNCH_META" mode)
@@ -1056,6 +1084,34 @@ else
   ARG3=${POS[2]:-}
 fi
 [ -z "$HARNESS_ARG" ] || ARG3=$HARNESS_ARG
+
+# Same consultation backstop as the harness requirement below (batch check
+# near "config/crew-dispatch.json is active"), extended to model and effort:
+# a dispatch profile decides all three axes, so a crewmate/scout spawn that
+# passes no explicit model or effort could silently skip that decision just
+# as easily as one that passes no explicit harness. A relaunch is exempt
+# exactly like the harness axis is exempt via RELAUNCH_PRIOR_HARNESS: its
+# recorded model/effort (an explicit prior value or the literal "default")
+# already satisfies the requirement, so recovery of an existing task never
+# fails this check. The harness axis is checked here too, ahead of model and
+# effort, so an all-three-omitted spawn always reports the harness backstop
+# first rather than whichever axis this block happened to test first; the
+# switch below still carries its own harness refusal as defense in depth for
+# any path that reaches it with ARG3 empty outside this check.
+if [ "$KIND" != secondmate ] && [ -f "$CONFIG/crew-dispatch.json" ]; then
+  if [ -z "$ARG3" ]; then
+    echo "error: config/crew-dispatch.json is active - pass an explicit harness resolved from the dispatch rules (the consultation backstop, so the rules are never silently skipped)." >&2
+    exit 1
+  fi
+  if [ "$MODEL_SET" -eq 0 ] && [ -z "$RELAUNCH_PRIOR_MODEL" ]; then
+    echo "error: config/crew-dispatch.json is active - pass an explicit model resolved from the dispatch rules (the consultation backstop, so the rules are never silently skipped); pass --model default to deliberately use the harness's own default." >&2
+    exit 1
+  fi
+  if [ "$EFFORT_SET" -eq 0 ] && [ -z "$RELAUNCH_PRIOR_EFFORT" ]; then
+    echo "error: config/crew-dispatch.json is active - pass an explicit effort resolved from the dispatch rules (the consultation backstop, so the rules are never silently skipped); pass --effort default to deliberately use the harness's own default." >&2
+    exit 1
+  fi
+fi
 
 shell_quote() {
   printf "'"

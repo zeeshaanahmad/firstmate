@@ -771,6 +771,29 @@ test_ship_relaunch_ignores_the_crew_harness_config() {
   pass "fm-control relaunch: a ship task keeps its recorded harness instead of re-reading crew config"
 }
 
+# fm-spawn.sh's active-crew-dispatch-profile consultation backstop (see
+# tests/fm-spawn-dispatch-profile.test.sh for the fresh-spawn refusal cases)
+# must not block recovering an existing task: a relaunch reuses the task's
+# own recorded model and effort instead of demanding them again on the
+# command line, exactly like it already reuses the recorded harness.
+test_spawn_relaunch_reuses_recorded_model_and_effort_under_active_dispatch_profile() {
+  local dir out
+  dir=$(new_case dispatchrelaunch rl40)
+  add_ship_task "$dir" rl40 claude
+  mkdir -p "$dir/home/config"
+  printf '%s\n' '{"rules":[],"default":{"harness":"codex","model":"gpt-5","effort":"medium"}}' \
+    > "$dir/home/config/crew-dispatch.json"
+  printf 'zsh' > "$dir/fake/command"
+  out=$(run_spawn "$dir" rl40 --relaunch)
+  assert_contains "$out" "spawned rl40 harness=claude" \
+    "relaunch should reuse the recorded harness even with a dispatch profile active"
+  [ "$(meta_field "$dir" rl40 model)" = default ] \
+    || fail "relaunch should keep the recorded model, got '$(meta_field "$dir" rl40 model)'"
+  [ "$(meta_field "$dir" rl40 effort)" = default ] \
+    || fail "relaunch should keep the recorded effort, got '$(meta_field "$dir" rl40 effort)'"
+  pass "fm-spawn --relaunch: an active crew-dispatch profile does not block relaunching without explicit --model/--effort"
+}
+
 test_spawn_relaunch_without_a_harness_reuses_the_recorded_one() {
   local dir out
   dir=$(new_case spawnharness rl21)
@@ -1320,6 +1343,7 @@ test_secondmate_relaunch_ignores_invalid_configured_effort_before_stop
 test_secondmate_relaunch_onto_a_crewmate_only_adapter_refuses_before_stop
 test_explicit_secondmate_harness_ignores_configured_profile_axes
 test_ship_relaunch_ignores_the_crew_harness_config
+test_spawn_relaunch_reuses_recorded_model_and_effort_under_active_dispatch_profile
 test_spawn_relaunch_without_a_harness_reuses_the_recorded_one
 test_prefixed_prior_harness_wiring_is_still_retired
 test_muse_session_binding_is_retired_on_a_harness_switch

@@ -333,6 +333,72 @@ test_active_dispatch_profile_requires_explicit_harness_for_scout() {
   pass "active crew-dispatch profile requires an explicit harness for scout spawns"
 }
 
+test_active_dispatch_profile_requires_explicit_model_for_ship() {
+  local rec id out status
+  id=profile-model-required-ship-z17
+  rec=$(make_spawn_case profile-model-required-ship claude "$id")
+  read_case_record "$rec"
+  enable_dispatch_profile "$HOME_DIR"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness codex --effort high)
+  status=$?
+  expect_code 1 "$status" "ship spawn without explicit model should fail when dispatch profiles are active"
+  assert_contains "$out" "config/crew-dispatch.json is active - pass an explicit model resolved from the dispatch rules" \
+    "spawn did not explain the dispatch-profile model backstop"
+  assert_absent "$HOME_DIR/state/$id.meta" "ship model refusal should happen before meta is written"
+  pass "active crew-dispatch profile requires an explicit model for ship spawns"
+}
+
+test_active_dispatch_profile_requires_explicit_effort_for_ship() {
+  local rec id out status
+  id=profile-effort-required-ship-z18
+  rec=$(make_spawn_case profile-effort-required-ship claude "$id")
+  read_case_record "$rec"
+  enable_dispatch_profile "$HOME_DIR"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness codex --model gpt-5)
+  status=$?
+  expect_code 1 "$status" "ship spawn without explicit effort should fail when dispatch profiles are active"
+  assert_contains "$out" "config/crew-dispatch.json is active - pass an explicit effort resolved from the dispatch rules" \
+    "spawn did not explain the dispatch-profile effort backstop"
+  assert_absent "$HOME_DIR/state/$id.meta" "ship effort refusal should happen before meta is written"
+  pass "active crew-dispatch profile requires an explicit effort for ship spawns"
+}
+
+test_active_dispatch_profile_requires_explicit_model_for_scout() {
+  local rec id out status
+  id=profile-model-required-scout-z19
+  rec=$(make_spawn_case profile-model-required-scout claude "$id")
+  read_case_record "$rec"
+  enable_dispatch_profile "$HOME_DIR"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --scout --harness codex --effort high)
+  status=$?
+  expect_code 1 "$status" "scout spawn without explicit model should fail when dispatch profiles are active"
+  assert_contains "$out" "config/crew-dispatch.json is active - pass an explicit model resolved from the dispatch rules" \
+    "scout refusal did not explain the dispatch-profile model backstop"
+  assert_absent "$HOME_DIR/state/$id.meta" "scout model refusal should happen before meta is written"
+  pass "active crew-dispatch profile requires an explicit model for scout spawns"
+}
+
+test_active_dispatch_profile_allows_default_model_and_effort() {
+  local rec id out status
+  id=profile-default-axes-z20
+  rec=$(make_spawn_case profile-default-axes claude "$id")
+  read_case_record "$rec"
+  enable_dispatch_profile "$HOME_DIR"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness codex --model default --effort default)
+  status=$?
+  expect_code 0 "$status" "explicit default model/effort should satisfy active dispatch-profile requirement"
+  assert_meta_profile "$HOME_DIR/state/$id.meta" codex default default
+  pass "active crew-dispatch profile allows explicit --model default and --effort default"
+}
+
 test_active_dispatch_profile_allows_explicit_harness() {
   local rec id out status launch
   id=profile-explicit-z13
@@ -376,7 +442,7 @@ test_active_dispatch_profile_allows_raw_launch_command() {
   enable_dispatch_profile "$HOME_DIR"
 
   out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
-    "$id" "$PROJ_DIR" "custom-agent --flag")
+    "$id" "$PROJ_DIR" "custom-agent --flag" --model default --effort default)
   status=$?
   expect_code 0 "$status" "raw launch command should satisfy active dispatch-profile requirement"
   assert_contains "$out" "spawned $id harness=custom-agent" "spawn did not report raw command harness"
@@ -731,6 +797,10 @@ test_absolute_override_spelling_is_preserved_in_launch_paths
 test_unresolvable_relative_overrides_fail_loudly
 test_active_dispatch_profile_requires_explicit_harness_for_ship
 test_active_dispatch_profile_requires_explicit_harness_for_scout
+test_active_dispatch_profile_requires_explicit_model_for_ship
+test_active_dispatch_profile_requires_explicit_effort_for_ship
+test_active_dispatch_profile_requires_explicit_model_for_scout
+test_active_dispatch_profile_allows_default_model_and_effort
 test_active_dispatch_profile_allows_explicit_harness
 test_active_dispatch_profile_allows_positional_harness
 test_active_dispatch_profile_allows_raw_launch_command
