@@ -130,15 +130,22 @@ fm_liveness_meta_value() {  # <meta> <key>
 # the header and multi-row tables as following lines, so both are read. Splitting
 # is quote-aware because last_activity is a quoted string that contains commas
 # and colons; positional splitting on bare commas would slice it apart and could
-# return the neighbouring active_for duration instead. An active_steps header
+# return the neighbouring active_for duration instead. Escaping matches the
+# encoder (bin/fm-bearings-snapshot.sh's `q` filter): inside a quoted field a
+# backslash escapes the following character, so a backslash-quote pair is a
+# literal quote that does not end the field and a backslash-backslash pair is a
+# literal backslash - only an unescaped quote toggles quoting and only an
+# unescaped comma outside quotes separates fields. An active_steps header
 # without the requested column yields nothing rather than a guessed position.
 fm_liveness_active_step_field() {  # <field>
   awk -v want="$1" '
-    function emit(line,   i, ch, inq, cur, f, nf) {
+    function emit(line,   i, ch, inq, esc, cur, f, nf) {
       if (idx == 0) return
-      nf = 0; cur = ""; inq = 0
+      nf = 0; cur = ""; inq = 0; esc = 0
       for (i = 1; i <= length(line); i++) {
         ch = substr(line, i, 1)
+        if (esc) { cur = cur ch; esc = 0; continue }
+        if (inq && ch == "\\") { esc = 1; continue }
         if (ch == "\"") { inq = !inq; continue }
         if (ch == "," && !inq) { f[++nf] = cur; cur = ""; continue }
         cur = cur ch

@@ -123,7 +123,27 @@ test_active_step_field_parsing() {
   [ -z "$out" ] || fail "a table without the column produced a value: $out"
   out=$(printf '%s\n' 'run:' '  status: fixing' | fm_liveness_active_step_field last_activity)
   [ -z "$out" ] || fail "output with no active_steps table produced a value: $out"
-  pass "active_steps columns are selected by name with quote-aware splitting"
+
+  # An embedded escaped quote followed later by an unescaped comma is the exact
+  # shape that desynced the old naive quote toggle: the escaped quote must not
+  # end the field, so the comma after it stays inside last_activity rather than
+  # being misread as the boundary before agent_pid.
+  local esc_quote esc_bslash
+  esc_quote='  active_steps[1]{step,status,active_for,last_activity,agent_pid,round}: review,fixing,12m41s,"25s ago: log: running \"go test ./...\" with args, retrying",91959,fix 1'
+  out=$(printf '%s\n' "$esc_quote" | fm_liveness_active_step_field last_activity)
+  [ "$out" = '25s ago: log: running "go test ./..." with args, retrying' ] \
+    || fail "escaped-quote last_activity not recovered intact: $out"
+  out=$(printf '%s\n' "$esc_quote" | fm_liveness_active_step_field active_for)
+  [ "$out" = '12m41s' ] || fail "active_for beside an escaped-quote last_activity not selected: $out"
+
+  esc_bslash='  active_steps[1]{step,status,active_for,last_activity,agent_pid,round}: review,fixing,7m3s,"12s ago: log: path C:\\tools failed, retry",91959,fix 1'
+  out=$(printf '%s\n' "$esc_bslash" | fm_liveness_active_step_field last_activity)
+  [ "$out" = '12s ago: log: path C:\tools failed, retry' ] \
+    || fail "escaped-backslash last_activity not recovered intact: $out"
+  out=$(printf '%s\n' "$esc_bslash" | fm_liveness_active_step_field active_for)
+  [ "$out" = '7m3s' ] || fail "active_for beside an escaped-backslash last_activity not selected: $out"
+
+  pass "active_steps columns are selected by name with quote-aware, backslash-escape-aware splitting"
 }
 
 # --- registered per-task source --------------------------------------------
