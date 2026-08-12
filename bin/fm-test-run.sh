@@ -149,7 +149,8 @@ family_for_basename() {
     fm-test-run.test.sh|fm-test-isolation-proof.test.sh)
       printf '%s\n' pure-contract-unit
       ;;
-    fm-daemon.test.sh|fm-guard-stale-banner.test.sh|fm-pi-watch-extension.test.sh|\
+    fm-daemon.test.sh|fm-guard-stale-banner.test.sh|fm-liveness-source.test.sh|\
+    fm-pi-watch-extension.test.sh|\
     fm-session-lock-ancestry.test.sh|\
     fm-supervision-events.test.sh|fm-turnend-guard.test.sh|fm-wake-daemon-lifecycle-e2e.test.sh|\
     fm-wake-queue.test.sh|fm-watch-arm.test.sh|fm-watch-checkpoint.test.sh|fm-watch-triage.test.sh|\
@@ -407,6 +408,7 @@ tests/fm-grok-stop-live-e2e.test.sh 19
 tests/fm-guard-stale-banner.test.sh 2917
 tests/fm-herdr-session-cleanup.test.sh 4802
 tests/fm-kimi-harness.test.sh 12590
+tests/fm-liveness-source.test.sh 30000
 tests/fm-opencode-primary-live-e2e.test.sh 18
 tests/fm-operational-input.test.sh 184
 tests/fm-pending-reply.test.sh 7328
@@ -923,6 +925,18 @@ families_for_changed_path() {
       printf '%s\n' snapshot-bearings
       printf '%s\n' pure-contract-unit
       printf '%s\n' secondmate
+      ;;
+    bin/fm-liveness*)
+      # Declared-external-work liveness: the watcher's wedge verdict reads it,
+      # and teardown removes its per-task artifacts.
+      printf '%s\n' watcher-wake-lock
+      printf '%s\n' pr-forge
+      ;;
+    bin/fm-check-lib.sh)
+      # The shared task-scoped-executable byte binding, used by both the custom
+      # watcher check (pr-forge) and the liveness source (watcher-wake-lock).
+      printf '%s\n' pr-forge
+      printf '%s\n' watcher-wake-lock
       ;;
     bin/fm-pr-*|bin/fm-merge-local.sh|bin/fm-teardown.sh|bin/fm-review-diff.sh|\
     bin/fm-x-*|bin/fm-check*)

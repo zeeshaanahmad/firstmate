@@ -96,6 +96,8 @@ state/               runtime records and signals; gitignored
   <id>.herdr-presentation  quarantinable attempt and restart-binding journal for Herdr's optional visual projection; never task or endpoint authority; see docs/herdr-backend.md "Presentation spaces"
   <id>.check.sh      authenticated slow poll; the watcher dispatches validated PR data and the byte-identified Relay shim through trusted repository scripts, runs registered custom checks from hash-validated private snapshots, and rejects every other state check without execution
   <id>.check-trust   private content binding created by fm-check-register.sh for an intentional custom check
+  <id>.liveness.sh   optional per-task liveness source declaring long-running external work the pane cannot show; consulted before a possible-wedge verdict, run only from a hash-validated private snapshot
+  <id>.liveness-trust  private content binding created by fm-liveness-register.sh for that source
   <id>.pr-poll       private validated data sidecar for the byte-static PR merge poll
   <id>.pr-poll-registration  private transactional provenance record binding the task, canonical metadata identity, sidecar, and static poll publication
   <id>.pr-poll-retirement  private identity-bound crash-recovery receipt for one exact validated merged result; removed after its poll artifacts retire
@@ -353,6 +355,7 @@ Run `bin/fm-pr-check.sh <id> <PR url>` - it records `pr=` and the forge's `pr_he
 Tell the captain the PR's full URL, always the complete `https://...` link rather than a bare `#number`, a concise outcome summary, and the no-mistakes risk level when applicable.
 A captain instruction to merge is explicit authority; `yolo` is the only standing routine authority.
 For any custom `state/<id>.check.sh` you write yourself, keep it an ordinary single-link mode-`0700` file, print one line only when firstmate should wake, print nothing otherwise, finish before `FM_CHECK_TIMEOUT`, then bind its current bytes with `bin/fm-check-register.sh <id>` before the watcher may execute it.
+When a task idles on long-running external work supervision cannot see from its endpoint, declare that work with a `state/<id>.liveness.sh` source bound by `bin/fm-liveness-register.sh <id>`, whose header owns the contract; a `no-mistakes` validation run is already read without any declaration.
 
 Tear down a ship task only after landing is confirmed.
 A teardown refusal for uncommitted or unlanded work is a stop-and-investigate result, never an obstacle to bypass.

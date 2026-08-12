@@ -81,6 +81,10 @@ mkdir -p "$STATE"
 . "$SCRIPT_DIR/fm-x-lib.sh"
 # shellcheck source=bin/fm-check-lib.sh
 . "$SCRIPT_DIR/fm-check-lib.sh"
+# Declared-external-work liveness, consulted only at the moment this watcher is
+# about to call a quiet pane a wedge. See wedge_timer_check below.
+# shellcheck source=bin/fm-liveness-lib.sh
+. "$SCRIPT_DIR/fm-liveness-lib.sh"
 # Parent-owned secondmate missed-report guards: durable pending-reply
 # expectations created by fm-send on marked secondmate requests. The tick is
 # cheap when no records exist and never scrapes secondmate conversation.
@@ -274,14 +278,42 @@ recorded_windows() {
 # below).
 FM_WEDGE_DEMAND_INSPECT_COUNT=${FM_WEDGE_DEMAND_INSPECT_COUNT:-3}
 
+# Re-anchor <since-file> on the last moment <window>'s task's DECLARED
+# long-running external work made progress, and report 0, when that work is
+# demonstrably alive. This is the more specific reading that runs AHEAD of the
+# pane-quiet one: the pane belongs to a worker that was told to stop polling and
+# wait, so its quiet says nothing about the pipeline agent or containerized gate
+# actually doing the work. bin/fm-liveness-lib.sh owns which sources answer and
+# what counts as an answer; no answer (the common case - no declared work) leaves
+# the pane-based wedge timer exactly as it was.
+#
+# Anchoring rather than resetting to now is what keeps the combined bar: the
+# timer tracks the work's own last progress, so work that stops progressing at
+# time T still escalates at T + STALE_ESCALATE_SECS, the ordinary grace, while
+# work that keeps progressing keeps pushing the anchor forward. It also bounds
+# cost - the anchor is only ever re-read when the timer next reaches the grace,
+# so at most one liveness read per grace period per quiet task.
+liveness_defers_wedge() {  # <window> <since-file>
+  local win=$1 since_file=$2 task age
+  task=$(window_to_task "$win" "$STATE")
+  [ -n "$task" ] || return 1
+  age=$(fm_liveness_age "$STATE" "$task") || return 1
+  case "$age" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$age" -lt "$STALE_ESCALATE_SECS" ] || return 1
+  printf '%s\n' "$(( $(date +%s) - age ))" > "$since_file"
+  triage_log "absorbed stale (declared external work made progress ${age}s ago): $win"
+}
+
 # Repeat-poll wedge-timer bookkeeping for an already-classified stale hash
 # absorbed as provably-working - repairs a missing/corrupt timer (self-heals a
 # watcher restart between recording the hash and recording the timer), or
 # escalates once STALE_ESCALATE_SECS have elapsed. Never re-reads the crew
-# state (the costly check already ran once, at classification time). Shared by
-# both places a hash can be absorbed this way: the plain non-terminal path,
-# and the stale_is_terminal-overridden path (a captain-relevant status-log
-# line that an active run/busy pane outranked).
+# state (the costly check already ran once, at classification time); the
+# declared-external-work read above is the one exception, and it happens only on
+# the poll that would otherwise escalate. Shared by both places a hash can be
+# absorbed this way: the plain non-terminal path, and the stale_is_terminal-
+# overridden path (a captain-relevant status-log line that an active run/busy
+# pane outranked).
 wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file>
   local win=$1 since_file=$2 label=$3 escalation_file=$4 since age n reason
   since=$(cat "$since_file" 2>/dev/null || true)
@@ -292,6 +324,9 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
       ;;
     *)
       age=$(( $(date +%s) - since ))
+      if [ "$age" -ge "$STALE_ESCALATE_SECS" ] && liveness_defers_wedge "$win" "$since_file"; then
+        return 0
+      fi
       if [ "$age" -ge "$STALE_ESCALATE_SECS" ]; then
         n=$(( $(cat "$escalation_file" 2>/dev/null || echo 0) + 1 ))
         echo "$n" > "$escalation_file"
@@ -764,7 +799,7 @@ watcher_cleanup() {
   fi
   fm_active_check_stop || cleanup_status=1
   fm_check_output_cleanup
-  fm_custom_check_snapshot_cleanup
+  fm_task_script_snapshot_cleanup
   if [ "$owns_lock" -eq 1 ] \
     && ! fm_recovery_transition "$WATCHER_DOWNTIME_MARKER" "$transition" "$WATCH_LOCK" downtime; then
     echo "watcher: recovery state could not be persisted; retaining stale lock evidence" >&2
@@ -905,13 +940,13 @@ while :; do
           run_check_capture "$SCRIPT_DIR/fm-pr-poll.sh" --validated \
             "$provider" "$url" "$host" "$path" "$number" || exit 1
           out=$FM_CHECK_RESULT
-        elif fm_custom_check_snapshot_prepare "$STATE" "$id"; then
-          custom_snapshot=$FM_CUSTOM_CHECK_SNAPSHOT
+        elif fm_task_script_snapshot_prepare "$STATE" "$id" check; then
+          custom_snapshot=$FM_TASK_SCRIPT_SNAPSHOT
           run_check_capture "$custom_snapshot" || exit 1
           out=$FM_CHECK_RESULT
-          fm_custom_check_snapshot_cleanup
+          fm_task_script_snapshot_cleanup
         else
-          fm_custom_check_snapshot_cleanup
+          fm_task_script_snapshot_cleanup
           rejected_checks="$rejected_checks $c"
           continue
         fi

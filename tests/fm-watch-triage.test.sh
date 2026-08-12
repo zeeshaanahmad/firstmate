@@ -51,17 +51,6 @@ watch_bg() {  # <state> <fakebin> <out> [extra env assignments...]
     FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$@" "$WATCH" > "$out" &
 }
 
-# Wait up to <limit> 0.1s ticks while <pid> stays alive; 0 if still alive, 1 if it died.
-wait_live() {
-  local pid=$1 limit=${2:-30} i=0
-  while [ "$i" -lt "$limit" ]; do
-    kill -0 "$pid" 2>/dev/null || return 1
-    sleep 0.1
-    i=$((i + 1))
-  done
-  return 0
-}
-
 wait_numeric_file() {
   local file=$1 limit=${2:-30} i=0 value
   while [ "$i" -lt "$limit" ]; do
@@ -76,12 +65,6 @@ wait_numeric_file() {
   return 1
 }
 
-# Portable mtime in epoch seconds. Platform-detected, never the `stat -f || stat -c`
-# fallback (which writes a partial filesystem dump on Linux; see fm-watch.sh).
-file_mtime() {
-  if [ "$(uname)" = Darwin ]; then stat -f %m "$1" 2>/dev/null; else stat -c %Y "$1" 2>/dev/null; fi
-}
-
 # Set <file>'s mtime to exactly <epoch> seconds, for aging a busy-turn marker by
 # a precise amount (touch -t takes a local-time stamp, not an epoch, on both
 # platforms, so convert via BSD `date -r` or GNU `date -d @`).
@@ -93,12 +76,6 @@ set_mtime() {  # <epoch> <file>
     stamp=$(date -d "@$epoch" +%Y%m%d%H%M.%S)
     touch -t "$stamp" "$f"
   fi
-}
-
-# Signature a primed .seen-* marker must hold so the per-poll signal scan does not
-# fire on a pre-existing status (mirrors fm-watch.sh's stat_sig exactly).
-seen_sig() {
-  if [ "$(uname)" = Darwin ]; then stat -f '%z:%Fm' "$1" 2>/dev/null; else stat -c '%s:%Y' "$1" 2>/dev/null; fi
 }
 
 # Prime <file>'s .seen-* suppressor to its CURRENT signature, so the per-poll
@@ -120,8 +97,6 @@ record_pi_busy() {  # <state-dir> <id>
   "$ROOT/bin/fm-busy-event.sh" apply "$state" "$id" busy --gen "$gen" \
     --source pi-ext --event agent-start
 }
-
-reap() { kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
 
 # --- pure classifier predicates (fm-classify-lib.sh) ------------------------
 
@@ -700,7 +675,7 @@ test_nonterminal_stale_paused_absorbed_then_resurfaced() {
 # must surface once, while the unchanged hash must not append the same wake on
 # every watcher re-arm.
 test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
-  local dir state fakebin out capture_file statusf window key pane_hash sig pid back round wakes bare
+  local dir state fakebin out capture_file statusf window key pane_hash sig pid back round wakes bare counted
   dir=$(make_case exited-declared-pause); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/held.status"
   window="test:fm-held"
@@ -718,12 +693,21 @@ test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
 
   round=1
   while [ "$round" -le 6 ]; do
+    counted=$(cat "$state/.count-$key" 2>/dev/null || true)
     PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
       FM_FAKE_TMUX_CURRENT_COMMAND=zsh FM_FAKE_CREW_STATE='state: stopped · source: pane · bare shell' \
       FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
       FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
     pid=$!
-    if wait_live "$pid" 15; then reap "$pid"; else wait "$pid" || fail "dead-agent watcher round $round failed"; fi
+    # Each round must COMPLETE a stale-triage pass over this window before it is
+    # reaped, or the round decides nothing and the six-round flood assertion
+    # below reads state nobody wrote.
+    wait_stale_passes "$state" "$key" "$pid" "$counted"
+    case "$?" in
+      0) reap "$pid" ;;
+      1) wait "$pid" || fail "dead-agent watcher round $round failed" ;;
+      *) reap "$pid"; fail "dead-agent watcher round $round never completed a stale pass" ;;
+    esac
     round=$((round + 1))
   done
   wakes=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' "$state/.wake-queue")
@@ -1768,7 +1752,8 @@ test_beacon_stays_fresh_while_absorbing() {
   export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
   watch_bg "$state" "$fakebin" "$out"
   pid=$!
-  wait_live "$pid" 15 || { reap "$pid"; fail "watcher exited while absorbing the first benign signal"; }
+  wait_watcher_beat "$state" "$pid" \
+    || { reap "$pid"; fail "watcher exited while absorbing the first benign signal"; }
   m1=$(file_mtime "$state/.last-watcher-beat")
   # A second benign signal keeps it absorbing; the beacon must keep advancing.
   printf 'working: b\n' >> "$status_file"

@@ -251,6 +251,81 @@ SH
   printf '%s\n' "$dir"
 }
 
+# Wait up to <limit> 0.1s ticks while <pid> stays alive; 0 if still alive, 1 if
+# it died. The complement of wait_for_exit, for asserting a wake was ABSORBED.
+wait_live() {
+  local pid=$1 limit=${2:-30} i=0
+  while [ "$i" -lt "$limit" ]; do
+    kill -0 "$pid" 2>/dev/null || return 1
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 0
+}
+
+# Signature a primed .seen-* marker must hold so the per-poll signal scan does
+# not fire on a pre-existing status (mirrors fm-watch.sh's stat_sig exactly).
+seen_sig() {
+  if [ "$(uname)" = Darwin ]; then stat -f '%z:%Fm' "$1" 2>/dev/null; else stat -c '%s:%Y' "$1" 2>/dev/null; fi
+}
+
+reap() { kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
+
+# Portable mtime in epoch seconds. Platform-detected, never the
+# `stat -f || stat -c` fallback (which writes a partial filesystem dump on
+# Linux; see fm-watch.sh).
+file_mtime() {
+  if [ "$(uname)" = Darwin ]; then stat -f %m "$1" 2>/dev/null; else stat -c %Y "$1" 2>/dev/null; fi
+}
+
+# Wait until watcher <pid> has actually COMPLETED a poll, evidenced by its
+# liveness beacon (state/.last-watcher-beat, touched every poll including while
+# absorbing) appearing or advancing past <baseline>. Returns 0 once that
+# happens, 1 if the watcher exits first or <limit> 0.1s ticks pass.
+#
+# Use this, never a fixed slice of wall clock, wherever a case needs "one poll
+# has run before I look". A watcher poll does real startup work (queue drain,
+# reconciliation sweeps) whose duration is machine-speed dependent, so a fixed
+# slice turns a strict assertion into a flaky one on a loaded host: the case
+# reaps the watcher before its first poll and then reads state that was never
+# written.
+# Wait until watcher <pid> has COMPLETED at least <passes> stale-triage passes
+# over the window keyed <key>, evidenced by that window's .count-<key>. Returns
+# 0 once reached, 1 if the watcher exits first (it woke), 2 on timeout.
+#
+# The +1 is load-bearing: fm-watch.sh rewrites .count-<key> at the START of a
+# pass, before that pass decides anything, so the NEXT increment is the only
+# proof the decision in between actually ran. Waiting on the counter's first
+# change - or on any fixed slice of wall clock - reaps the watcher mid-decision
+# on a loaded host and leaves the case asserting over state nobody wrote.
+wait_stale_passes() {  # <state> <key> <pid> <baseline> [passes] [limit-ticks]
+  local state=$1 key=$2 pid=$3 baseline=${4:-0} passes=${5:-1} limit=${6:-300} i=0 cur
+  case "$baseline" in ''|*[!0-9]*) baseline=0 ;; esac
+  while [ "$i" -lt "$limit" ]; do
+    cur=$(cat "$state/.count-$key" 2>/dev/null || echo 0)
+    case "$cur" in ''|*[!0-9]*) cur=0 ;; esac
+    [ "$cur" -ge "$(( baseline + passes + 1 ))" ] && return 0
+    is_live_non_zombie "$pid" || return 1
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 2
+}
+
+wait_watcher_beat() {  # <state> <pid> [baseline-epoch] [limit-ticks]
+  local state=$1 pid=$2 baseline=${3:-} limit=${4:-150} i=0 beat
+  while [ "$i" -lt "$limit" ]; do
+    beat=$(file_mtime "$state/.last-watcher-beat")
+    if [ -n "$beat" ] && { [ -z "$baseline" ] || [ "$beat" -gt "$baseline" ]; }; then
+      return 0
+    fi
+    is_live_non_zombie "$pid" || return 1
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+
 wait_for_exit() {
   local pid=$1 limit=${2:-50} i=0
   while [ "$i" -lt "$limit" ]; do
