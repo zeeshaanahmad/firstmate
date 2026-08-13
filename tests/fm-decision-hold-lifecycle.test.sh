@@ -256,11 +256,19 @@ EOF
   tasks_in "$home" "done" sample-route-followup >/dev/null \
     || fail "could not complete already-routed dependent work"
   run_decisions "$home" resolve "$id" route --decision-file "$home/route-decision.txt" \
-    --routed-to sample-route-implementation --routed-to sample-route-followup >/dev/null \
+    --routed-to sample-route-implementation --routed-to sample-route-followup > "$home/resolved.out" \
     || fail "could not resume and complete partial decision routing"
+  assert_grep \
+    "recheck routed task preconditions per .agents/skills/decision-hold-lifecycle/SKILL.md: sample-route-followup sample-route-implementation" \
+    "$home/resolved.out" \
+    "successful resolution did not remind the caller to re-check routed work's real preconditions"
   run_decisions "$home" resolve "$id" route --decision-file "$home/route-decision.txt" \
-    --routed-to sample-route-implementation --routed-to sample-route-followup >/dev/null \
+    --routed-to sample-route-implementation --routed-to sample-route-followup > "$home/resolved-retry.out" \
     || fail "identical resolution retry was not idempotent"
+  assert_grep \
+    "recheck routed task preconditions per .agents/skills/decision-hold-lifecycle/SKILL.md: sample-route-followup sample-route-implementation" \
+    "$home/resolved-retry.out" \
+    "idempotent resolution retry did not preserve the precondition reminder"
   if run_decisions "$home" resolve "$id" route --decision-file "$home/changed-route-decision.txt" \
     --routed-to sample-route-implementation --routed-to sample-route-followup \
     > "$home/drifted-decision.out" 2> "$home/drifted-decision.err"; then

@@ -27,6 +27,7 @@ The `resolve` subcommand requires a decision file and at least one existing depe
 It records the decision digest and routed task identities as a retry identity in the hold body, clears each dependency edge through tasks-axi, and marks the hold Done only after those writes succeed.
 An exact retry can finish a partial routing operation, while a changed decision or routed-task set is rejected.
 A failed intermediate step leaves the hold open.
+On every successful resolve, including an exact idempotent retry, it also prints the routed identities as an advisory reminder to re-check their real preconditions; the reminder is informational only and gates nothing.
 
 ## Structured read surfaces
 
