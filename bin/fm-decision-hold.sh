@@ -37,6 +37,8 @@
 # It writes the captain decision and routed identities into the hold body, clears
 # those dependency edges, and only then marks the hold Done. A failure before the
 # final step leaves the captain hold open.
+# Successful resolve output also lists the routed identities with a pointer to the
+# policy owner's post-resolution review; that reminder is advisory, not a guard.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -236,6 +238,10 @@ verify_resolution_identity() {
     || fail "captain hold $id records different routed work"
 }
 
+print_precondition_reminder() {  # <space-separated-routed-ids>
+  printf 'reminder: recheck routed task preconditions per .agents/skills/decision-hold-lifecycle/SKILL.md: %s\n' "$1"
+}
+
 command_id() {
   [ "$#" -eq 2 ] || { usage >&2; exit 2; }
   hold_id "$1" "$2"
@@ -426,6 +432,7 @@ command_resolve() {
     hold_body=$(show_field "$hold_show" body)
     verify_resolution_identity "$id" "$hold_body" "$decision_digest" "$routed_csv"
     printf 'resolved: %s\n' "$id"
+    print_precondition_reminder "$routed"
     return 0
   fi
   verify_hold_active "$id"
@@ -479,6 +486,7 @@ command_resolve() {
   tasks_axi "done" "$id" >/dev/null || fail "could not close resolved captain hold $id"
   verify_hold_resolved "$id" || fail "captain hold $id did not retain its durable resolution record"
   printf 'resolved: %s -> %s\n' "$id" "$routed"
+  print_precondition_reminder "$routed"
 }
 
 case "${1:-}" in

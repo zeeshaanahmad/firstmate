@@ -34,7 +34,10 @@ Bearings reads the resulting structured state and must never compensate by scrap
 5. Relay the choices to the captain as decisions from Bearings' Captain's Call section under `AGENTS.md` section 9; do not use the word hold in captain chat.
 6. After the captain decides, record dependent work with normal tasks-axi commands and block it by the hold identity.
 7. Put the captain's exact durable decision in a file and use the script's `resolve` command with every routed task.
-8. Confirm Bearings no longer shows the closed hold and that routed work remains in structured backlog state.
+8. Immediately after resolving, examine what each routed task is actually waiting for now that the decision itself is no longer a blocker.
+9. When a routed task still waits for an implementation landing or any other precondition besides the decision, re-establish that precondition explicitly with normal backlog dependency or hold mechanics.
+10. Write each re-block note to identify what running the task early would measure or produce wrongly, rather than merely saying that the task is blocked on the precondition.
+11. Confirm Bearings no longer shows the closed hold and that every routed task remains in the correct structured backlog state for its real preconditions.
 
 `bin/fm-decision-hold.sh --help` owns command syntax, identity construction, completion attestation, retry behavior, and close ordering.
 `docs/decision-hold-lifecycle.md` records the mechanism and regression evidence without restating this policy.
