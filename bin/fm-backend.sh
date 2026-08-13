@@ -596,13 +596,14 @@ fm_backend_expected_label_of_selector() {  # <raw-target> <state-dir>
 # dot-source and capturing $? explicitly closes that gap for every
 # `.`-failure mode, not just a missing/unreadable file.
 fm_backend_source_file() {  # <file>
-  local file=$1 rc
+  local file=$1 rc restore_e=
   [ -r "$file" ] || return 1
+  case $- in *e*) restore_e=1 ;; esac
   set +e
   # shellcheck source=/dev/null
   . "$file"
   rc=$?
-  set -e
+  [ -n "$restore_e" ] && set -e
   [ "$rc" -eq 0 ] || return 1
 }
 
