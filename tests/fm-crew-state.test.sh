@@ -126,7 +126,18 @@ case "${1:-}" in
 esac
 exit 0
 SH
-  chmod +x "$fb/no-mistakes" "$fb/tmux" "$fb/herdr"
+  cat > "$fb/gh" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1:-} ${2:-}" in
+  "pr view")
+    [ "${FM_FAKE_GH_PR_ERROR:-0}" = 1 ] && { echo "error: gh unavailable" >&2; exit 1; }
+    printf '%s\n' "${FM_FAKE_GH_PR_STATE:-MERGED}"
+    exit 0 ;;
+esac
+exit 0
+SH
+  chmod +x "$fb/no-mistakes" "$fb/tmux" "$fb/herdr" "$fb/gh"
   printf '%s\n' "$fb"
 }
 
@@ -226,9 +237,14 @@ reset_fakes() {
   # Empty is the helper's own "unset" (its case guard falls back to 10s), so a
   # per-test bound never leaks into the next case.
   FM_CREW_STATE_NM_TIMEOUT=""
+  # Unset (empty) is the fake gh's own default: MERGED, so every existing
+  # passed-outcome case stays a forge-confirmed done without opting in.
+  FM_FAKE_GH_PR_STATE=""
+  FM_FAKE_GH_PR_ERROR=0
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING
   export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS
   export FM_FAKE_NM_HANG FM_FAKE_NM_CALLS FM_CREW_STATE_NM_TIMEOUT
+  export FM_FAKE_GH_PR_STATE FM_FAKE_GH_PR_ERROR
 }
 
 # --- run-object fixtures (TOON, as `no-mistakes axi status` emits) -----------
@@ -335,6 +351,19 @@ outcome: passed
 EOF
 }
 
+run_passed_no_pr() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: ""
+  findings: none
+outcome: passed
+EOF
+}
+
 run_failed() {  # <branch>
   cat <<EOF
 run:
@@ -345,6 +374,32 @@ run:
   pr: ""
   findings: none
 outcome: failed
+EOF
+}
+
+run_cancelled() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: "https://github.com/o/r/pull/4"
+  findings: none
+outcome: cancelled
+EOF
+}
+
+run_cancelled_no_pr() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: ""
+  findings: none
+outcome: cancelled
 EOF
 }
 
@@ -739,6 +794,128 @@ test_terminal_failed() {
   assert_contains "$out" "state: failed" "failed run -> failed"
   assert_contains "$out" "source: run-step" "failed -> run-step source"
   pass "terminal failed run is authoritative"
+}
+
+# (d2) forge-authoritative merge claim: a terminal `passed` outcome must never
+# assert "PR merged/closed" from the run record alone. Direct regression for
+# the 2026-08-12 false-done incident (task suppress-reasoning-on-qwen):
+# `fm-crew-state.sh` returned `run passed: PR merged/closed` while the forge
+# (verified via `gh api .../pulls/187`) said state=open merged=false. Proven
+# RED against the pre-fix helper (git stash the fix and re-run to confirm),
+# now pinned GREEN: the forge disagreeing must yield "cannot confirm", never
+# a fabricated done claim.
+test_terminal_passed_forge_still_open_cannot_confirm() {
+  reset_fakes
+  local d; d=$(new_case passed-forge-open)
+  make_repo_on_branch "$d/wt" fm/feat-open-pr
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-open-pr.meta" "window=fm:fm-feat-open-pr" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-open-pr)"
+  FM_FAKE_GH_PR_STATE=OPEN
+  local out; out=$(run_crew_state "$d" feat-open-pr)
+  assert_contains "$out" "state: unknown" "outcome passed but forge OPEN must not read as done"
+  assert_not_contains "$out" "state: done" "outcome passed but forge OPEN must never claim done"
+  assert_not_contains "$out" "PR merged" "no merge claim may be asserted when the forge disagrees"
+  assert_contains "$out" "cannot confirm" "the honest answer is cannot-confirm, not a fabricated terminal claim"
+  pass "a terminal passed outcome never fabricates a merge claim the forge contradicts"
+}
+
+# The forge is the only source that may confirm the claim: a genuinely MERGED
+# PR reports done, with the claim attributed to the forge check.
+test_terminal_passed_forge_merged_confirms_done() {
+  reset_fakes
+  local d; d=$(new_case passed-forge-merged)
+  make_repo_on_branch "$d/wt" fm/feat-merged-pr
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-merged-pr.meta" "window=fm:fm-feat-merged-pr" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-merged-pr)"
+  FM_FAKE_GH_PR_STATE=MERGED
+  local out; out=$(run_crew_state "$d" feat-merged-pr)
+  assert_contains "$out" "state: done" "forge-confirmed merge reports done"
+  assert_contains "$out" "forge-verified" "the done claim names the forge as its source"
+  pass "a forge-confirmed merge is reported as done"
+}
+
+# No PR was ever on record, so "PR merged/closed" was never a claim this run
+# could have made in the first place - a plain passed run still reports done.
+test_terminal_passed_no_pr_still_done() {
+  reset_fakes
+  local d; d=$(new_case passed-no-pr)
+  make_repo_on_branch "$d/wt" fm/feat-no-pr
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-no-pr.meta" "window=fm:fm-feat-no-pr" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed_no_pr fm/feat-no-pr)"
+  local out; out=$(run_crew_state "$d" feat-no-pr)
+  assert_contains "$out" "state: done" "a PR-less passed run still reports done"
+  assert_not_contains "$out" "PR merged" "no PR was ever on record to claim merged"
+  pass "a PR-less passed run reports done without inventing a PR claim"
+}
+
+# A gh lookup error (network, auth, rate limit) is exactly as unverifiable as
+# an open PR: the run record's claim stays unconfirmed, never asserted.
+test_terminal_passed_forge_error_cannot_confirm() {
+  reset_fakes
+  local d; d=$(new_case passed-forge-error)
+  make_repo_on_branch "$d/wt" fm/feat-forge-error
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-forge-error.meta" "window=fm:fm-feat-forge-error" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-forge-error)"
+  FM_FAKE_GH_PR_ERROR=1
+  local out; out=$(run_crew_state "$d" feat-forge-error)
+  assert_contains "$out" "state: unknown" "an unverifiable forge lookup must not become a terminal claim"
+  assert_not_contains "$out" "state: done" "a gh error must not be read as confirmation"
+  pass "a forge lookup error fails closed to cannot-confirm"
+}
+
+# (d3) cancelled-run-reads-as-failed sibling: cancellation is a purely
+# administrative stop (no judgment about the work) and must never surface as
+# a task failure. Direct regression for the 2026-08-13 stale-reads-lane
+# incident: a cancelled run read as `state: failed - run cancelled` while the
+# task was actually done with a green PR open.
+test_terminal_cancelled_forge_open_not_a_failure() {
+  reset_fakes
+  local d; d=$(new_case cancelled-forge-open)
+  make_repo_on_branch "$d/wt" fm/feat-cancel-open
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-cancel-open.meta" "window=fm:fm-feat-cancel-open" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_cancelled fm/feat-cancel-open)"
+  FM_FAKE_GH_PR_STATE=OPEN
+  local out; out=$(run_crew_state "$d" feat-cancel-open)
+  assert_not_contains "$out" "state: failed" "a cancelled run must never surface as a task failure"
+  assert_contains "$out" "state: unknown" "an unresolved cancellation is honestly unknown, not failed"
+  assert_contains "$out" "not a task failure" "the detail explains cancellation carries no failure judgment"
+  pass "a cancelled run with an open forge PR is never read as task failure"
+}
+
+# A cancelled run whose PR the forge confirms already merged is still done -
+# the cancellation was just administrative cleanup after the fact.
+test_terminal_cancelled_forge_merged_still_done() {
+  reset_fakes
+  local d; d=$(new_case cancelled-forge-merged)
+  make_repo_on_branch "$d/wt" fm/feat-cancel-merged
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-cancel-merged.meta" "window=fm:fm-feat-cancel-merged" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_cancelled fm/feat-cancel-merged)"
+  FM_FAKE_GH_PR_STATE=MERGED
+  local out; out=$(run_crew_state "$d" feat-cancel-merged)
+  assert_contains "$out" "state: done" "a cancelled run whose PR is actually merged is done"
+  assert_not_contains "$out" "state: failed" "cancellation must not override a forge-confirmed merge"
+  pass "a cancelled run is reported done when the forge confirms the PR merged"
+}
+
+# A cancelled run with no PR on record at all: nothing to verify against, so
+# this fails closed to unknown rather than guessing failed.
+test_terminal_cancelled_no_pr_cannot_confirm() {
+  reset_fakes
+  local d; d=$(new_case cancelled-no-pr)
+  make_repo_on_branch "$d/wt" fm/feat-cancel-no-pr
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-cancel-no-pr.meta" "window=fm:fm-feat-cancel-no-pr" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_cancelled_no_pr fm/feat-cancel-no-pr)"
+  local out; out=$(run_crew_state "$d" feat-cancel-no-pr)
+  assert_not_contains "$out" "state: failed" "an unverifiable cancellation must not default to failed"
+  assert_contains "$out" "state: unknown" "no PR to check against means honestly unknown"
+  pass "a cancelled run with no PR on record fails closed to unknown, never failed"
 }
 
 # (e) cross-branch attribution: `axi status` returns ANOTHER branch's run (the
@@ -1545,6 +1722,13 @@ test_top_level_fixing_ci_running_after_green_stays_working
 test_top_level_fixing_done_log_stays_working
 test_terminal_passed
 test_terminal_failed
+test_terminal_passed_forge_still_open_cannot_confirm
+test_terminal_passed_forge_merged_confirms_done
+test_terminal_passed_no_pr_still_done
+test_terminal_passed_forge_error_cannot_confirm
+test_terminal_cancelled_forge_open_not_a_failure
+test_terminal_cancelled_forge_merged_still_done
+test_terminal_cancelled_no_pr_cannot_confirm
 test_cross_branch_attribution_via_runs_list
 test_cross_branch_attribution_picks_most_recent_row
 test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status
