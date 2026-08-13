@@ -17,8 +17,11 @@
 # answers the question that matters: has a check ever actually registered.
 #
 # Usage: fm-ci-probe.sh [<owner/repo>]
-#   With no argument, resolves the repo from the current directory's "origin"
-#   remote via `gh repo view`.
+#   With no argument, resolves owner/repo by parsing the current directory's
+#   "origin" remote URL directly (https or ssh form). This is deliberate:
+#   bare `gh repo view` resolves ambient parent-repo defaults (e.g. a fork's
+#   upstream parent) instead of origin, which would probe the wrong repo's
+#   Actions history on a fork and defeat the whole check.
 # Requires the `gh` CLI, authenticated for the target repo. Never used to
 # monitor an in-progress run: no-mistakes' own ci step owns that; this is a
 # one-time answer read before a run starts.
@@ -33,11 +36,31 @@ esac
 
 REPO="${1:-}"
 if [ -z "$REPO" ]; then
-  REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) || {
+  ORIGIN_URL=$(git remote get-url origin 2>/dev/null) || {
     echo "unknown"
-    echo "error: could not resolve owner/repo from the current directory's origin remote" >&2
+    echo "error: could not read the current directory's origin remote" >&2
     exit 0
   }
+  case "$ORIGIN_URL" in
+    git@github.com:*)
+      REPO=${ORIGIN_URL#git@github.com:}
+      ;;
+    ssh://git@github.com/*)
+      REPO=${ORIGIN_URL#ssh://git@github.com/}
+      ;;
+    https://github.com/*)
+      REPO=${ORIGIN_URL#https://github.com/}
+      ;;
+    *)
+      REPO=
+      ;;
+  esac
+  REPO=${REPO%.git}
+  if [ -z "$REPO" ]; then
+    echo "unknown"
+    echo "error: could not parse owner/repo from origin remote url: $ORIGIN_URL" >&2
+    exit 0
+  fi
 fi
 
 TOTAL=$(gh api "repos/$REPO/actions/runs?per_page=1" -q .total_count 2>/dev/null) || {
