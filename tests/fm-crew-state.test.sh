@@ -994,6 +994,37 @@ EOF
   pass "coarse run does not probe another branch's ci log"
 }
 
+# The coarse cross-branch fallback must never feed a foreign branch's PR into
+# apply_cancelled_run_state: $RUN_OUT is scoped to the PRIMARY `axi status`
+# answer (here, another crew's branch, whose PR the forge genuinely reports
+# MERGED), and the coarse runs-list row for THIS branch's cancelled run does
+# not carry a verified same-branch PR. Misattributing the foreign MERGED PR to
+# this branch's cancelled run would fabricate "state: done" for a branch whose
+# own work is actually unlanded - the exact failure mode this change exists to
+# eliminate, just reached through the third (coarse) call site.
+test_coarse_cancelled_does_not_misattribute_foreign_branch_pr() {
+  reset_fakes
+  local d short; d=$(new_case coarse-cancelled-foreign-pr)
+  make_repo_on_branch "$d/wt" fm/feat-cancel-coarse
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-cancel-coarse.meta" "window=fm:fm-feat-cancel-coarse" "worktree=$d/wt" "kind=ship"
+  # Primary `axi status` answers with a DIFFERENT branch's run, whose PR the
+  # forge genuinely confirms merged.
+  FM_FAKE_AXI_STATUS="$(run_passed fm/other-crew)"
+  FM_FAKE_GH_PR_STATE=MERGED
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/other-crew aaaaaaa  2026-07-02 22:10
+  cancelled  fm/feat-cancel-coarse ${short}  2026-07-02 22:05
+EOF
+)"
+  local out; out=$(run_crew_state "$d" feat-cancel-coarse)
+  assert_not_contains "$out" "state: done" "a coarse cancelled run must never borrow another branch's forge-verified PR"
+  assert_not_contains "$out" "forge-verified" "the coarse path has no same-branch PR to forge-verify against"
+  assert_contains "$out" "state: unknown" "coarse cancelled with no reliable same-branch PR fails closed to unknown"
+  pass "coarse cancelled run does not misattribute a foreign branch's PR"
+}
+
 # A different-branch run with NO matching runs-list row must NOT be
 # misattributed, and must not be treated as a false "working" verdict either.
 test_other_branch_run_ignored() {
@@ -1732,6 +1763,7 @@ test_terminal_cancelled_no_pr_cannot_confirm
 test_cross_branch_attribution_via_runs_list
 test_cross_branch_attribution_picks_most_recent_row
 test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status
+test_coarse_cancelled_does_not_misattribute_foreign_branch_pr
 test_other_branch_run_ignored
 test_no_run_busy_pane
 test_no_run_footer_text_alone_is_not_working

@@ -551,7 +551,7 @@ if [ "$HAVE_RUN" = 1 ]; then
       running)   RUN_STATE=working; RUN_DETAIL="validating (background run)" ;;
       completed) RUN_STATE="done";  RUN_DETAIL="run completed" ;;
       failed)    RUN_STATE=failed;  RUN_DETAIL="run failed" ;;
-      cancelled) apply_cancelled_run_state ;;
+      cancelled) RUN_STATE=unknown; RUN_DETAIL="cannot confirm outcome: run cancelled (coarse cross-branch listing has no reliable PR to verify)" ;;
       *)         RUN_STATE=unknown; RUN_DETAIL="runs list status: $COARSE_STATUS" ;;
     esac
   else
