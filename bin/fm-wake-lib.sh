@@ -415,7 +415,14 @@ FM_SIGNAL_DEFER_WAIT_TICKS=${FM_SIGNAL_DEFER_WAIT_TICKS:-20}
 # does not opt in, which is why adopting this needed no audit of the ~65 call
 # sites that ignore the return value. Set it only around a shutdown path whose
 # own callees check that return value.
-FM_LOCK_ACQUIRE_WAIT_TICKS=${FM_LOCK_ACQUIRE_WAIT_TICKS:-}
+#
+# Deliberately NOT seeded from the environment. An exported value would bound
+# EVERY lock wait in the process, and the callers that ignore the return value
+# would then carry on believing they hold a lock they do not - the silent
+# unlocking this design exists to avoid. A caller opts in by assigning it around
+# its own call and clearing it afterwards; a process-wide knob would need every
+# one of those call sites audited first.
+FM_LOCK_ACQUIRE_WAIT_TICKS=
 _FM_SIGNAL_DEFER_RESTORE=
 
 # Begin deferring HUP/INT/TERM. Nests: only the outermost call swaps the
