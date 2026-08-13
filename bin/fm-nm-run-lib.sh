@@ -8,22 +8,35 @@
 # direction is unsafe: a false negative hides a genuinely parked run, and a
 # false positive lets teardown act on a run it does not own.
 #
-# Bounded call to `no-mistakes "$@"` in dir $1, timeout $2 seconds. The bounded
-# form preserves stdout, stderr, and exit status; the checked form discards
-# stderr, while fm_nm_run keeps the fail-open query contract for read-only callers.
-fm_nm_run_bounded() {  # <dir> <timeout_secs> <args...>
-  local dir=$1 timeout_secs=$2 have_timeout=none
-  shift 2
+# Bounded call to `$3 "${@:4}"` in dir $1, timeout $2 seconds. Preserves
+# stdout, stderr, and exit status. The single owner of the timeout-detection
+# dance (timeout/gtimeout/perl fallback) for every bounded external command
+# this repo shells out to under a read deadline - originally hardcoded to
+# `no-mistakes` (fm_nm_run_bounded below still is, for compatibility), then
+# generalized so fm-crew-state.sh's forge verification could reuse the exact
+# same bounded-call guarantee for `gh` instead of re-deriving it.
+fm_bounded_cmd() {  # <dir> <timeout_secs> <cmd> <args...>
+  local dir=$1 timeout_secs=$2 cmd=$3 have_timeout=none
+  shift 3
   if command -v timeout >/dev/null 2>&1; then have_timeout=timeout
   elif command -v gtimeout >/dev/null 2>&1; then have_timeout=gtimeout
   elif command -v perl >/dev/null 2>&1; then have_timeout=perl
   fi
   case "$have_timeout" in
-    timeout)  ( cd "$dir" && timeout "$timeout_secs" no-mistakes "$@" ) ;;
-    gtimeout) ( cd "$dir" && gtimeout "$timeout_secs" no-mistakes "$@" ) ;;
-    perl)     ( cd "$dir" && perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$timeout_secs" no-mistakes "$@" ) ;;
+    timeout)  ( cd "$dir" && timeout "$timeout_secs" "$cmd" "$@" ) ;;
+    gtimeout) ( cd "$dir" && gtimeout "$timeout_secs" "$cmd" "$@" ) ;;
+    perl)     ( cd "$dir" && perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$timeout_secs" "$cmd" "$@" ) ;;
     *)        return 1 ;;
   esac
+}
+
+# Bounded call to `no-mistakes "$@"` in dir $1, timeout $2 seconds. The bounded
+# form preserves stdout, stderr, and exit status; the checked form discards
+# stderr, while fm_nm_run keeps the fail-open query contract for read-only callers.
+fm_nm_run_bounded() {  # <dir> <timeout_secs> <args...>
+  local dir=$1 timeout_secs=$2
+  shift 2
+  fm_bounded_cmd "$dir" "$timeout_secs" no-mistakes "$@"
 }
 
 fm_nm_run_checked() {  # <dir> <timeout_secs> <args...>
