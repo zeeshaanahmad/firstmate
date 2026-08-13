@@ -471,6 +471,21 @@ fm_signal_defer_end() {
   kill -s "$pending" "${BASHPID:-$$}" 2>/dev/null || true
 }
 
+# True if <pid> is a live child of this shell that has not yet gone to zombie.
+# `kill -0` alone is not enough: it succeeds for an exited-but-unreaped child,
+# since the process-table entry persists until this shell calls wait(). A poll
+# loop keyed on kill -0 alone therefore spins its full bound against a child
+# that already exited on TERM. ps -o stat= tells the two apart (zombie == Z).
+_fm_child_is_live() {
+  local pid=$1 stat
+  kill -0 "$pid" 2>/dev/null || return 1
+  stat=$(ps -p "$pid" -o stat= 2>/dev/null) || return 1
+  case "$stat" in
+    Z*) return 1 ;;
+  esac
+  return 0
+}
+
 # Stop a child of THIS shell within a bounded time, whatever state it is in.
 #
 # The companion to the deferral above, for the other half of the same wedge: a
@@ -487,11 +502,11 @@ fm_child_stop_bounded() {  # <pid> [ticks]
   [ -n "$pid" ] || return 0
   kill "$pid" 2>/dev/null || true
   while [ "$i" -lt "$limit" ]; do
-    kill -0 "$pid" 2>/dev/null || break
+    _fm_child_is_live "$pid" || break
     sleep 0.1
     i=$((i + 1))
   done
-  if kill -0 "$pid" 2>/dev/null; then
+  if _fm_child_is_live "$pid"; then
     escalated=1
     kill -s KILL "$pid" 2>/dev/null || true
   fi

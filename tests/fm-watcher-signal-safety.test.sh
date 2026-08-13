@@ -340,7 +340,7 @@ test_cleanup_is_bounded_against_a_permanent_lock_holder() {
 # really ignores TERM, so the bound cannot go vacuous, plus an ordinary child as
 # the control so the bound is distinguishable from always escalating.
 test_daemon_child_stop_is_bounded_against_a_term_ignoring_child() {
-  local child started elapsed i
+  local child started elapsed i rc
   # Library mode: the daemon guards its executed path, so sourcing exposes the
   # shutdown helper without starting a daemon. The bound itself lives in the wake
   # library the daemon loads at runtime, so load that first - this also proves
@@ -368,10 +368,13 @@ test_daemon_child_stop_is_bounded_against_a_term_ignoring_child() {
   while [ "$i" -lt 100 ] && ! pgrep -P "$child" >/dev/null 2>&1; do sleep 0.1; i=$((i + 1)); done
   started=$(date +%s)
   FM_DAEMON_CHILD_STOP_TICKS=50 stop_watcher_child "$child"
+  rc=$?
   elapsed=$(( $(date +%s) - started ))
   is_live_non_zombie "$child" && { force_stop "$child"; fail "daemon shutdown left an ordinary child alive"; }
   [ "$elapsed" -lt 3 ] \
     || fail "an ordinary child took ${elapsed}s to stop, so TERM is not being tried before the escalation"
+  [ "$rc" -eq 0 ] \
+    || fail "stop_watcher_child reported an escalation (rc=$rc) for a child that stopped on TERM alone (zombie/kill-0 regression)"
   pass "daemon shutdown bounds a TERM-ignoring watcher child and still stops an ordinary one on TERM alone"
 }
 
