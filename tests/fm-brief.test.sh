@@ -719,6 +719,63 @@ test_scout_and_secondmate_load_decision_hold_policy() {
   pass "fm-brief.sh: investigation and visual-review completions load the shared decision policy"
 }
 
+# Every ship delivery mode requires the same structured completion report
+# (data/<id>/completion-report.md), borrowed from the ~/.claude/agents tier
+# report schemas: VERIFICATION as a required field with an explicit
+# never-claim-unverified-as-done instruction, UNVERIFIED CLAIMS as a
+# first-class output, and judging the SUMMARY against the ORIGINAL # Task
+# section rather than a restatement. bin/fm-teardown.sh enforces the file's
+# presence (tests/fm-teardown.test.sh test_ship_task_completion_report_required).
+test_completion_report_contract_wording() {
+  local home id mode brief
+  home="$TMP_ROOT/completion-report-home"
+  mkdir -p "$home/data"
+  for id_mode in "brief-report-nm:no-mistakes" "brief-report-direct:direct-PR" "brief-report-local:local-only"; do
+    id=${id_mode%%:*}
+    mode=${id_mode##*:}
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+    assert_grep "write a completion report to \`$home/data/$id/completion-report.md\`" "$brief" \
+      "$id: ship DOD missing the completion report path"
+    assert_grep "1. SUMMARY - what you did, 2-4 sentences, judged against the ORIGINAL \`# Task\` section above, not your own restatement of it." "$brief" \
+      "$id: ship completion report missing SUMMARY field judged against the original task"
+    assert_grep "2. CHANGES - files touched, one line each." "$brief" \
+      "$id: ship completion report missing CHANGES field"
+    assert_grep "3. VERIFICATION - exactly what you ran and its result; if you cannot verify something, say so explicitly - never claim unverified work as done." "$brief" \
+      "$id: ship completion report missing the VERIFICATION field's never-claim-unverified instruction"
+    assert_grep "4. UNVERIFIED CLAIMS - claims in this report you could not confirm (or \"none\")." "$brief" \
+      "$id: ship completion report missing UNVERIFIED CLAIMS as a first-class field"
+    assert_grep "5. RISKS/FOLLOW-UPS - anything firstmate must know (or \"none\")." "$brief" \
+      "$id: ship completion report missing RISKS/FOLLOW-UPS field"
+    assert_grep "8. You cannot spawn subagents or delegate any part of this task to other agents from inside this worktree; do the work yourself." "$brief" \
+      "$id: ship Rules missing the no-subagent rule"
+  done
+  pass "fm-brief.sh: ship completion report contract renders identically across every delivery mode"
+}
+
+# The scout report keeps its existing "stands alone" shape but gains COVERAGE
+# (what was searched, so an empty result is meaningful) plus the same
+# VERIFICATION/UNVERIFIED CLAIMS borrowings as the ship contract.
+test_scout_report_contract_wording() {
+  local home id brief
+  home="$TMP_ROOT/scout-report-home"
+  mkdir -p "$home/data"
+  id="brief-scout-report-a1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_grep "1. SUMMARY - what you did and found, 2-4 sentences, judged against the ORIGINAL \`# Task\` section above, not your own restatement of it." "$brief" \
+    "scout report missing SUMMARY field judged against the original task"
+  assert_grep "3. COVERAGE - what you searched or checked (paths, patterns, scope), so an empty or clean result is meaningful rather than silent." "$brief" \
+    "scout report missing the COVERAGE field"
+  assert_grep "4. VERIFICATION - exactly what you ran to confirm your findings and its result; if you cannot verify something, say so explicitly - never claim unverified work as confirmed." "$brief" \
+    "scout report missing the VERIFICATION field's never-claim-unverified instruction"
+  assert_grep "5. UNVERIFIED CLAIMS - claims in this report you could not confirm (or \"none\")." "$brief" \
+    "scout report missing UNVERIFIED CLAIMS as a first-class field"
+  assert_grep "8. You cannot spawn subagents or delegate any part of this task to other agents from inside this worktree; do the work yourself." "$brief" \
+    "scout Rules missing the no-subagent rule"
+  pass "fm-brief.sh: scout report contract adds COVERAGE/VERIFICATION/UNVERIFIED CLAIMS on top of its existing shape"
+}
+
 # Scout and secondmate paths still scaffold well-formed briefs.
 test_scout_and_secondmate_scaffold() {
   local brief
@@ -750,6 +807,8 @@ test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_no_mistakes_ci_probe_guard_wording
 test_ship_project_memory_wording
+test_completion_report_contract_wording
+test_scout_report_contract_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout

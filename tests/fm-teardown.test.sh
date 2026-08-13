@@ -198,9 +198,14 @@ SH
   chmod +x "$case_dir/fakebin/tasks-axi"
 }
 
-# Write a meta file for the task. Args: case_dir mode kind
+# Write a meta file for the task. Args: case_dir mode kind [no_report]
+# A ship task also requires a completion report (bin/fm-teardown.sh; see
+# test_ship_task_completion_report_required for the dedicated coverage of that
+# requirement itself). Every other test case here is about landed-work logic,
+# not the report contract, so this seeds a placeholder report for kind=ship by
+# default; pass a truthy 4th arg to opt out and exercise the missing-report path.
 write_meta() {
-  local case_dir=$1 mode=$2 kind=$3
+  local case_dir=$1 mode=$2 kind=$3 no_report=${4:-}
   fm_write_meta "$case_dir/state/task-x1.meta" \
     "window=firstmate:fm-task-x1" \
     "endpoint_task_id=task-x1" \
@@ -208,6 +213,11 @@ write_meta() {
     "project=$case_dir/project" \
     "kind=$kind" \
     "mode=$mode"
+  if [ "$kind" = ship ] && [ -z "$no_report" ]; then
+    mkdir -p "$case_dir/data/task-x1"
+    printf '%s\n' "1. SUMMARY - placeholder completion report for a fixture unrelated to the report contract." \
+      > "$case_dir/data/task-x1/completion-report.md"
+  fi
 }
 
 # Commit something on the worktree's task branch. Args: case_dir [message]
@@ -545,6 +555,7 @@ run_teardown() {
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
   FM_CONFIG_OVERRIDE="$case_dir/config" \
+  FM_DATA_OVERRIDE="$case_dir/data" \
   PATH="$case_dir/fakebin:${FM_TEARDOWN_TEST_PATH:-$PATH}" \
     "$TEARDOWN" task-x1 "$@"
 }
@@ -577,6 +588,67 @@ test_local_only_fork_remote_allows() {
   expect_code 0 "$rc" "fork-allow: teardown should succeed when HEAD is on a fork remote"
   ! grep -q REFUSED "$case_dir/stderr" || fail "fork-allow: teardown printed a REFUSED line"
   pass "local-only worktree with HEAD on a fork remote is torn down (fix holds)"
+}
+
+# bin/fm-brief.sh's ship scaffold requires a structured completion report at
+# data/<id>/completion-report.md before the terminal `done:` append. Teardown
+# must refuse without --force when that file is missing, mirroring the
+# existing scout report.md requirement, and must proceed once it exists.
+test_ship_task_completion_report_required() {
+  local case_dir rc
+  case_dir=$(make_case ship-report-required)
+  write_meta "$case_dir" no-mistakes ship no_report
+  wt_commit "$case_dir" "ship work"
+  add_fork_with_pushed_branch "$case_dir"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "ship task missing its completion report should refuse teardown"
+  grep -q "REFUSED: ship task task-x1 has no completion report at $case_dir/data/task-x1/completion-report.md" "$case_dir/stderr" \
+    || fail "missing completion report did not produce the expected refusal: $(cat "$case_dir/stderr")"
+  assert_present "$case_dir/state/task-x1.meta" "missing completion report refusal mutated task state"
+
+  mkdir -p "$case_dir/data/task-x1"
+  printf '%s\n' "1. SUMMARY - did the thing." > "$case_dir/data/task-x1/completion-report.md"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout2" 2> "$case_dir/stderr2"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "ship task with a completion report should tear down: $(cat "$case_dir/stderr2")"
+  pass "fm-teardown: ship task refuses without a completion report and proceeds once it exists"
+}
+
+test_ship_task_completion_report_force_bypasses() {
+  local case_dir rc
+  case_dir=$(make_case ship-report-force)
+  write_meta "$case_dir" no-mistakes ship no_report
+  wt_commit "$case_dir" "unpushed, unreported work"
+
+  set +e
+  run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "--force should bypass the missing completion report: $(cat "$case_dir/stderr")"
+  pass "fm-teardown: --force bypasses the missing ship completion report check"
+}
+
+test_scout_task_never_requires_a_completion_report() {
+  local case_dir rc
+  case_dir=$(make_case scout-no-completion-report)
+  write_meta "$case_dir" no-mistakes scout
+  mkdir -p "$case_dir/data/task-x1"
+  printf '%s\n' "findings" > "$case_dir/data/task-x1/report.md"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  ! grep -q "completion-report.md" "$case_dir/stderr" \
+    || fail "scout teardown checked for a ship completion-report.md: $(cat "$case_dir/stderr")"
+  pass "fm-teardown: a scout task is never checked against the ship completion-report.md path"
 }
 
 test_teardown_prompts_tasks_axi_done_when_compatible() {
@@ -2592,6 +2664,9 @@ EOF
 }
 
 test_local_only_fork_remote_allows
+test_ship_task_completion_report_required
+test_ship_task_completion_report_force_bypasses
+test_scout_task_never_requires_a_completion_report
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
 test_local_only_truly_unpushed_refuses

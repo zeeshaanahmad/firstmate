@@ -54,6 +54,19 @@
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
 # over copied detail) and has the crewmate add the fm-ensure-agents-md.sh
 # self-governance section when a touched project AGENTS.md lacks it.
+# Every ship and scout scaffold requires a structured completion report at
+# teardown time (a ship's completion-report.md, a scout's existing report.md),
+# in addition to the unchanged one-line "done:" status append, which stays a
+# wake signal only. bin/fm-teardown.sh refuses non-forced teardown of a ship or
+# scout task whose report file is missing, mirroring the scout enforcement
+# that already existed. Both report contracts require: a SUMMARY judged
+# against the brief's ORIGINAL "# Task" section rather than the worker's own
+# restatement of it; a VERIFICATION field naming exactly what was run and its
+# result, with an explicit instruction never to claim unverified work as done;
+# and an UNVERIFIED CLAIMS field as a first-class place for what could not be
+# confirmed. The scout contract additionally requires COVERAGE (what was
+# searched, so an empty result is meaningful). Every ship and scout Rules list
+# also forbids spawning subagents inside the worktree.
 # Refuses to overwrite an existing brief.
 set -eu
 
@@ -76,6 +89,7 @@ esac
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
+NO_SUBAGENT_RULE='8. You cannot spawn subagents or delegate any part of this task to other agents from inside this worktree; do the work yourself.'
 
 resolve_directory_input() {
   local name=$1 path=$2 resolved
@@ -335,10 +349,16 @@ The report is the only thing that survives, so anything worth keeping must be in
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+$NO_SUBAGENT_RULE
 
 # Definition of done
-Write your findings to \`$DATA/$ID/report.md\`.
-The report must stand alone: what you did, what you found, the evidence (commands run, output, file:line references), and what you recommend.
+Write your findings to \`$DATA/$ID/report.md\`. The report must stand alone:
+1. SUMMARY - what you did and found, 2-4 sentences, judged against the ORIGINAL \`# Task\` section above, not your own restatement of it.
+2. FINDINGS - the evidence: commands run, output, file:line references.
+3. COVERAGE - what you searched or checked (paths, patterns, scope), so an empty or clean result is meaningful rather than silent.
+4. VERIFICATION - exactly what you ran to confirm your findings and its result; if you cannot verify something, say so explicitly - never claim unverified work as confirmed.
+5. UNVERIFIED CLAIMS - claims in this report you could not confirm (or "none").
+6. RECOMMENDATION - what you recommend; this does not authorize implementation.
 Before reporting done, read and follow \`$FM_ROOT/.agents/skills/decision-hold-lifecycle/SKILL.md\` and pass its shared completion gate for the report and any visual review.
 When the report is complete, append \`done: {one-line conclusion}\` to the status file and stop.
 If your findings reveal work that should ship (e.g. you reproduced a bug and the fix is clear), say so in the report; firstmate may promote this task in place, and you would then receive mode-specific ship instructions as a follow-up message.
@@ -351,6 +371,20 @@ fi
 # delivery mode, validated above. The generated DOD opens with the fixed
 # "Delivery contract: mode=<mode>" line that bin/fm-spawn.sh checks against its own
 # explicit --mode before launching.
+# Every ship mode requires the same structured completion report immediately
+# before its terminal `done:` append; the one-line `done:` itself is unchanged
+# (it stays a wake signal, not the report). bin/fm-teardown.sh refuses non-forced
+# teardown of a ship task missing this file, mirroring the scout report check.
+IFS= read -r -d '' COMPLETION_REPORT_CONTRACT <<EOF || true
+Before appending that \`done\`, write a completion report to \`$DATA/$ID/completion-report.md\`:
+1. SUMMARY - what you did, 2-4 sentences, judged against the ORIGINAL \`# Task\` section above, not your own restatement of it.
+2. CHANGES - files touched, one line each.
+3. VERIFICATION - exactly what you ran and its result; if you cannot verify something, say so explicitly - never claim unverified work as done.
+4. UNVERIFIED CLAIMS - claims in this report you could not confirm (or "none").
+5. RISKS/FOLLOW-UPS - anything firstmate must know (or "none").
+EOF
+COMPLETION_REPORT_CONTRACT=${COMPLETION_REPORT_CONTRACT%$'\n'}
+
 case "$MODE" in
   direct-PR)
     SETUP2=""
@@ -360,6 +394,7 @@ case "$MODE" in
 Delivery contract: mode=direct-PR
 This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
 The task is complete only when committed on your branch.
+$COMPLETION_REPORT_CONTRACT
 When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
@@ -373,6 +408,7 @@ Delivery contract: mode=local-only
 This task ships **local-only**: no remote, no PR, no pipeline.
 The task is complete only when committed on your branch \`fm/$ID\`. Do NOT push, do NOT open a PR, do NOT merge.
 Keep your branch a clean fast-forward onto the current default branch - if \`main\` has advanced, rebase onto it so the eventual merge stays a fast-forward.
+$COMPLETION_REPORT_CONTRACT
 When it is implemented and committed, append \`done: ready in branch fm/$ID\` to the status file and stop.
 The configured merge authority approves the ready branch, then firstmate merges it into local \`main\` through the guarded fast-forward path.
 EOF
@@ -403,6 +439,7 @@ Three firstmate-specific rules layer on top of that guidance:
   \`present\` means proceed without that flag.
   \`unknown\` means the probe could not read the forge's answer; never guess - append \`blocked: {the probe's error}\` and stop rather than starting the run.
 
+$COMPLETION_REPORT_CONTRACT
 After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop. You are finished.
 EOF
     ;;
@@ -455,6 +492,7 @@ $RULE1
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+$NO_SUBAGENT_RULE
 
 # Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.
