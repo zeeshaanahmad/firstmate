@@ -1351,6 +1351,31 @@ trim_log() {
   tail -n "${FM_LOG_KEEP_LINES:-$LOG_KEEP_LINES_DEFAULT}" "$LOG" >"$tmp" 2>/dev/null && mv -f "$tmp" "$LOG"
 }
 
+# --- bounded child shutdown ---------------------------------------------------
+# Stop the watcher child within a bounded time, whatever state it is in.
+#
+# The plain `kill; wait` this replaces made the daemon's own shutdown inherit its
+# child's worst case: a watcher that did not act on TERM left the daemon blocked
+# in `wait` forever, so `fm-afk-launch.sh stop` and `fm-afk-return.sh` reported
+# "daemon did not exit after SIGTERM" and the operator had to kill both by hand
+# before the return gate would clear. The watcher's own signal handling is fixed
+# in bin/fm-wake-lib.sh and bin/fm-watch.sh, but a supervisor must not depend on
+# its child being well-behaved in order to be able to shut down at all.
+stop_watcher_child() {  # <pid>
+  local pid=$1 i=0
+  kill "$pid" 2>/dev/null || true
+  while [ "$i" -lt "${FM_DAEMON_CHILD_STOP_TICKS:-50}" ]; do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    log "warn: watcher child $pid ignored TERM for ${i} ticks; escalating to KILL"
+    kill -s KILL "$pid" 2>/dev/null || true
+  fi
+  wait "$pid" 2>/dev/null || true
+}
+
 # ============================================================================
 # Everything below runs only when the script is EXECUTED, not sourced. The pure
 # classifiers above are sourceable for unit tests (tests/fm-daemon.test.sh).
@@ -1477,8 +1502,7 @@ fm_super_main() {
     wedge_alarm_stop_active_notifier
     escalate_flush "$STATE" 2>/dev/null || true
     if [ -n "${WATCHER_PID:-}" ]; then
-      kill "$WATCHER_PID" 2>/dev/null || true
-      wait "$WATCHER_PID" 2>/dev/null || true
+      stop_watcher_child "$WATCHER_PID"
     fi
     if [ -n "${CUR_TMP:-}" ]; then
       rm -f "$CUR_TMP" 2>/dev/null || true

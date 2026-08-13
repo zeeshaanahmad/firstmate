@@ -527,13 +527,14 @@ test_housekeeping_undeclared_work_keeps_pane_reading() {
   pass "away-mode housekeeping keeps the unchanged pane-based reading for a task that declared no external work"
 }
 
-# --- the deadlock quarantine must actually bound a TERM-ignoring process -----
+# --- reap must bound a TERM-ignoring process ---------------------------------
 #
-# The suites reap real watchers, and a watcher that ignores TERM used to hang the
-# whole run forever (pre-existing signal/lock self-deadlock in bin/fm-watch.sh,
-# tracked by watcher-signal-deadlock-redesign). reap now bounds that and reports
-# it, so affected cases skip loudly instead of hanging or masking. Proven against
-# a real process that really ignores TERM, so the quarantine cannot go vacuous.
+# The suites reap real watchers, and one that ignores TERM would hang the whole
+# run forever. A watcher can no longer do that (tests/fm-watcher-signal-safety.test.sh
+# pins it), but the harness must stay able to report the day one does instead of
+# hanging CI - so reap bounds the wait, escalates, and sets the flag that
+# assert_reaped_on_term turns into a named failure. Proven against a real process
+# that really ignores TERM, so the bound cannot go vacuous.
 # 0 once <pid> has spawned a child, which proves it finished exec'ing and reached
 # its loop body - and therefore that any signal disposition it sets is installed.
 # Signalling before that races the exec and the signal is simply lost.
@@ -558,20 +559,20 @@ test_reap_bounds_a_term_ignoring_process() {
   is_live_non_zombie "$pid" && fail "reap left a TERM-ignoring process alive"
   [ -n "$FM_REAP_NEEDED_KILL" ] || fail "reap did not report that TERM was ignored"
   [ "$elapsed" -lt 30 ] || fail "reap took ${elapsed}s to bound a TERM-ignoring process"
-  [ -n "$FM_SIGNAL_DEADLOCK_SKIP" ] || fail "no skip reason is available to document the quarantine"
-  case "$FM_SIGNAL_DEADLOCK_SKIP" in
-    skip:*watcher-signal-deadlock-redesign*) ;;
-    *) fail "the skip reason does not name the tracking task: $FM_SIGNAL_DEADLOCK_SKIP" ;;
-  esac
+  # The flag is only useful if it becomes a named failure, so assert the reporter
+  # built on it fires rather than leaving the escalation silent.
+  ( assert_reaped_on_term "fixture" 2>/dev/null ) \
+    && fail "assert_reaped_on_term passed over a process that ignored TERM"
 
   # A process that exits on TERM is the control: it must NOT be reported as
-  # needing KILL, or every reap would look like the deadlock.
+  # needing KILL, or every reap would look like a signal-handling regression.
   bash -c 'while :; do sleep 0.1; done' &
   pid=$!
   wait_process_ready "$pid" || { reap "$pid"; fail "the ordinary fixture never started"; }
   reap "$pid"
   [ -z "$FM_REAP_NEEDED_KILL" ] || fail "an ordinary process was misreported as ignoring TERM"
-  pass "reap bounds a TERM-ignoring process, reports it, names the tracking task, and stays quiet for ordinary exits"
+  assert_reaped_on_term "ordinary fixture"
+  pass "reap bounds a TERM-ignoring process, turns it into a named failure, and stays quiet for ordinary exits"
 }
 
 test_duration_parsing
