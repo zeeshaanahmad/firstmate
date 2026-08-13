@@ -1364,9 +1364,10 @@ trim_log() {
 # the arm layer's signal handler; this adds only the daemon's log line, because a
 # shutdown that had to escalate is worth a record.
 stop_watcher_child() {  # <pid>
-  local pid=$1
-  fm_child_stop_bounded "$pid" "${FM_DAEMON_CHILD_STOP_TICKS:-50}" \
-    || log "warn: watcher child $pid ignored TERM; escalated to KILL"
+  local pid=$1 rc=0
+  fm_child_stop_bounded "$pid" "${FM_DAEMON_CHILD_STOP_TICKS:-50}" || rc=$?
+  [ "$rc" -eq 0 ] || log "warn: watcher child $pid ignored TERM; escalated to KILL"
+  return "$rc"
 }
 
 # ============================================================================

@@ -340,7 +340,7 @@ test_cleanup_is_bounded_against_a_permanent_lock_holder() {
 # really ignores TERM, so the bound cannot go vacuous, plus an ordinary child as
 # the control so the bound is distinguishable from always escalating.
 test_daemon_child_stop_is_bounded_against_a_term_ignoring_child() {
-  local child started elapsed i rc
+  local child started elapsed i rc LOG
   # Library mode: the daemon guards its executed path, so sourcing exposes the
   # shutdown helper without starting a daemon. The bound itself lives in the wake
   # library the daemon loads at runtime, so load that first - this also proves
@@ -349,6 +349,11 @@ test_daemon_child_stop_is_bounded_against_a_term_ignoring_child() {
   . "$LIB"
   # shellcheck disable=SC1090
   . "$DAEMON"
+  # LOG set to a real file so log()'s printf actually runs: with LOG unset,
+  # log() short-circuits to a no-op and its own status would stand in for
+  # stop_watcher_child's, hiding a wrapper that lets that status leak through.
+  # shellcheck disable=SC2034 # read by log() in the sourced DAEMON via dynamic scope
+  LOG="$TMP_ROOT/daemon-child-stop.log"
 
   bash -c 'trap "" TERM; while :; do sleep 0.1; done' &
   child=$!
@@ -358,9 +363,12 @@ test_daemon_child_stop_is_bounded_against_a_term_ignoring_child() {
     || { force_stop "$child"; fail "the TERM-ignoring child never installed its disposition"; }
   started=$(date +%s)
   FM_DAEMON_CHILD_STOP_TICKS=5 stop_watcher_child "$child"
+  rc=$?
   elapsed=$(( $(date +%s) - started ))
   is_live_non_zombie "$child" && { force_stop "$child"; fail "daemon shutdown left a TERM-ignoring child alive"; }
   [ "$elapsed" -lt 30 ] || fail "daemon shutdown took ${elapsed}s to bound a TERM-ignoring child"
+  [ "$rc" -ne 0 ] \
+    || fail "stop_watcher_child reported success (rc=0) for a child that ignored TERM and needed KILL"
 
   bash -c 'while :; do sleep 0.1; done' &
   child=$!
