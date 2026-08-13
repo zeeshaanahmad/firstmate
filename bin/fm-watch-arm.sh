@@ -462,8 +462,10 @@ handle_arm_signal() {
   local signal=$1 rc=$2
   trap - HUP TERM INT
   if [ -n "$child" ] && fm_pid_alive "$child"; then
-    kill -TERM "$child" 2>/dev/null || true
-    wait "$child" 2>/dev/null || true
+    # Bounded, not a plain `kill; wait`: this handler runs BECAUSE someone is
+    # trying to stop the arm, so it must not be able to hang on a watcher child
+    # that is slow or stuck. Shared owner in bin/fm-wake-lib.sh.
+    fm_child_stop_bounded "$child" "${FM_ARM_CHILD_STOP_TICKS:-50}" || true
   fi
   cycle_log_append "$rc" "$signal" arm-interrupted none
   cleanup_child

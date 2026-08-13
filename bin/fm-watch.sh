@@ -97,6 +97,10 @@ WATCH_LOCK="$STATE/.watch.lock"
 WATCH_PATH="$SCRIPT_DIR/fm-watch.sh"
 WATCHER_DOWNTIME_MARKER="$STATE/.watcher-down"
 WATCHER_STALE_GRACE=${FM_WATCHER_STALE_GRACE:-${FM_GUARD_GRACE:-300}}
+# Ticks (of 0.1s) watcher_cleanup may spend waiting for the recovery-marker lock
+# before it gives up loudly and exits anyway. Shutdown must be bounded; see the
+# backstop comment in watcher_cleanup.
+WATCHER_CLEANUP_LOCK_TICKS=${FM_WATCHER_CLEANUP_LOCK_TICKS:-20}
 # The singleton-lock acquisition, EXIT trap, and the blocking supervision loop
 # all live below the source guard at the very bottom of this file (see "Main
 # entry"). Sourcing this file for unit tests therefore loads the functions -
@@ -803,10 +807,21 @@ watcher_cleanup() {
   fm_active_check_stop || cleanup_status=1
   fm_check_output_cleanup
   fm_task_script_snapshot_cleanup
-  if [ "$owns_lock" -eq 1 ] \
-    && ! fm_recovery_transition "$WATCHER_DOWNTIME_MARKER" "$transition" "$WATCH_LOCK" downtime; then
-    echo "watcher: recovery state could not be persisted; retaining stale lock evidence" >&2
-    cleanup_status=1
+  if [ "$owns_lock" -eq 1 ]; then
+    # Liveness backstop. The marker sections this transition needs are now
+    # uninterruptible, so this can no longer be blocked by a hold this same
+    # process abandoned - but it CAN still meet a different live holder, and an
+    # unbounded wait here is precisely how a signalled watcher used to sit on
+    # .watch.lock with a frozen beacon until someone restarted the session.
+    # Bounded and loud beats silently dark: the caller keeps its existing
+    # "retaining stale lock evidence" contract, and the next arm reclaims the
+    # lock through the ordinary dead-holder path.
+    FM_LOCK_ACQUIRE_WAIT_TICKS=$WATCHER_CLEANUP_LOCK_TICKS
+    if ! fm_recovery_transition "$WATCHER_DOWNTIME_MARKER" "$transition" "$WATCH_LOCK" downtime; then
+      echo "watcher: recovery state could not be persisted; retaining stale lock evidence" >&2
+      cleanup_status=1
+    fi
+    FM_LOCK_ACQUIRE_WAIT_TICKS=
   fi
   return "$cleanup_status"
 }

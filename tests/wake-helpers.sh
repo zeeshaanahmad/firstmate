@@ -294,19 +294,16 @@ seen_sig() {
 
 # Stop a watcher this shell owns, without ever hanging on it.
 #
-# Plain `kill; wait` deadlocks the whole suite when the signalled watcher never
-# dies. That is reachable today: firstmate's locks are not reentrant and
-# bin/fm-watch.sh traps HUP/INT/TERM as `exit 1`, so a signal delivered while
-# the watcher holds a lock unwinds into watcher_cleanup, which re-acquires a
-# lock the interrupted flow still owns and spins in fm_lock_acquire_wait
-# forever. It is reachable on EVERY poll through _fm_recovery_marker_arm_check,
-# not only through fm_wake_append. Tracking task: watcher-signal-deadlock-redesign.
+# TERM, wait a bounded time, then KILL, so no case can hang the whole suite on a
+# process that will not die. Sets FM_REAP_NEEDED_KILL=1 when TERM was ignored.
 #
-# So: TERM, wait a bounded time, then KILL so no case can hang. Sets
-# FM_REAP_NEEDED_KILL=1 when TERM was ignored, which is the deadlock's
-# signature. Cases that can hit it check that flag and skip explicitly rather
-# than asserting over a watcher that was killed mid-flight - the skip reason is
-# the documentation, so nothing is silently masked.
+# A watcher reaching that escalation is a REGRESSION, not a tolerated condition:
+# a signal delivered mid-critical-section is held until the section closes and
+# then re-raised (bin/fm-wake-lib.sh), and the exit path is bounded
+# (bin/fm-watch.sh), so TERM stops a watcher from every position in its loop -
+# pinned by tests/fm-watcher-signal-safety.test.sh. Cases that reap a watcher
+# assert on this flag rather than tolerating it; the KILL escalation stays only
+# so that a future regression fails loudly instead of hanging CI.
 # shellcheck disable=SC2034  # read by sourcing suites, not by this harness
 FM_REAP_NEEDED_KILL=
 reap() {  # <pid> [term-wait-ticks]
@@ -325,9 +322,12 @@ reap() {  # <pid> [term-wait-ticks]
   return 0
 }
 
-# Reason emitted wherever a case cannot continue because a watcher ignored TERM.
-# shellcheck disable=SC2034  # read by sourcing suites, not by this harness
-FM_SIGNAL_DEADLOCK_SKIP='skip: watcher did not exit on TERM - pre-existing signal/lock self-deadlock in bin/fm-watch.sh, tracked by watcher-signal-deadlock-redesign; this case cannot assert over a watcher killed mid-flight'
+# Assert the reap above stopped its watcher with TERM alone. <what> names the
+# case so a regression says which position in the loop stopped honouring TERM.
+assert_reaped_on_term() {  # <what>
+  [ -z "$FM_REAP_NEEDED_KILL" ] \
+    || fail "$1: the watcher ignored TERM and had to be killed (signal/lock self-deadlock regression)"
+}
 
 # Portable mtime in epoch seconds. Platform-detected, never the
 # `stat -f || stat -c` fallback (which writes a partial filesystem dump on

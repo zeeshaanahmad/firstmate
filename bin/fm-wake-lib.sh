@@ -379,6 +379,157 @@ fm_lock_recheck_stale_owner() {
   return 0
 }
 
+# --- signal deferral across non-reentrant lock critical sections ------------
+#
+# These locks are not reentrant, and the long-running scripts built on them
+# (bin/fm-watch.sh, bin/fm-supervise-daemon.sh) trap HUP/INT/TERM into an exit
+# whose cleanup re-enters the very same locks. A signal delivered mid-section
+# therefore unwound the shell OUT of a critical section and straight back INTO
+# it. Three distinct failures came out of that one shape: a recovery marker left
+# quarantined with no replacement written, a wake-queue lock abandoned partway
+# through an append, and an exit path that blocked for as long as whatever else
+# held the marker lock stayed alive - a watcher that ignored TERM, kept
+# .watch.lock, and froze its beacon until the whole session was restarted.
+#
+# fm_lock_try_acquire's self-held reclaim rescues only the narrow case where the
+# abandoned hold belongs to this same pid. It recovers the LOCK, never the
+# INVARIANT the half-finished section was in the middle of establishing, and it
+# does nothing at all when the contended holder is a different live process.
+#
+# So the section is made uninterruptible instead of the unwind made survivable:
+# record the signal, finish the short section, release, then re-raise it against
+# the caller's own disposition. Deferral is opt-in per section rather than a
+# blanket trap, because a process-wide deferring trap over a long-held lock
+# (fm-watch.sh owns .watch.lock for its entire life) would trade this defect for
+# its mirror image - a process TERM can no longer stop at all.
+FM_SIGNAL_DEFER_DEPTH=0
+FM_SIGNAL_DEFERRED=
+# Ticks (of 0.1s) a NESTED acquisition inside a deferred section may keep waiting
+# once a signal is already pending. Past it the acquisition fails through the
+# section's own error path, which releases whatever that path holds. This is what
+# keeps deferral bounded by a constant instead of by some other process's
+# lifetime, without ever tearing a section open partway through.
+FM_SIGNAL_DEFER_WAIT_TICKS=${FM_SIGNAL_DEFER_WAIT_TICKS:-20}
+# Caller-scoped bound on fm_lock_acquire_wait, in the same 0.1s ticks. Empty (the
+# default) preserves the historical wait-forever contract for every caller that
+# does not opt in, which is why adopting this needed no audit of the ~65 call
+# sites that ignore the return value. Set it only around a shutdown path whose
+# own callees check that return value.
+#
+# Deliberately NOT seeded from the environment. An exported value would bound
+# EVERY lock wait in the process, and the callers that ignore the return value
+# would then carry on believing they hold a lock they do not - the silent
+# unlocking this design exists to avoid. A caller opts in by assigning it around
+# its own call and clearing it afterwards; a process-wide knob would need every
+# one of those call sites audited first.
+FM_LOCK_ACQUIRE_WAIT_TICKS=
+_FM_SIGNAL_DEFER_RESTORE=
+
+# Begin deferring HUP/INT/TERM. Nests: only the outermost call swaps the
+# disposition, so an inner section cannot hand the signal back early.
+fm_signal_defer_begin() {
+  FM_SIGNAL_DEFER_DEPTH=$((FM_SIGNAL_DEFER_DEPTH + 1))
+  [ "$FM_SIGNAL_DEFER_DEPTH" -eq 1 ] || return 0
+  FM_SIGNAL_DEFERRED=
+  # One fork per outermost section. `trap -p` inside a command substitution does
+  # report the parent's dispositions, so the caller's own handler - whatever it
+  # is - survives the section rather than being replaced by an assumed default.
+  _FM_SIGNAL_DEFER_RESTORE=$(trap -p HUP INT TERM)
+  trap 'FM_SIGNAL_DEFERRED=HUP' HUP
+  trap 'FM_SIGNAL_DEFERRED=INT' INT
+  trap 'FM_SIGNAL_DEFERRED=TERM' TERM
+}
+
+# End deferral and, at the outermost level, re-raise anything that arrived while
+# the section ran. The re-raise runs against the RESTORED disposition, so a
+# caller trapping into an exit exits here and a caller with no trap dies here:
+# the signal is delayed by one short section, never discarded.
+fm_signal_defer_end() {
+  local pending sig
+  [ "$FM_SIGNAL_DEFER_DEPTH" -gt 0 ] || return 0
+  FM_SIGNAL_DEFER_DEPTH=$((FM_SIGNAL_DEFER_DEPTH - 1))
+  [ "$FM_SIGNAL_DEFER_DEPTH" -eq 0 ] || return 0
+  # Restore by OVERWRITING each deferring trap, never by clearing first. A
+  # `trap - HUP INT TERM` ahead of the restore leaves a window - short, but
+  # entered on every single section exit - in which those signals carry their
+  # DEFAULT action, and a signal landing there kills the process outright, with
+  # no EXIT trap and every lock it owns still held. Measured: that window turned
+  # reaping a watcher into an occasional hard kill and left locks behind for
+  # whatever ran next. Only signals the caller had no handler for are cleared,
+  # and for those the default action is what they would have done anyway.
+  [ -z "$_FM_SIGNAL_DEFER_RESTORE" ] || eval "$_FM_SIGNAL_DEFER_RESTORE"
+  for sig in HUP INT TERM; do
+    case "$_FM_SIGNAL_DEFER_RESTORE" in
+      *"SIG$sig"*) ;;
+      *) trap - "$sig" ;;
+    esac
+  done
+  _FM_SIGNAL_DEFER_RESTORE=
+  pending=$FM_SIGNAL_DEFERRED
+  FM_SIGNAL_DEFERRED=
+  [ -n "$pending" ] || return 0
+  kill -s "$pending" "${BASHPID:-$$}" 2>/dev/null || true
+}
+
+# True if <pid> is a live child of this shell that has not yet gone to zombie.
+# `kill -0` alone is not enough: it succeeds for an exited-but-unreaped child,
+# since the process-table entry persists until this shell calls wait(). A poll
+# loop keyed on kill -0 alone therefore spins its full bound against a child
+# that already exited on TERM. ps -o stat= tells the two apart (zombie == Z).
+_fm_child_is_live() {
+  local pid=$1 stat
+  kill -0 "$pid" 2>/dev/null || return 1
+  stat=$(ps -p "$pid" -o stat= 2>/dev/null) || return 1
+  case "$stat" in
+    Z*) return 1 ;;
+  esac
+  return 0
+}
+
+# Stop a child of THIS shell within a bounded time, whatever state it is in.
+#
+# The companion to the deferral above, for the other half of the same wedge: a
+# supervisor must not inherit its child's worst case. A plain `kill; wait` in a
+# shutdown path blocks for as long as the child refuses to go, which is how a
+# stuck watcher used to hang both the away-mode daemon's shutdown and the arm
+# layer's own signal handler while the operator waited on a gate that never
+# cleared. One owner here rather than a copy in each caller.
+#
+# Returns 0 if TERM alone was enough and 1 if the escalation was needed, so a
+# caller with somewhere to log can say which happened.
+fm_child_stop_bounded() {  # <pid> [ticks]
+  local pid=$1 limit=${2:-${FM_CHILD_STOP_TICKS:-50}} i=0 escalated=0
+  [ -n "$pid" ] || return 0
+  kill "$pid" 2>/dev/null || true
+  while [ "$i" -lt "$limit" ]; do
+    _fm_child_is_live "$pid" || break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if _fm_child_is_live "$pid"; then
+    escalated=1
+    kill -s KILL "$pid" 2>/dev/null || true
+  fi
+  wait "$pid" 2>/dev/null || true
+  [ "$escalated" -eq 0 ]
+}
+
+# Acquire <lockdir> as a short critical section that a signal may not interrupt.
+# Returns non-zero WITHOUT deferring when the lock was not taken, so a caller's
+# existing failure path stays correct.
+fm_lock_section_enter() {
+  fm_lock_acquire_wait "$1" || return 1
+  fm_signal_defer_begin
+}
+
+# Release a section taken with fm_lock_section_enter. Pair these one-for-one:
+# every release site in a deferred section is a leave site, which is what makes
+# the conversion mechanical rather than a judgement call per return path.
+fm_lock_section_leave() {
+  fm_lock_release "$1"
+  fm_signal_defer_end
+}
+
 FM_RECOVERY_MARKER_TOKEN=
 FM_RECOVERY_MARKER_ACTION='none'
 
@@ -423,9 +574,9 @@ _fm_recovery_marker_publish() {
   local marker=$1 kind=${2:-downtime} lock saved_token generation=''
   case "$kind" in handling|downtime) ;; *) return 1 ;; esac
   lock="${marker}.lock"
-  fm_lock_acquire_wait "$lock" || return 1
+  fm_lock_section_enter "$lock" || return 1
   if [ -d "$marker" ] && [ ! -L "$marker" ]; then
-    fm_lock_release "$lock"
+    fm_lock_section_leave "$lock"
     return 1
   fi
   if [ "$kind" = downtime ]; then
@@ -441,130 +592,135 @@ _fm_recovery_marker_publish() {
     FM_RECOVERY_MARKER_TOKEN=$saved_token
   fi
   if ! _fm_recovery_marker_write_locked "$marker" "$kind" "$generation"; then
-    fm_lock_release "$lock"
+    fm_lock_section_leave "$lock"
     return 1
   fi
-  fm_lock_release "$lock"
+  fm_lock_section_leave "$lock"
 }
 
 _fm_recovery_marker_begin_handling() {
   local marker=$1 expected_generation=${2:-} lock line generation
   lock="${marker}.lock"
-  fm_lock_acquire_wait "$lock" || return 1
+  fm_lock_section_enter "$lock" || return 1
   if ! fm_recovery_marker_read "$marker"; then
-    fm_lock_release "$lock"
+    fm_lock_section_leave "$lock"
     return 1
   fi
   line=$FM_RECOVERY_MARKER_TOKEN
   generation=${line##*:}
   if [ -n "$expected_generation" ] && [ "$generation" != "$expected_generation" ]; then
-    fm_lock_release "$lock"
+    fm_lock_section_leave "$lock"
     return 3
   fi
   case "$line" in
     pending:handling:*) ;;
     pending:downtime:*)
       if ! _fm_recovery_marker_write_locked "$marker" handling "$generation"; then
-        fm_lock_release "$lock"
+        fm_lock_section_leave "$lock"
         return 1
       fi
       FM_RECOVERY_MARKER_TOKEN="pending:handling:$generation"
       ;;
-    *) fm_lock_release "$lock"; return 1 ;;
+    *) fm_lock_section_leave "$lock"; return 1 ;;
   esac
-  fm_lock_release "$lock"
+  fm_lock_section_leave "$lock"
 }
 
 fm_recovery_marker_snapshot() {
   local marker=$1 lock
   FM_RECOVERY_MARKER_TOKEN=
   lock="${marker}.lock"
-  fm_lock_acquire_wait "$lock" || return 1
+  fm_lock_section_enter "$lock" || return 1
   fm_recovery_marker_read "$marker" || true
-  fm_lock_release "$lock"
+  fm_lock_section_leave "$lock"
 }
 
 _fm_recovery_marker_ack() {
   local marker=$1 expected_generation=$2 lock tmp line
   [ -n "$expected_generation" ] || return 2
   lock="${marker}.lock"
-  fm_lock_acquire_wait "$lock" || return 1
+  fm_lock_section_enter "$lock" || return 1
   if ! fm_recovery_marker_read "$marker" \
     || [ "${FM_RECOVERY_MARKER_TOKEN##*:}" != "$expected_generation" ]; then
-    fm_lock_release "$lock"
+    fm_lock_section_leave "$lock"
     return 3
   fi
   line=$FM_RECOVERY_MARKER_TOKEN
   case "$line" in
     pending:*) line="acked:${line#pending:}" ;;
-    acked:*) fm_lock_release "$lock"; return 0 ;;
+    acked:*) fm_lock_section_leave "$lock"; return 0 ;;
   esac
-  tmp=$(mktemp "${marker}.tmp.XXXXXX") || { fm_lock_release "$lock"; return 1; }
+  tmp=$(mktemp "${marker}.tmp.XXXXXX") || { fm_lock_section_leave "$lock"; return 1; }
   if ! printf '%s\n' "$line" > "$tmp" \
     || ! chmod 0600 "$tmp" \
     || ! mv -f -- "$tmp" "$marker"; then
     rm -f -- "$tmp"
-    fm_lock_release "$lock"
+    fm_lock_section_leave "$lock"
     return 1
   fi
-  fm_lock_release "$lock"
+  fm_lock_section_leave "$lock"
 }
 
 _fm_recovery_marker_arm_check() {
   local marker=$1 lock line quarantine
   FM_RECOVERY_MARKER_ACTION='none'
   lock="${marker}.lock"
-  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
-  if ! fm_lock_acquire_wait "$lock"; then
-    fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+  # Reached on EVERY watcher poll (bin/fm-watch.sh's resurface_after_downtime),
+  # and the only place two of these locks are held at once, so it is both the
+  # likeliest interruption point and the one with the most to tear. Queue lock
+  # first, then marker lock, matching fm_wake_append's order - nothing anywhere
+  # takes them the other way round, so these two can never deadlock each other.
+  fm_lock_section_enter "$FM_WAKE_QUEUE_LOCK" || return 1
+  if ! fm_lock_section_enter "$lock"; then
+    fm_lock_section_leave "$FM_WAKE_QUEUE_LOCK"
     return 1
   fi
   if [ ! -e "$marker" ] && [ ! -L "$marker" ]; then
     if [ -s "$FM_WAKE_QUEUE" ]; then
       if ! _fm_recovery_marker_write_locked "$marker" downtime; then
-        fm_lock_release "$lock"
-        fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+        fm_lock_section_leave "$lock"
+        fm_lock_section_leave "$FM_WAKE_QUEUE_LOCK"
         return 1
       fi
       FM_RECOVERY_MARKER_ACTION='recover'
     fi
-    fm_lock_release "$lock"
-    fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+    fm_lock_section_leave "$lock"
+    fm_lock_section_leave "$FM_WAKE_QUEUE_LOCK"
     return 0
   fi
   if ! fm_recovery_marker_read "$marker"; then
     quarantine=$(mktemp -d "${marker}.invalid.XXXXXX") \
       || {
-        fm_lock_release "$lock"
-        fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+        fm_lock_section_leave "$lock"
+        fm_lock_section_leave "$FM_WAKE_QUEUE_LOCK"
         return 1
       }
     if ! mv -- "$marker" "$quarantine/marker" \
       || ! _fm_recovery_marker_write_locked "$marker" downtime; then
       rmdir "$quarantine" 2>/dev/null || true
-      fm_lock_release "$lock"
-      fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+      fm_lock_section_leave "$lock"
+      fm_lock_section_leave "$FM_WAKE_QUEUE_LOCK"
       return 1
     fi
     FM_RECOVERY_MARKER_ACTION='recover'
-    fm_lock_release "$lock"
-    fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+    fm_lock_section_leave "$lock"
+    fm_lock_section_leave "$FM_WAKE_QUEUE_LOCK"
     return 0
   fi
   line=$FM_RECOVERY_MARKER_TOKEN
   case "$line" in
     pending:handling:*)
       FM_RECOVERY_MARKER_ACTION='wait'
-      fm_lock_release "$lock"
-      fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+      fm_lock_section_leave "$lock"
+      fm_lock_section_leave "$FM_WAKE_QUEUE_LOCK"
       return 0
       ;;
     pending:downtime:*) FM_RECOVERY_MARKER_ACTION='recover' ;;
     acked:*)
       if [ -s "$FM_WAKE_QUEUE" ]; then
         if ! _fm_recovery_marker_write_locked "$marker" downtime; then
-          fm_lock_release "$lock"
-          fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+          fm_lock_section_leave "$lock"
+          fm_lock_section_leave "$FM_WAKE_QUEUE_LOCK"
           return 1
         fi
         # shellcheck disable=SC2034 # Output read by callers after this function returns.
@@ -572,8 +728,8 @@ _fm_recovery_marker_arm_check() {
       fi
       ;;
   esac
-  fm_lock_release "$lock"
-  fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+  fm_lock_section_leave "$lock"
+  fm_lock_section_leave "$FM_WAKE_QUEUE_LOCK"
 }
 
 fm_recovery_transition() {
@@ -596,13 +752,16 @@ fm_recovery_transition() {
     release-lock-existing)
       [ -n "$target" ] || return 1
       local lock="${marker}.lock"
-      fm_lock_acquire_wait "$lock" || return 1
+      fm_lock_section_enter "$lock" || return 1
       if ! fm_recovery_marker_read "$marker"; then
-        fm_lock_release "$lock"
+        fm_lock_section_leave "$lock"
         return 1
       fi
+      # $target is the caller's long-held ownership lock (the watcher singleton),
+      # never a deferred section: releasing it must not end the deferral that the
+      # marker section above owns.
       fm_lock_release "$target"
-      fm_lock_release "$lock"
+      fm_lock_section_leave "$lock"
       ;;
     clear-stale-lock)
       [ -n "$target" ] || return 1
@@ -730,10 +889,25 @@ fm_lock_try_acquire() {
   return "$rc"
 }
 
+# Wait for <lockdir>. Unbounded by default, exactly as every existing caller
+# expects. Two opt-in bounds exist, and both exist so a shutdown can complete:
+#   - FM_LOCK_ACQUIRE_WAIT_TICKS, set by a caller around its own cleanup;
+#   - a signal already pending inside a deferred section, which must not be held
+#     off for however long an unrelated live holder decides to keep the lock.
+# Both are re-read every iteration because the signal usually arrives DURING the
+# wait, not before it.
 fm_lock_acquire_wait() {
-  local lockdir=$1
+  local lockdir=$1 waited=0 limit
   while ! fm_lock_try_acquire "$lockdir"; do
+    limit=$FM_LOCK_ACQUIRE_WAIT_TICKS
+    if [ -z "$limit" ] && [ "$FM_SIGNAL_DEFER_DEPTH" -gt 0 ] && [ -n "$FM_SIGNAL_DEFERRED" ]; then
+      limit=$FM_SIGNAL_DEFER_WAIT_TICKS
+    fi
+    if [ -n "$limit" ] && [ "$waited" -ge "$limit" ]; then
+      return 1
+    fi
     sleep 0.1
+    waited=$((waited + 1))
   done
 }
 
@@ -848,7 +1022,7 @@ fm_wake_append() {
   recovery_marker="$STATE/.watcher-down"
   status=0
 
-  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+  fm_lock_section_enter "$FM_WAKE_QUEUE_LOCK" || return 1
   _fm_recovery_marker_publish "$recovery_marker" downtime || status=$?
   if [ "$status" -eq 0 ]; then
     seq=$(cat "$seq_file" 2>/dev/null || echo 0)
@@ -861,7 +1035,7 @@ fm_wake_append() {
   if [ "$status" -eq 0 ]; then
     printf '%s\t%s\t%s\t%s\t%s\n' "$epoch" "$seq" "$kind" "$clean_key" "$clean_payload" >> "$FM_WAKE_QUEUE" || status=$?
   fi
-  fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+  fm_lock_section_leave "$FM_WAKE_QUEUE_LOCK"
   return "$status"
 }
 
