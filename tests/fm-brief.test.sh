@@ -354,6 +354,35 @@ test_no_mistakes_dod_wording() {
   pass "fm-brief.sh: no-mistakes DOD keeps its apostrophe prose, now parse-safe"
 }
 
+# The no-mistakes DOD must wire in the fm-ci-probe.sh pre-run check (the
+# unreachable-CI wedge guard, kunchenguid/no-mistakes#475/#666/#690/#694/#644):
+# every no-mistakes-mode ship brief must instruct the shipping agent to run the
+# probe and act on its verdict, rather than starting the ci step blind.
+test_no_mistakes_ci_probe_guard_wording() {
+  local home id brief
+  home="$TMP_ROOT/ci-probe-guard-home"
+  mkdir -p "$home/data"
+  id="brief-ciprobe-d1"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "brief was not scaffolded"
+  assert_grep "run \`$ROOT/bin/fm-ci-probe.sh\` from inside the worktree" "$brief" \
+    "no-mistakes DOD must instruct the agent to run fm-ci-probe.sh before starting the run"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_grep '`none` means no check can ever register, so start with `--skip=ci` appended' "$brief" \
+    "no-mistakes DOD must translate a none verdict into --skip=ci"
+  # shellcheck disable=SC2016
+  assert_grep '`present` means proceed without that flag' "$brief" \
+    "no-mistakes DOD must translate a present verdict into proceeding unchanged"
+  # shellcheck disable=SC2016
+  assert_grep '`unknown` means the probe could not read the forge'"'"'s answer; never guess' "$brief" \
+    "no-mistakes DOD must refuse to guess on an unknown verdict"
+  assert_grep "append \`blocked: {the probe's error}\` and stop" "$brief" \
+    "no-mistakes DOD must block rather than start the run on an unknown verdict"
+  pass "fm-brief.sh: no-mistakes DOD wires in the fm-ci-probe.sh unreachable-CI guard"
+}
+
 test_ship_project_memory_wording() {
   local home id brief
   home="$TMP_ROOT/project-memory-home"
@@ -719,6 +748,7 @@ test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
+test_no_mistakes_ci_probe_guard_wording
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path

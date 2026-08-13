@@ -499,6 +499,7 @@ Use its scaffold as the contract, then replace every `{TASK}` placeholder with a
 Keep additions task-specific rather than repeating lifecycle instructions, and alter generated sections only when the task genuinely differs from the standard shape.
 
 Every ship brief must retain the worktree-isolation assertion and stop if launched in the primary checkout.
+Every no-mistakes ship brief also carries an automatic pre-run check, via `bin/fm-ci-probe.sh`, so a repo whose forge can never report a CI result gets its ci step skipped instead of monitoring for one until timeout; never hand-teach `--skip=ci` in a brief instead of relying on that generated check.
 If a ship task touches firstmate's shared tracked material, explicitly require `firstmate-coding-guidelines` before editing.
 If a task will drive Herdr lifecycle behavior, scaffold with `--herdr-lab`; if that need appears after an unguarded scaffold, stop and regenerate rather than adding commands by hand.
 The generated Herdr contract must use a named non-`default` isolated lab and its guarded helper for every lifecycle action.
