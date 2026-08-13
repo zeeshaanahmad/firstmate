@@ -129,6 +129,7 @@ SH
   cat > "$fb/gh" <<'SH'
 #!/usr/bin/env bash
 set -u
+[ -n "${FM_FAKE_GH_CALLS:-}" ] && printf '%s\n' "$*" >> "$FM_FAKE_GH_CALLS"
 case "${1:-} ${2:-}" in
   "pr view")
     [ "${FM_FAKE_GH_PR_ERROR:-0}" = 1 ] && { echo "error: gh unavailable" >&2; exit 1; }
@@ -241,10 +242,14 @@ reset_fakes() {
   # passed-outcome case stays a forge-confirmed done without opting in.
   FM_FAKE_GH_PR_STATE=""
   FM_FAKE_GH_PR_ERROR=0
+  FM_FAKE_GH_CALLS=""
+  # Empty is the crew-state helper's own "unset" (its case guard falls back to
+  # 0), so a per-test skip never leaks into the next case.
+  FM_CREW_STATE_SKIP_FORGE_CHECK=""
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING
   export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS
   export FM_FAKE_NM_HANG FM_FAKE_NM_CALLS FM_CREW_STATE_NM_TIMEOUT
-  export FM_FAKE_GH_PR_STATE FM_FAKE_GH_PR_ERROR
+  export FM_FAKE_GH_PR_STATE FM_FAKE_GH_PR_ERROR FM_FAKE_GH_CALLS FM_CREW_STATE_SKIP_FORGE_CHECK
 }
 
 # --- run-object fixtures (TOON, as `no-mistakes axi status` emits) -----------
@@ -916,6 +921,63 @@ test_terminal_cancelled_no_pr_cannot_confirm() {
   assert_not_contains "$out" "state: failed" "an unverifiable cancellation must not default to failed"
   assert_contains "$out" "state: unknown" "no PR to check against means honestly unknown"
   pass "a cancelled run with no PR on record fails closed to unknown, never failed"
+}
+
+# (d4) FM_CREW_STATE_SKIP_FORGE_CHECK: bin/fm-inactive-reconcile.sh's header
+# documents that it "never invokes gh, gh-axi, curl, ..." and runs a bounded
+# scan even during a locked session start. Its crew-state invocation sets this
+# flag so that documented offline contract stays true even though
+# fm-crew-state.sh itself can now shell out to gh elsewhere (captain decision,
+# ask-user finding document-1, run 01KZWSPTVGH227SEC0TBZNW0H2). Proves the
+# flag skips the gh call entirely - not just that the verdict happens to be
+# unknown, which an unrelated gh failure could also produce - by asserting the
+# fake gh was never invoked at all.
+test_skip_forge_check_never_invokes_gh_on_passed() {
+  reset_fakes
+  local d; d=$(new_case skip-forge-passed)
+  make_repo_on_branch "$d/wt" fm/feat-skip-forge-passed
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-skip-forge-passed.meta" "window=fm:fm-feat-skip-forge-passed" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-skip-forge-passed)"
+  FM_FAKE_GH_CALLS="$d/gh.calls"
+  FM_CREW_STATE_SKIP_FORGE_CHECK=1
+  local out; out=$(run_crew_state "$d" feat-skip-forge-passed)
+  assert_contains "$out" "state: unknown" "a skipped forge check on passed reports unknown, same as an unverifiable one"
+  assert_not_contains "$out" "state: done" "a skipped forge check must never assert done"
+  [ ! -s "$d/gh.calls" ] || fail "gh must never be invoked when FM_CREW_STATE_SKIP_FORGE_CHECK=1 (calls: $(cat "$d/gh.calls"))"
+  pass "FM_CREW_STATE_SKIP_FORGE_CHECK=1 skips gh entirely on a passed outcome"
+}
+
+test_skip_forge_check_never_invokes_gh_on_cancelled() {
+  reset_fakes
+  local d; d=$(new_case skip-forge-cancelled)
+  make_repo_on_branch "$d/wt" fm/feat-skip-forge-cancelled
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-skip-forge-cancelled.meta" "window=fm:fm-feat-skip-forge-cancelled" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_cancelled fm/feat-skip-forge-cancelled)"
+  FM_FAKE_GH_CALLS="$d/gh.calls"
+  FM_CREW_STATE_SKIP_FORGE_CHECK=1
+  local out; out=$(run_crew_state "$d" feat-skip-forge-cancelled)
+  assert_contains "$out" "state: unknown" "a skipped forge check on cancelled reports unknown"
+  assert_not_contains "$out" "state: failed" "a skipped forge check must never assert failed either"
+  [ ! -s "$d/gh.calls" ] || fail "gh must never be invoked when FM_CREW_STATE_SKIP_FORGE_CHECK=1 (calls: $(cat "$d/gh.calls"))"
+  pass "FM_CREW_STATE_SKIP_FORGE_CHECK=1 skips gh entirely on a cancelled outcome"
+}
+
+# The flag is opt-in only: leaving it unset must not silently disable the
+# forge check for every other caller (ordinary heartbeat reads included).
+test_skip_forge_check_unset_still_invokes_gh() {
+  reset_fakes
+  local d; d=$(new_case skip-forge-unset)
+  make_repo_on_branch "$d/wt" fm/feat-skip-forge-unset
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-skip-forge-unset.meta" "window=fm:fm-feat-skip-forge-unset" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-skip-forge-unset)"
+  FM_FAKE_GH_CALLS="$d/gh.calls"
+  local out; out=$(run_crew_state "$d" feat-skip-forge-unset)
+  assert_contains "$out" "state: done" "with the flag unset, a forge-confirmed merge still reports done"
+  [ -s "$d/gh.calls" ] || fail "gh must still be invoked when FM_CREW_STATE_SKIP_FORGE_CHECK is unset"
+  pass "leaving the skip flag unset preserves the forge check for ordinary callers"
 }
 
 # (e) cross-branch attribution: `axi status` returns ANOTHER branch's run (the
@@ -1760,6 +1822,9 @@ test_terminal_passed_forge_error_cannot_confirm
 test_terminal_cancelled_forge_open_not_a_failure
 test_terminal_cancelled_forge_merged_still_done
 test_terminal_cancelled_no_pr_cannot_confirm
+test_skip_forge_check_never_invokes_gh_on_passed
+test_skip_forge_check_never_invokes_gh_on_cancelled
+test_skip_forge_check_unset_still_invokes_gh
 test_cross_branch_attribution_via_runs_list
 test_cross_branch_attribution_picks_most_recent_row
 test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status

@@ -545,6 +545,7 @@ FM_PROCEVENT_CLAIM_ROOT=                # machine-wide source claim root; defaul
 FM_WHEN_OUTPUT_TAIL_BYTES=8192          # bound on the command-output tail inside one condition->action outcome document
 FM_CODEX_WATCH_CHECKPOINT=180   # seconds per foreground watcher checkpoint in Codex primary supervision
 FM_CREW_STATE_NM_TIMEOUT=10   # seconds allowed per no-mistakes query and per forge (gh pr view) check inside fm-crew-state.sh; hitting it reports unknown, never a state guessed from the status log or asserted from the run record alone
+FM_CREW_STATE_SKIP_FORGE_CHECK=  # 1 skips fm-crew-state.sh's forge (gh pr view) check entirely, falling back to its existing unknown verdict; set by fm-inactive-reconcile.sh's crew-state invocation to preserve that script's documented offline, never-invokes-gh contract
 FM_TEARDOWN_NM_TIMEOUT=10    # seconds allowed per no-mistakes query or abort inside fm-teardown.sh
 FM_CREW_STATE_RUNS_LIMIT=200  # recent no-mistakes run rows scanned when axi status cannot be attributed to the current code
 FM_CREW_STATE_BIN=bin/fm-crew-state.sh   # test override for the current-state reader used by working/paused watcher triage

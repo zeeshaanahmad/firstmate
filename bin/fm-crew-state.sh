@@ -363,9 +363,17 @@ nm_ci_checks_state() {
 # unknown when there is no PR to check, `gh` is unavailable, or the bounded
 # call errored or timed out - anything short of a positive forge answer is
 # unknown, never inferred from the run record it exists to double-check.
+# FM_CREW_STATE_SKIP_FORGE_CHECK=1 skips the gh call entirely and returns
+# unknown immediately - not a new code path, just an early exit into the
+# same fail-closed verdict this already returns when gh is unavailable. Set
+# by bin/fm-inactive-reconcile.sh's crew-state invocation, whose documented
+# header contract (never invokes gh, bounded FM_INACTIVE_RECONCILE_BUDGET_SECS
+# scan, safe inside a locked session-start) predates this forge check and
+# must stay true rather than being loosened for it.
 forge_pr_state() {  # <pr-url>
   local pr_url=$1 state
   [ -n "$pr_url" ] || { printf 'unknown'; return; }
+  [ "${FM_CREW_STATE_SKIP_FORGE_CHECK:-0}" = 1 ] && { printf 'unknown'; return; }
   command -v gh >/dev/null 2>&1 || { printf 'unknown'; return; }
   state=$(fm_bounded_cmd "$WT" "$NM_TIMEOUT" gh pr view "$pr_url" --json state -q .state 2>/dev/null) || { printf 'unknown'; return; }
   state=$(trim "$state")

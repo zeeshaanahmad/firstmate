@@ -38,7 +38,12 @@
 # and its cursor records the last child visited within the aggregate budget.
 #
 # The scan reads only durable local state and fm-crew-state.sh; it never invokes
-# gh, gh-axi, curl, fm-pr-check.sh, fm-pr-poll.sh, or a state *.check.sh.
+# gh, gh-axi, curl, fm-pr-check.sh, fm-pr-poll.sh, or a state *.check.sh. Its
+# crew-state invocation sets FM_CREW_STATE_SKIP_FORGE_CHECK=1, so a passed or
+# cancelled run reads as fm-crew-state.sh's existing "unverifiable" unknown
+# rather than the forge-verified done/failed a call without that flag would
+# perform - this stays true even though fm-crew-state.sh itself can now shell
+# out to gh for that same distinction elsewhere.
 set -u
 export LC_ALL=C
 
@@ -336,6 +341,7 @@ reconcile_direct_child_locked() { # <id> <meta> <secondmate-id-or-empty> <timeou
   age=$(last_activity_age "$meta" "$status" "$turn")
   [ "$age" -ge "$FM_INACTIVE_RECONCILE_SECS" ] || return 0
   state_line=$(fm_run_timed "$timeout" env FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+    FM_CREW_STATE_SKIP_FORGE_CHECK=1 \
     "$CREW_STATE_BIN" "$id" 2>/dev/null) || state_rc=$?
   [ "$state_rc" -ne 124 ] || return 3
   case "$state_line" in
