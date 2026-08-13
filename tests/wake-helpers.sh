@@ -276,6 +276,16 @@ SH
 
 # Wait up to <limit> 0.1s ticks while <pid> stays alive; 0 if still alive, 1 if
 # it died. The complement of wait_for_exit, for asserting a wake was ABSORBED.
+#
+# This is a fixed wall-clock slice: use it only for a genuine short race
+# (proving a process is still blocked RIGHT NOW, e.g. the drain/marker-commit
+# race in test_procevent_surface_serializes_with_drain). Never use it to prove
+# an absorb DECISION landed - the work between a poll starting and that
+# decision committing is real subprocess time (tmux captures, crew-state
+# lookups...) that stretches arbitrarily under CPU contention, which is exactly
+# what turned a fixed "stay alive for N ticks, then assert markers" gate into a
+# load-flaky one. wait_absorbed and wait_watcher_settled below are the
+# artifact-based replacements for that shape.
 wait_live() {
   local pid=$1 limit=${2:-30} i=0
   while [ "$i" -lt "$limit" ]; do
@@ -284,6 +294,76 @@ wait_live() {
     i=$((i + 1))
   done
   return 0
+}
+
+# Generous default ceiling (0.1s ticks) for the condition-based waits below.
+# These gates wait on a real artifact rather than a blind sleep, so a large
+# ceiling only lengthens genuine hangs - never a healthy case - while too small
+# a ceiling reproduces the exact fixed-wall-clock flake this exists to avoid
+# under CPU contention. Override via FM_TEST_WAIT_TICKS on a slower host.
+FM_TEST_WAIT_TICKS=${FM_TEST_WAIT_TICKS:-600}
+
+# Wait until watcher <pid> exits, or <predicate> (a `[ ... ]`-shaped condition,
+# passed as one string and eval'd) becomes true while <pid> is still alive,
+# whichever happens first. Polls every 0.1s up to <limit> ticks (default
+# $FM_TEST_WAIT_TICKS).
+#
+# Returns 0 once <predicate> is true and <pid> is still alive (the wake was
+# absorbed AND the specific decision under test has actually landed); 1 if
+# <pid> exited before <predicate> became true (an actionable wake surfaced -
+# not absorbed, the same failure wait_live's "died early" case reported); 2 if
+# <limit> is spent with <pid> still alive and <predicate> still false (a
+# genuine hang - never silently converted into an unbounded wait).
+#
+# Use this, never a fixed slice of wall clock, wherever a case needs "the
+# specific state I'm about to assert has actually been written" - waiting on
+# the real artifact instead of a blind sleep is what makes the gate tolerant of
+# a slow, loaded host without ever tolerating a genuine wedge.
+wait_absorbed() {  # <pid> <predicate> [limit-ticks]
+  local pid=$1 predicate=$2 limit=${3:-$FM_TEST_WAIT_TICKS} i=0
+  while [ "$i" -lt "$limit" ]; do
+    is_live_non_zombie "$pid" || return 1
+    eval "$predicate" && return 0
+    sleep 0.1
+    i=$((i + 1))
+  done
+  is_live_non_zombie "$pid" && return 2 || return 1
+}
+
+# Wait until watcher <pid> has fully COMPLETED at least one poll pass beyond
+# <baseline> (state/.last-watcher-beat's epoch mtime captured BEFORE <pid> was
+# spawned, or "" for a fresh case with no beacon file yet), proven by that
+# beacon advancing a SECOND time. The beacon is touched at the very top of
+# every pass (bin/fm-watch.sh), before that pass's own absorb-or-surface
+# decisions run, so seeing it advance once only proves a pass STARTED - not
+# that its decision finished. A second advance can only happen once the
+# sequential poll loop reaches its next iteration, which it cannot do until the
+# prior pass's entire body - including any wake()/exit - already ran to
+# completion.
+#
+# Use this only when no more specific artifact exists for what the case is
+# proving (e.g. a window whose per-pass body is a no-op this round, or a
+# decision that leaves no marker of its own either way); prefer wait_absorbed
+# with the actual state the case goes on to assert wherever one exists, since
+# that is a strictly stronger proof. Returns 0 once settled, 1 if the watcher
+# exited first, 2 on a genuine hang past <limit> ticks (default
+# $FM_TEST_WAIT_TICKS).
+wait_watcher_settled() {  # <state> <pid> [baseline-epoch] [limit-ticks]
+  local state=$1 pid=$2 baseline=${3:-} limit=${4:-$FM_TEST_WAIT_TICKS} i=0 beat first=
+  while [ "$i" -lt "$limit" ]; do
+    is_live_non_zombie "$pid" || return 1
+    beat=$(file_mtime "$state/.last-watcher-beat")
+    if [ -n "$beat" ]; then
+      if [ -z "$first" ]; then
+        { [ -z "$baseline" ] || [ "$beat" -gt "$baseline" ]; } && first=$beat
+      elif [ "$beat" -gt "$first" ]; then
+        return 0
+      fi
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  is_live_non_zombie "$pid" && return 2 || return 1
 }
 
 # Signature a primed .seen-* marker must hold so the per-poll signal scan does
@@ -357,7 +437,7 @@ file_mtime() {
 # change - or on any fixed slice of wall clock - reaps the watcher mid-decision
 # on a loaded host and leaves the case asserting over state nobody wrote.
 wait_stale_passes() {  # <state> <key> <pid> <baseline> [passes] [limit-ticks]
-  local state=$1 key=$2 pid=$3 baseline=${4:-0} passes=${5:-1} limit=${6:-300} i=0 cur
+  local state=$1 key=$2 pid=$3 baseline=${4:-0} passes=${5:-1} limit=${6:-$FM_TEST_WAIT_TICKS} i=0 cur
   case "$baseline" in ''|*[!0-9]*) baseline=0 ;; esac
   while [ "$i" -lt "$limit" ]; do
     cur=$(cat "$state/.count-$key" 2>/dev/null || echo 0)
