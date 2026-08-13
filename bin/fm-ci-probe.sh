@@ -79,6 +79,13 @@ for EVENT in pull_request push; do
     echo "error: could not read repos/$REPO/actions/runs (event=$EVENT)" >&2
     exit 0
   }
+  case "$COUNT" in
+    ''|*[!0-9]*)
+      echo "unknown"
+      echo "error: repos/$REPO/actions/runs (event=$EVENT) returned a non-numeric total_count: $COUNT" >&2
+      exit 0
+      ;;
+  esac
   TOTAL=$((TOTAL + COUNT))
 done
 
