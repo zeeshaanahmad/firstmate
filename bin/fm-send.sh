@@ -366,11 +366,23 @@ if [ -n "$RESOLVE_KEYS" ]; then
   RESOLVE_TASK_ID=$(fm_send_id_from_meta "$TARGET_META")
   RESOLVE_STATUS_FILE="$STATE/$RESOLVE_TASK_ID.status"
   resolve_open_set=$(status_open_decisions "$RESOLVE_STATUS_FILE")
+  # Named diagnostically: a mistyped key most often happens because the
+  # OPEN DECISIONS listing showed the note's own bracket text rather than the
+  # key that actually registered (a misplaced-position "[key=...]" token
+  # folds to "default" - fm-classify-lib.sh's decision-key grammar), so the
+  # refusal names every key genuinely open for this task right now instead of
+  # just rejecting the typed one with no way to tell what would have worked.
+  resolve_open_keys=$(printf '%s\n' "$resolve_open_set" \
+    | awk -F '\t' 'NF { print $1 }' | paste -sd ' ' -)
   for k in $RESOLVE_KEYS; do
     case "$resolve_open_set" in
       "$k"$'\t'*|*$'\n'"$k"$'\t'*) ;;
       *)
-        echo "error: --resolve-key '$k': no open decision or blocker with that key in $RESOLVE_STATUS_FILE (already closed, mistyped, or transferred). Re-check the OPEN DECISIONS listing, then resend without that key or with the right one; nothing was sent." >&2
+        if [ -n "$resolve_open_keys" ]; then
+          echo "error: --resolve-key '$k': no open decision or blocker with that key in $RESOLVE_STATUS_FILE (already closed, mistyped, or transferred). Key(s) actually open for this task right now: $resolve_open_keys. Re-check the OPEN DECISIONS listing, then resend without that key or with the right one; nothing was sent." >&2
+        else
+          echo "error: --resolve-key '$k': no open decision or blocker with that key in $RESOLVE_STATUS_FILE (already closed, mistyped, or transferred). No decisions are open for this task right now. Re-check the OPEN DECISIONS listing, then resend without that key or with the right one; nothing was sent." >&2
+        fi
         exit 1
         ;;
     esac
