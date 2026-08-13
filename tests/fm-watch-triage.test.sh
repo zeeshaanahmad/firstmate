@@ -362,7 +362,7 @@ test_provably_working_signal_absorbed() {
   pid=$!
   # shellcheck disable=SC2016 # deliberately deferred: wait_absorbed evals this, not this shell
   wait_absorbed "$pid" '[ -s "$state/.seen-task_status" ]' \
-    || { reap "$pid"; fail "watcher exited for a working: signal whose crew is provably working (should absorb): $(cat "$out")"; }
+    || { reap "$pid"; fail "watcher $(wait_fail_word) for a working: signal whose crew is provably working (should absorb): $(cat "$out")"; }
   [ ! -s "$out" ] || fail "provably-working signal printed a wake reason: $(cat "$out")"
   [ ! -s "$state/.wake-queue" ] || fail "provably-working signal enqueued a durable wake record"
   [ -e "$state/.last-watcher-beat" ] || fail "watcher beacon was not touched while absorbing"
@@ -381,7 +381,7 @@ test_turn_ended_provably_working_absorbed() {
   pid=$!
   # shellcheck disable=SC2016 # deliberately deferred: wait_absorbed evals this, not this shell
   wait_absorbed "$pid" '[ -s "$state/.seen-task_turn-ended" ]' \
-    || { reap "$pid"; fail "watcher exited for a turn-end whose crew is provably working (should absorb): $(cat "$out")"; }
+    || { reap "$pid"; fail "watcher $(wait_fail_word) for a turn-end whose crew is provably working (should absorb): $(cat "$out")"; }
   [ ! -s "$out" ] || fail "provably-working turn-end printed a wake reason: $(cat "$out")"
   [ ! -s "$state/.wake-queue" ] || fail "provably-working turn-end enqueued a durable wake record"
   reap "$pid"
@@ -472,7 +472,7 @@ test_self_announced_close_does_not_rewake_but_next_note_does() {
   # even spawned, so that marker cannot prove a pass ran here - wait for the
   # watcher's own poll loop to complete a full pass instead.
   wait_watcher_settled "$state" "$pid" "$beat_baseline" \
-    || { reap "$pid"; fail "the home's own bookkeeping close re-woke its own watcher: $(cat "$out")"; }
+    || { reap "$pid"; fail "the home's own bookkeeping close re-woke its own watcher (watcher $(wait_fail_word)): $(cat "$out")"; }
   [ ! -s "$out" ] || { reap "$pid"; fail "self-announced close printed a wake reason: $(cat "$out")"; }
   [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "self-announced close enqueued a durable wake"; }
   # A later, different note on the SAME task still wakes: dedup is keyed on the
@@ -921,7 +921,7 @@ test_secondmate_nonpaused_stale_remains_suppressed() {
   # .count-<key> (bin/fm-watch.sh continues past it early), so there is no
   # per-key artifact to wait on here - only that a full pass ran.
   wait_watcher_settled "$state" "$pid" "$beat_baseline" \
-    || { reap "$pid"; fail "watcher surfaced an ordinary secondmate stale pane: $(cat "$out")"; }
+    || { reap "$pid"; fail "watcher surfaced an ordinary secondmate stale pane (watcher $(wait_fail_word)): $(cat "$out")"; }
   [ ! -s "$out" ] || { reap "$pid"; fail "ordinary secondmate stale pane printed a wake reason: $(cat "$out")"; }
   reap "$pid"
   pass "a non-paused secondmate retains normal stale suppression"
@@ -947,7 +947,7 @@ test_secondmate_unpause_clears_pause_tracking() {
   pid=$!
   # shellcheck disable=SC2016 # deliberately deferred: wait_absorbed evals this, not this shell
   wait_absorbed "$pid" '[ ! -e "$state/.paused-$key" ]' \
-    || fail "watcher exited while reconciling a resumed secondmate: $(cat "$out")"
+    || fail "watcher $(wait_fail_word) while reconciling a resumed secondmate: $(cat "$out")"
   [ ! -e "$state/.paused-$key" ] || { reap "$pid"; fail "resumed secondmate retained the pause marker"; }
   [ ! -e "$state/.stale-$key" ] || { reap "$pid"; fail "resumed secondmate retained stale tracking"; }
   [ ! -e "$state/.wedge-escalations-$key" ] || { reap "$pid"; fail "resumed secondmate retained wedge tracking"; }
@@ -978,7 +978,7 @@ test_nonterminal_stale_pause_transitions_reclassify_unchanged_hash() {
   pid=$!
   # shellcheck disable=SC2016 # deliberately deferred: wait_absorbed evals this, not this shell
   wait_absorbed "$pid" '[ -e "$state/.paused-$key" ] && [ ! -e "$state/.stale-since-$key" ]' \
-    || { reap "$pid"; fail "a stale hash that entered pause was wedge-escalated: $(cat "$out")"; }
+    || { reap "$pid"; fail "a stale hash that entered pause was wedge-escalated (watcher $(wait_fail_word)): $(cat "$out")"; }
   [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "unchanged stale hash did not enter paused mode"; }
   [ ! -e "$state/.stale-since-$key" ] || { reap "$pid"; fail "pause transition retained its wedge timer"; }
   # One more full completed pass, proving the paused/no-wedge-timer state holds
@@ -1001,7 +1001,7 @@ test_nonterminal_stale_pause_transitions_reclassify_unchanged_hash() {
   pid=$!
   # shellcheck disable=SC2016 # deliberately deferred: wait_absorbed evals this, not this shell
   wait_absorbed "$pid" '[ ! -e "$state/.paused-$key" ] && [ -s "$state/.stale-since-$key" ]' \
-    || { reap "$pid"; fail "a stale hash that left pause did not resume wedge tracking: $(cat "$out")"; }
+    || { reap "$pid"; fail "a stale hash that left pause did not resume wedge tracking (watcher $(wait_fail_word)): $(cat "$out")"; }
   [ ! -e "$state/.paused-$key" ] || { reap "$pid"; fail "unchanged stale hash retained paused mode after resume"; }
   [ -s "$state/.stale-since-$key" ] || { reap "$pid"; fail "unchanged stale hash did not restart wedge tracking after resume"; }
   counted=$(cat "$state/.count-$key" 2>/dev/null || true)
@@ -1285,7 +1285,7 @@ test_busy_pane_changing_hash_escalates_past_turn_age_bound() {
   # pass instead of advancing - wait on the wedge timer marker itself instead.
   # shellcheck disable=SC2016 # deliberately deferred: wait_absorbed evals this, not this shell
   wait_absorbed "$pid" '[ -s "$state/.stale-since-$key" ]' \
-    || { reap "$pid"; fail "a changing-hash busy pane past the turn-age bound escalated before the wedge threshold: $(cat "$out")"; }
+    || { reap "$pid"; fail "a changing-hash busy pane past the turn-age bound escalated before the wedge threshold (watcher $(wait_fail_word)): $(cat "$out")"; }
   [ -s "$state/.stale-since-$key" ] || fail "a changing-hash busy pane past the turn-age bound did not start a wedge timer"
   reap "$pid"
   ack_stopped_cycle "$state" || fail "could not acknowledge the intentional changing-hash phase-A stop"
@@ -1504,7 +1504,7 @@ SH
   pid=$!
   # shellcheck disable=SC2016 # deliberately deferred: wait_absorbed evals this, not this shell
   wait_absorbed "$pid" '[ -s "$state/.seen-task_status" ]' \
-    || { reap "$pid"; fail "watcher exited for a benign signal while testing log capping: $(cat "$out")"; }
+    || { reap "$pid"; fail "watcher $(wait_fail_word) for a benign signal while testing log capping: $(cat "$out")"; }
   i=0
   while [ "$i" -lt "$FM_TEST_WAIT_TICKS" ]; do
     lines=$(awk 'END { print NR + 0 }' "$state/.watch-triage.log")
@@ -1630,7 +1630,7 @@ test_procevent_unacknowledged_result_redrains_until_handled() {
   # A handled result leaves no marker of its own either way, so the only proof
   # available is that a full pass ran without the watcher waking.
   wait_watcher_settled "$state" "$pid" "$beat_baseline" \
-    || fail "a handled process-event result woke the watcher: $(cat "$out")"
+    || fail "a handled process-event result woke the watcher (watcher $(wait_fail_word)): $(cat "$out")"
   reap "$pid"
   after=$(awk 'END { print NR + 0 }' "$state/.wake-queue" 2>/dev/null || echo 0)
   [ "$after" = "$before" ] || fail "a handled result was announced again ($before -> $after queued records)"
@@ -1799,7 +1799,7 @@ test_heartbeat_no_change_absorbed() {
   pid=$!
   # shellcheck disable=SC2016 # deliberately deferred: wait_absorbed evals this, not this shell
   wait_absorbed "$pid" '[ "$(cat "$state/.heartbeat-streak" 2>/dev/null || echo 0)" -ge 1 ]' \
-    || { reap "$pid"; fail "watcher exited for a no-change heartbeat (should absorb): $(cat "$out")"; }
+    || { reap "$pid"; fail "watcher $(wait_fail_word) for a no-change heartbeat (should absorb): $(cat "$out")"; }
   [ ! -s "$out" ] || fail "no-change heartbeat printed a wake reason: $(cat "$out")"
   [ ! -s "$state/.wake-queue" ] || fail "no-change heartbeat enqueued a durable wake record"
   reap "$pid"
@@ -1847,7 +1847,7 @@ test_beacon_stays_fresh_while_absorbing() {
   printf 'working: b\n' >> "$status_file"
   # shellcheck disable=SC2016 # deliberately deferred: wait_absorbed evals this, not this shell
   wait_absorbed "$pid" '[ "$(cat "$state/.seen-task_status" 2>/dev/null)" = "$(seen_sig "$status_file")" ]' \
-    || { reap "$pid"; fail "watcher exited while absorbing a second benign signal"; }
+    || { reap "$pid"; fail "watcher $(wait_fail_word) while absorbing a second benign signal"; }
   m2=$(file_mtime "$state/.last-watcher-beat")
   now=$(date +%s)
   if [ -z "$m1" ] || [ -z "$m2" ]; then

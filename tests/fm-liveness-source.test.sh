@@ -357,13 +357,16 @@ trap '[ -z "${WEDGE_PID:-}" ] || kill "$WEDGE_PID" 2>/dev/null; fm_test_cleanup'
 # THE FALSE WEDGE. The pipeline agent reported activity seconds ago, so the
 # quiet pane is a worker correctly waiting, not a wedge.
 test_live_declared_work_is_not_declared_stale() {
-  local anchor now
+  local anchor now anchor_baseline
   make_wedge_case liveness-false-wedge
   install_source "$WEDGE_STATE" quiet 'echo "age: 20"'
+  # shellcheck disable=SC2034 # read inside the wait_absorbed predicate string below
+  anchor_baseline=$(cat "$WEDGE_STATE/.stale-since-$WEDGE_KEY" 2>/dev/null || true)
 
   run_wedge_watcher
-  if ! wait_live "$WEDGE_PID" 40; then
-    reap "$WEDGE_PID"; fail "watcher escalated a wedge while declared external work was alive: $(cat "$WEDGE_DIR/watch.out")"
+  # shellcheck disable=SC2016 # deliberately deferred: wait_absorbed evals this, not this shell
+  if ! wait_absorbed "$WEDGE_PID" '[ "$(cat "$WEDGE_STATE/.stale-since-$WEDGE_KEY" 2>/dev/null || true)" != "$anchor_baseline" ]'; then
+    reap "$WEDGE_PID"; fail "watcher escalated a wedge while declared external work was alive (watcher $(wait_fail_word)): $(cat "$WEDGE_DIR/watch.out")"
   fi
   [ ! -s "$WEDGE_DIR/watch.out" ] || { reap "$WEDGE_PID"; fail "live declared work still printed a wake reason: $(cat "$WEDGE_DIR/watch.out")"; }
   [ ! -s "$WEDGE_STATE/.wake-queue" ] || { reap "$WEDGE_PID"; fail "live declared work still enqueued a wake"; }

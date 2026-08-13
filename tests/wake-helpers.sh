@@ -303,6 +303,17 @@ wait_live() {
 # under CPU contention. Override via FM_TEST_WAIT_TICKS on a slower host.
 FM_TEST_WAIT_TICKS=${FM_TEST_WAIT_TICKS:-600}
 
+# Set by wait_absorbed/wait_watcher_settled just before they return non-zero,
+# to the reason a caller's fail message should report: the watcher actually
+# exited (rc 1), or it is still alive at the wait ceiling - a genuine hang (rc
+# 2). A caller that hardcodes "watcher exited" in its fail message is wrong
+# half the time; interpolate wait_fail_word() instead so the message matches
+# what actually happened.
+FM_WAIT_OUTCOME=
+wait_fail_word() {
+  printf '%s' "${FM_WAIT_OUTCOME:-exited}"
+}
+
 # Wait until watcher <pid> exits, or <predicate> (a `[ ... ]`-shaped condition,
 # passed as one string and eval'd) becomes true while <pid> is still alive,
 # whichever happens first. Polls every 0.1s up to <limit> ticks (default
@@ -322,12 +333,17 @@ FM_TEST_WAIT_TICKS=${FM_TEST_WAIT_TICKS:-600}
 wait_absorbed() {  # <pid> <predicate> [limit-ticks]
   local pid=$1 predicate=$2 limit=${3:-$FM_TEST_WAIT_TICKS} i=0
   while [ "$i" -lt "$limit" ]; do
-    is_live_non_zombie "$pid" || return 1
+    is_live_non_zombie "$pid" || { FM_WAIT_OUTCOME="exited"; return 1; }
     eval "$predicate" && return 0
     sleep 0.1
     i=$((i + 1))
   done
-  is_live_non_zombie "$pid" && return 2 || return 1
+  if is_live_non_zombie "$pid"; then
+    FM_WAIT_OUTCOME="still alive at the wait ceiling (genuine hang)"
+    return 2
+  fi
+  FM_WAIT_OUTCOME="exited"
+  return 1
 }
 
 # Wait until watcher <pid> has fully COMPLETED at least one poll pass beyond
@@ -351,7 +367,7 @@ wait_absorbed() {  # <pid> <predicate> [limit-ticks]
 wait_watcher_settled() {  # <state> <pid> [baseline-epoch] [limit-ticks]
   local state=$1 pid=$2 baseline=${3:-} limit=${4:-$FM_TEST_WAIT_TICKS} i=0 beat first=
   while [ "$i" -lt "$limit" ]; do
-    is_live_non_zombie "$pid" || return 1
+    is_live_non_zombie "$pid" || { FM_WAIT_OUTCOME="exited"; return 1; }
     beat=$(file_mtime "$state/.last-watcher-beat")
     if [ -n "$beat" ]; then
       if [ -z "$first" ]; then
@@ -363,7 +379,12 @@ wait_watcher_settled() {  # <state> <pid> [baseline-epoch] [limit-ticks]
     sleep 0.1
     i=$((i + 1))
   done
-  is_live_non_zombie "$pid" && return 2 || return 1
+  if is_live_non_zombie "$pid"; then
+    FM_WAIT_OUTCOME="still alive at the wait ceiling (genuine hang)"
+    return 2
+  fi
+  FM_WAIT_OUTCOME="exited"
+  return 1
 }
 
 # Signature a primed .seen-* marker must hold so the per-poll signal scan does
