@@ -342,7 +342,11 @@ test_cleanup_is_bounded_against_a_permanent_lock_holder() {
 test_daemon_child_stop_is_bounded_against_a_term_ignoring_child() {
   local child started elapsed i
   # Library mode: the daemon guards its executed path, so sourcing exposes the
-  # shutdown helper without starting a daemon.
+  # shutdown helper without starting a daemon. The bound itself lives in the wake
+  # library the daemon loads at runtime, so load that first - this also proves
+  # the daemon delegates rather than carrying its own copy.
+  # shellcheck disable=SC1090,SC1091
+  . "$LIB"
   # shellcheck disable=SC1090
   . "$DAEMON"
 

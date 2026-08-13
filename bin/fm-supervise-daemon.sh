@@ -1352,8 +1352,6 @@ trim_log() {
 }
 
 # --- bounded child shutdown ---------------------------------------------------
-# Stop the watcher child within a bounded time, whatever state it is in.
-#
 # The plain `kill; wait` this replaces made the daemon's own shutdown inherit its
 # child's worst case: a watcher that did not act on TERM left the daemon blocked
 # in `wait` forever, so `fm-afk-launch.sh stop` and `fm-afk-return.sh` reported
@@ -1361,19 +1359,14 @@ trim_log() {
 # before the return gate would clear. The watcher's own signal handling is fixed
 # in bin/fm-wake-lib.sh and bin/fm-watch.sh, but a supervisor must not depend on
 # its child being well-behaved in order to be able to shut down at all.
+#
+# fm_child_stop_bounded (bin/fm-wake-lib.sh) owns the bound and is shared with
+# the arm layer's signal handler; this adds only the daemon's log line, because a
+# shutdown that had to escalate is worth a record.
 stop_watcher_child() {  # <pid>
-  local pid=$1 i=0
-  kill "$pid" 2>/dev/null || true
-  while [ "$i" -lt "${FM_DAEMON_CHILD_STOP_TICKS:-50}" ]; do
-    kill -0 "$pid" 2>/dev/null || break
-    sleep 0.1
-    i=$((i + 1))
-  done
-  if kill -0 "$pid" 2>/dev/null; then
-    log "warn: watcher child $pid ignored TERM for ${i} ticks; escalating to KILL"
-    kill -s KILL "$pid" 2>/dev/null || true
-  fi
-  wait "$pid" 2>/dev/null || true
+  local pid=$1
+  fm_child_stop_bounded "$pid" "${FM_DAEMON_CHILD_STOP_TICKS:-50}" \
+    || log "warn: watcher child $pid ignored TERM; escalated to KILL"
 }
 
 # ============================================================================

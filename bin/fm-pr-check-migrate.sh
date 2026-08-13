@@ -329,8 +329,16 @@ migration_cleanup() {
   [ -z "$MIGRATION_SCAN_MARKER_TMP" ] || rm -f -- "$MIGRATION_SCAN_MARKER_TMP"
   if [ "$lock_held" -eq 1 ]; then
     if [ "$watch_recovery_required" -eq 1 ]; then
+      # Same shape as watcher_cleanup, so the same bound: this runs from a
+      # `trap 'exit 1' HUP INT TERM` unwind while holding the watch lock, and an
+      # unbounded wait for the recovery-marker lock would leave a signalled
+      # migration sitting on that lock instead of exiting. Bounded and loud keeps
+      # the existing stale-lock-evidence outcome, which the next arm reclaims
+      # through the ordinary dead-holder path.
+      FM_LOCK_ACQUIRE_WAIT_TICKS=${FM_MIGRATION_CLEANUP_LOCK_TICKS:-20}
       fm_recovery_transition "$STATE/.watcher-down" release-lock "$WATCH_LOCK" downtime \
         || echo "PR_CHECK_MIGRATION: watcher recovery state could not be persisted; retaining stale lock evidence" >&2
+      FM_LOCK_ACQUIRE_WAIT_TICKS=
     else
       fm_lock_release "$WATCH_LOCK"
     fi

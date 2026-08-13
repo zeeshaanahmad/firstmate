@@ -471,6 +471,34 @@ fm_signal_defer_end() {
   kill -s "$pending" "${BASHPID:-$$}" 2>/dev/null || true
 }
 
+# Stop a child of THIS shell within a bounded time, whatever state it is in.
+#
+# The companion to the deferral above, for the other half of the same wedge: a
+# supervisor must not inherit its child's worst case. A plain `kill; wait` in a
+# shutdown path blocks for as long as the child refuses to go, which is how a
+# stuck watcher used to hang both the away-mode daemon's shutdown and the arm
+# layer's own signal handler while the operator waited on a gate that never
+# cleared. One owner here rather than a copy in each caller.
+#
+# Returns 0 if TERM alone was enough and 1 if the escalation was needed, so a
+# caller with somewhere to log can say which happened.
+fm_child_stop_bounded() {  # <pid> [ticks]
+  local pid=$1 limit=${2:-${FM_CHILD_STOP_TICKS:-50}} i=0 escalated=0
+  [ -n "$pid" ] || return 0
+  kill "$pid" 2>/dev/null || true
+  while [ "$i" -lt "$limit" ]; do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    escalated=1
+    kill -s KILL "$pid" 2>/dev/null || true
+  fi
+  wait "$pid" 2>/dev/null || true
+  [ "$escalated" -eq 0 ]
+}
+
 # Acquire <lockdir> as a short critical section that a signal may not interrupt.
 # Returns non-zero WITHOUT deferring when the lock was not taken, so a caller's
 # existing failure path stays correct.
