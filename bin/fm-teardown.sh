@@ -29,6 +29,10 @@
 # declared scratch and the report at data/<task-id>/report.md is the work
 # product. Teardown proceeds only once the report exists and the shared
 # unresolved-decision completion gate verifies its captain-held inventory.
+# Ship tasks (kind=ship) separately require the structured completion report
+# bin/fm-brief.sh's scaffold instructs the crewmate to write at
+# data/<task-id>/completion-report.md; teardown refuses without --force when
+# it is missing, alongside the landed-work check above.
 # Before destructive cleanup, teardown validates task check artifacts and any
 # matching quarantine entries as ordinary single-link files on the state
 # device. It refuses and preserves task state when that proof fails; otherwise
@@ -2324,6 +2328,19 @@ if [ "$KIND" = scout ] && [ "$FORCE" != "--force" ]; then
       FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-decision-hold.sh" verify "$ID" >/dev/null; then
     echo "REFUSED: scout task $ID has not passed the unresolved-decision completion gate." >&2
     echo "Inventory its report and any visual review through bin/fm-decision-hold.sh before teardown." >&2
+    exit 1
+  fi
+fi
+
+# A ship task's brief scaffold (bin/fm-brief.sh) requires a structured
+# completion report before its terminal `done:` append, mirroring the scout
+# report requirement above. Refuse non-forced teardown when it is missing
+# rather than trusting the one-line `done:` alone.
+if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$FORCE" != "--force" ]; then
+  SHIP_REPORT="$DATA/$ID/completion-report.md"
+  if [ ! -f "$SHIP_REPORT" ]; then
+    echo "REFUSED: ship task $ID has no completion report at $SHIP_REPORT." >&2
+    echo "The report records what was verified and left unverified. Have the crewmate write it, or use --force after explicit discard approval." >&2
     exit 1
   fi
 fi
