@@ -21,7 +21,9 @@ After inventorying the whole report and review surface, run `bin/fm-decision-hol
 A completed investigation and an ended visual review use this same owner and completion command; a visual tool, including Lavish, never owns a parallel completion policy.
 Run the command in the originating work's authoritative `FM_HOME`; main-home work creates main-home holds, and secondmate-owned work creates holds in that secondmate home's backlog rather than copying them into the main backlog.
 Do not close a hold merely because the originating investigation completed, its report was archived, its visual review ended, or its task was torn down.
-The hold remains the authoritative Captain's Call item until the captain's answer is durably recorded, dependent work is created in the same backlog and blocked by that hold, and `bin/fm-decision-hold.sh resolve` routes the answer by clearing those dependency edges before closing the hold.
+When the captain's answer authorizes follow-up work, the hold remains the authoritative Captain's Call item until that answer is durably recorded, dependent work is created in the same backlog and blocked by the hold, and `bin/fm-decision-hold.sh resolve` routes the answer by clearing those dependency edges before closing the hold.
+When the captain's answer routes no follow-up work at all, such as a declined proposal, `bin/fm-decision-hold.sh decline` records that answer and closes the hold; it never substitutes for routing work the captain did authorize.
+A hold closed outside this owner leaves no durable answer, so the completion gate keeps failing until `bin/fm-decision-hold.sh repair` records the decision the captain actually gave; neither unrouted path may stand in for an answer the captain has not given.
 Resolved findings, recommendations that need no captain choice, and prose that merely sounds decision-like do not create holds.
 Bearings reads the resulting structured state and must never compensate by scraping historical reports, visual-review artifacts, terminal output, chat, or other prose.
 
@@ -32,9 +34,9 @@ Bearings reads the resulting structured state and must never compensate by scrap
 3. For each choice, choose a stable key and use the script's `hold` command with a concise title, reason, and repository.
 4. Run the script's `complete` command with the full unresolved-key inventory for that review pass.
 5. Relay the choices to the captain as decisions from Bearings' Captain's Call section under `AGENTS.md` section 9; do not use the word hold in captain chat.
-6. After the captain decides, record dependent work with normal tasks-axi commands and block it by the hold identity.
-7. Put the captain's exact durable decision in a file and use the script's `resolve` command with every routed task.
-8. Immediately after resolving, examine what each routed task is actually waiting for now that the decision itself is no longer a blocker.
+6. If the captain authorizes dependent work, record it with normal tasks-axi commands and block it by the hold identity.
+7. Put the captain's exact durable decision in a file and close the hold with the script's `resolve` command and every routed task, its `decline` command when the answer routes no work, or its `repair` command when the hold was already closed outside the script.
+8. Steps 8 through 10 apply to `resolve` alone, because the unrouted `decline` and `repair` paths release no work: immediately after resolving, examine what each routed task is actually waiting for now that the decision itself is no longer a blocker.
 9. When a routed task still waits for an implementation landing or any other precondition besides the decision, re-establish that precondition explicitly with normal backlog dependency or hold mechanics.
 10. Write each re-block note to identify what running the task early would measure or produce wrongly, rather than merely saying that the task is blocked on the precondition.
 11. Confirm Bearings no longer shows the closed hold and that every routed task remains in the correct structured backlog state for its real preconditions.
