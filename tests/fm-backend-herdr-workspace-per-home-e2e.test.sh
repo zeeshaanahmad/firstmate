@@ -210,6 +210,12 @@ pass "real herdr E2E: list_live from the secondmate's own context sees only task
 
 # --- 5. teardown closes the RIGHT tab, and no other ------------------------
 
+# kind=ship teardown refuses without a completion report (bin/fm-teardown.sh);
+# this suite only exercises tab-closing behavior, so satisfy that gate up front.
+printf '1. SUMMARY - fixture.\n' > "$PRIMARY_HOME/data/cm1/completion-report.md"
+mkdir -p "$SM_HOME/data/cm2"
+printf '1. SUMMARY - fixture.\n' > "$SM_HOME/data/cm2/completion-report.md"
+
 TD1_OUT="$TMP_ROOT/td1.out"
 FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$PRIMARY_HOME/state" FM_DATA_OVERRIDE="$PRIMARY_HOME/data" \
   FM_CONFIG_OVERRIDE="$PRIMARY_HOME/config" \

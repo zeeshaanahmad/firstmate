@@ -776,6 +776,35 @@ test_scout_report_contract_wording() {
   pass "fm-brief.sh: scout report contract adds COVERAGE/VERIFICATION/UNVERIFIED CLAIMS on top of its existing shape"
 }
 
+# Pooled worktrees share one object store, so refs/stash is a single
+# fleet-wide stack rather than per-worktree state: a concurrent stash from
+# another lane can silently swap in its uncommitted work. Both ship and scout
+# briefs must carry the prohibition, with its reason, alongside the
+# worktree-isolation assertion.
+test_git_stash_prohibition_renders() {
+  local home id brief
+  home="$TMP_ROOT/git-stash-home"
+  mkdir -p "$home/data"
+
+  id="brief-stash-ship-a1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_grep "Never use \`git stash\`" "$brief" \
+    "ship brief missing the git stash prohibition"
+  assert_grep "refs/stash\` is a single fleet-wide stack" "$brief" \
+    "ship brief's git stash prohibition dropped its reason"
+
+  id="brief-stash-scout-a1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_grep "Never use \`git stash\`" "$brief" \
+    "scout brief missing the git stash prohibition"
+  assert_grep "refs/stash\` is a single fleet-wide stack" "$brief" \
+    "scout brief's git stash prohibition dropped its reason"
+
+  pass "fm-brief.sh: git stash prohibition renders with its reason in ship and scout briefs"
+}
+
 # Scout and secondmate paths still scaffold well-formed briefs.
 test_scout_and_secondmate_scaffold() {
   local brief
@@ -809,6 +838,7 @@ test_no_mistakes_ci_probe_guard_wording
 test_ship_project_memory_wording
 test_completion_report_contract_wording
 test_scout_report_contract_wording
+test_git_stash_prohibition_renders
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout

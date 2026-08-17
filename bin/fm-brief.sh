@@ -41,6 +41,8 @@
 # to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
 # recorded task metadata cannot drift apart.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
+# Both ship and scout scaffolds prohibit git stash: pooled worktrees share one
+# object store, so refs/stash is a single fleet-wide stack, not per-worktree state.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
 # There is no --yolo flag here. The worker never owns approval decisions, so yolo is
@@ -90,6 +92,7 @@ esac
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 NO_SUBAGENT_RULE='8. You cannot spawn subagents or delegate any part of this task to other agents from inside this worktree; do the work yourself.'
+GIT_STASH_RULE="**Never use \`git stash\`.** Pooled worktrees share one object store, so \`refs/stash\` is a single fleet-wide stack rather than per-worktree state, and a concurrent stash from another lane can silently swap in its uncommitted work in place of yours with no error or conflict. Use a scratch branch, a commit, or this task's own tmp directory instead."
 
 resolve_directory_input() {
   local name=$1 path=$2 resolved
@@ -327,6 +330,8 @@ This is a SCOUT task: the deliverable is a written report, not a PR.
 The worktree is your laboratory - install, run, edit, and make scratch commits freely; all of it is discarded at teardown.
 The report is the only thing that survives, so anything worth keeping must be in it.
 
+$GIT_STASH_RULE
+
 # Rules
 1. Never push to any remote and never open a PR.
 2. Stay inside this worktree; the only files you may write outside it are the report and the status file below.
@@ -464,6 +469,8 @@ You are in a disposable git worktree of $REPO, at a detached HEAD on a clean def
 **Verify isolation before anything else.** Run \`pwd -P\` and \`git rev-parse --show-toplevel\`; both must resolve to the disposable task worktree you were launched in, such as a treehouse pool path or an Orca-managed worktree, not the primary checkout firstmate operates from.
 The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse --git-common-dir\` can help inspect the repo, but they do not prove you are outside the primary checkout.
 If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
+
+$GIT_STASH_RULE
 
 1. First action: create your branch: \`git checkout -b fm/$ID\`$SETUP2
 

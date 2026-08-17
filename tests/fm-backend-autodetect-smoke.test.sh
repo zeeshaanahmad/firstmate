@@ -155,6 +155,11 @@ pass "real herdr: the auto-detected spawn's launch command actually ran in the h
 
 # --- teardown completes the trivial spawn/teardown cycle --------------------
 
+# kind=ship teardown refuses without a completion report (bin/fm-teardown.sh);
+# this suite only exercises the auto-detect spawn/teardown cycle, so satisfy
+# that gate up front.
+printf '1. SUMMARY - fixture.\n' > "$DATA/$ID/completion-report.md"
+
 TEARDOWN_OUT="$TMP_ROOT/teardown.out"
 FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
   FM_CONFIG_OVERRIDE="$CONFIG" \

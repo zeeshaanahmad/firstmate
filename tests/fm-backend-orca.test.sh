@@ -968,6 +968,10 @@ test_ship_teardown_refuses_orca_missing_worktree_path() {
   config="$TMP_ROOT/missing-ship-config"
   fm_git_init_commit "$proj"
   mkdir -p "$data/$id" "$state" "$config"
+  # kind=ship teardown refuses without a completion report (bin/fm-teardown.sh);
+  # this suite only exercises the fail-closed worktree gate, so satisfy that
+  # unrelated gate up front.
+  printf '1. SUMMARY - fixture.\n' > "$data/$id/completion-report.md"
   touch "$state/.last-watcher-beat"
   fm_write_meta "$state/$id.meta" \
     "window=fm-$id" "endpoint_task_id=$id" "terminal=term-missing-ship" "worktree=$wt" "project=$proj" \
@@ -999,6 +1003,10 @@ test_ship_teardown_removes_orca_worktree_when_id_path_matches() {
   config="$TMP_ROOT/ship-match-config"
   fm_git_worktree "$proj" "$wt" "fm/$id"
   mkdir -p "$data/$id" "$state" "$config"
+  # kind=ship teardown refuses without a completion report (bin/fm-teardown.sh);
+  # this suite only exercises the id-path matching gate, so satisfy that
+  # unrelated gate up front.
+  printf '1. SUMMARY - fixture.\n' > "$data/$id/completion-report.md"
   touch "$state/.last-watcher-beat"
   fm_write_meta "$state/$id.meta" \
     "window=fm-$id" "endpoint_task_id=$id" "terminal=term-ship-match" "worktree=$wt" "project=$proj" \
@@ -1034,6 +1042,10 @@ test_ship_teardown_refuses_orca_unresolvable_worktree_id() {
   config="$TMP_ROOT/ship-unresolved-config"
   fm_git_worktree "$proj" "$wt" "fm/$id"
   mkdir -p "$data/$id" "$state" "$config"
+  # kind=ship teardown refuses without a completion report (bin/fm-teardown.sh);
+  # this suite only exercises the unresolvable-worktree-id gate, so satisfy that
+  # unrelated gate up front.
+  printf '1. SUMMARY - fixture.\n' > "$data/$id/completion-report.md"
   touch "$state/.last-watcher-beat"
   fm_write_meta "$state/$id.meta" \
     "window=fm-$id" "endpoint_task_id=$id" "terminal=term-ship-unresolved" "worktree=$wt" "project=$proj" \
@@ -1073,6 +1085,10 @@ test_ship_teardown_refuses_orca_id_path_mismatch() {
   fm_git_worktree "$proj" "$wt" "fm/$id"
   git -C "$proj" worktree add --quiet -b "fm/$id-other" "$other_wt"
   mkdir -p "$data/$id" "$state" "$config"
+  # kind=ship teardown refuses without a completion report (bin/fm-teardown.sh);
+  # this suite only exercises the id-path mismatch gate, so satisfy that
+  # unrelated gate up front.
+  printf '1. SUMMARY - fixture.\n' > "$data/$id/completion-report.md"
   touch "$state/.last-watcher-beat"
   fm_write_meta "$state/$id.meta" \
     "window=fm-$id" "endpoint_task_id=$id" "terminal=term-ship-mismatch" "worktree=$wt" "project=$proj" \
