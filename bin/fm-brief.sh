@@ -92,6 +92,7 @@ esac
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 NO_SUBAGENT_RULE='8. You cannot spawn subagents or delegate any part of this task to other agents from inside this worktree; do the work yourself.'
+GIT_STASH_RULE='**Never use `git stash`.** Pooled worktrees share one object store, so `refs/stash` is a single fleet-wide stack rather than per-worktree state, and a concurrent stash from another lane can silently swap in its uncommitted work in place of yours with no error or conflict. Use a scratch branch, a commit, or this task'\''s own tmp directory instead.'
 
 resolve_directory_input() {
   local name=$1 path=$2 resolved
@@ -329,7 +330,7 @@ This is a SCOUT task: the deliverable is a written report, not a PR.
 The worktree is your laboratory - install, run, edit, and make scratch commits freely; all of it is discarded at teardown.
 The report is the only thing that survives, so anything worth keeping must be in it.
 
-**Never use \`git stash\`.** Pooled worktrees share one object store, so \`refs/stash\` is a single fleet-wide stack rather than per-worktree state, and a concurrent stash from another lane can silently swap in its uncommitted work in place of yours with no error or conflict. Use a scratch branch, a commit, or this task's own tmp directory instead.
+$GIT_STASH_RULE
 
 # Rules
 1. Never push to any remote and never open a PR.
@@ -469,7 +470,7 @@ You are in a disposable git worktree of $REPO, at a detached HEAD on a clean def
 The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse --git-common-dir\` can help inspect the repo, but they do not prove you are outside the primary checkout.
 If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
 
-**Never use \`git stash\`.** Pooled worktrees share one object store, so \`refs/stash\` is a single fleet-wide stack rather than per-worktree state, and a concurrent stash from another lane can silently swap in its uncommitted work in place of yours with no error or conflict. Use a scratch branch, a commit, or this task's own tmp directory instead.
+$GIT_STASH_RULE
 
 1. First action: create your branch: \`git checkout -b fm/$ID\`$SETUP2
 
