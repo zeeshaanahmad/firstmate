@@ -92,7 +92,7 @@ esac
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 NO_SUBAGENT_RULE='8. You cannot spawn subagents or delegate any part of this task to other agents from inside this worktree; do the work yourself.'
-GIT_STASH_RULE='**Never use `git stash`.** Pooled worktrees share one object store, so `refs/stash` is a single fleet-wide stack rather than per-worktree state, and a concurrent stash from another lane can silently swap in its uncommitted work in place of yours with no error or conflict. Use a scratch branch, a commit, or this task'\''s own tmp directory instead.'
+GIT_STASH_RULE="**Never use \`git stash\`.** Pooled worktrees share one object store, so \`refs/stash\` is a single fleet-wide stack rather than per-worktree state, and a concurrent stash from another lane can silently swap in its uncommitted work in place of yours with no error or conflict. Use a scratch branch, a commit, or this task's own tmp directory instead."
 
 resolve_directory_input() {
   local name=$1 path=$2 resolved
