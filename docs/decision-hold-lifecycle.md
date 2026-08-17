@@ -30,7 +30,7 @@ An exact retry is idempotent, while a changed decision or, for `resolve`, a chan
 The `resolve` subcommand is the routed path and additionally requires at least one existing dependent task whose structured `blocked-by` edge points to the hold.
 It clears each dependency edge through tasks-axi and marks the hold Done only after those writes succeed.
 An exact retry can finish a partial routing operation, and a failed intermediate step leaves the hold open.
-On every successful resolve, including an exact idempotent retry, it also prints the routed identities as an advisory reminder to re-check their real preconditions; the reminder is informational only, gates nothing, and is unique to this routed path because the unrouted paths release no work.
+On every successful resolve, including an exact idempotent retry, it also prints the routed identities as an advisory reminder to re-check their real preconditions; the reminder is informational only and gates nothing.
 
 The `decline` subcommand closes a hold whose captain answer routes no follow-up work, recording `(none)` as the routed identities.
 It refuses while any task in the same backlog is still blocked by the hold, because releasing routed work without recording it is `resolve`'s job.

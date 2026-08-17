@@ -36,10 +36,11 @@ Bearings reads the resulting structured state and must never compensate by scrap
 5. Relay the choices to the captain as decisions from Bearings' Captain's Call section under `AGENTS.md` section 9; do not use the word hold in captain chat.
 6. If the captain authorizes dependent work, record it with normal tasks-axi commands and block it by the hold identity.
 7. Put the captain's exact durable decision in a file and close the hold with the script's `resolve` command and every routed task, its `decline` command when the answer routes no work, or its `repair` command when the hold was already closed outside the script.
-8. Steps 8 through 10 apply to `resolve` alone, because the unrouted `decline` and `repair` paths release no work: immediately after resolving, examine what each routed task is actually waiting for now that the decision itself is no longer a blocker.
+8. Steps 8 through 11 apply to `resolve` alone, because the unrouted `decline` and `repair` paths release no work: immediately after resolving, examine what each routed task is actually waiting for now that the decision itself is no longer a blocker.
 9. When a routed task still waits for an implementation landing or any other precondition besides the decision, re-establish that precondition explicitly with normal backlog dependency or hold mechanics.
 10. Write each re-block note to identify what running the task early would measure or produce wrongly, rather than merely saying that the task is blocked on the precondition.
-11. Confirm Bearings no longer shows the closed hold and that every routed task remains in the correct structured backlog state for its real preconditions.
+11. Confirm each routed task's structured backlog state matches its real remaining preconditions.
+12. Confirm Bearings no longer shows the closed hold and that any routed work remains in structured backlog state.
 
 `bin/fm-decision-hold.sh --help` owns command syntax, identity construction, completion attestation, retry behavior, and close ordering.
 `docs/decision-hold-lifecycle.md` records the mechanism and regression evidence without restating this policy.

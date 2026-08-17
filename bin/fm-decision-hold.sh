@@ -45,11 +45,9 @@
 # `resolve` is the routed path. It requires every --routed-to task to exist and to
 # be blocked by the hold. It writes the captain decision and routed identities into
 # the hold body, clears those dependency edges, and only then marks the hold Done.
-# A failure before the final step leaves the captain hold open. Successful resolve
-# output also lists the routed identities with a pointer to the policy owner's
-# post-resolution precondition review; that reminder is advisory, not a guard, and
-# the unrouted `decline` and `repair` paths carry no such reminder because they
-# release no routed work.
+# A failure before the final step leaves the captain hold open.
+# Successful resolve output also lists the routed identities with a pointer to the
+# policy owner's post-resolution review; that reminder is advisory, not a guard.
 #
 # `decline` is the unrouted path for a decision the captain answered with no
 # follow-up work. It takes no --routed-to task, records `(none)` as the routed
