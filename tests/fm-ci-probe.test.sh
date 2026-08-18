@@ -151,6 +151,19 @@ out=$(FM_TEST_GH_WORKFLOWS_JSON=$(workflows_json \
 [ "$out" = "present" ] || fail "an active real workflow alongside Dependabot did not verdict present (got: $out)"
 pass "an active real workflow alongside an active Dependabot entry verdicts present"
 
+# The must-not-break case: firstmate's own repo has real, live, working
+# Actions and this fix must never report it as CI-unreachable. Fixture pins
+# the exact shape read live from `gh api repos/zeeshaanahmad/firstmate/
+# actions/workflows` while writing this fix (three real workflows, all
+# active, no dynamic entries).
+out=$(FM_TEST_GH_WORKFLOWS_JSON=$(workflows_json \
+    ".github/workflows/ci.yml:active" \
+    ".github/workflows/no-mistakes-required.yml:active" \
+    ".github/workflows/windows-herdr-spike.yml:active") \
+  run_probe zeeshaanahmad/firstmate)
+[ "$out" = "present" ] || fail "firstmate's own live-shaped workflow fixture did not verdict present (got: $out)"
+pass "firstmate's own repo (three real active workflows) verdicts present"
+
 # Judgment comes from current workflow STATE, never from historical Actions
 # run counts: the probe must query actions/workflows and must never query
 # actions/runs at all.
