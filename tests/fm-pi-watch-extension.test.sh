@@ -1469,15 +1469,22 @@ const hooks = await mod.FmPrimaryWatchArm({
 const event = { event: { type: "session.idle", properties: { sessionID: "session-test" } } };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event(event);
-for (let i = 0; i < 250; i += 1) {
+// The successor is a spawned script, so this gate is condition-based with a
+// ceiling loose enough to survive a loaded machine. Timing out here used to
+// fall through to an unguarded read and surface as an ENOENT stack trace from
+// node, which says nothing about what the plugin failed to do.
+for (let i = 0; i < 1000; i += 1) {
   const rows = existsSync(process.env.FM_ARM_LOG)
     ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
     : [];
   if (rows.length >= 2 && prompts >= 1) break;
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
+if (!existsSync(process.env.FM_ARM_LOG)) {
+  throw new Error("the plugin never ran the arm script: no arm log was written");
+}
 const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
-if (rows.length !== 2) throw new Error(`expected one successor arm, got ${rows.length}: ${rows.join(" | ")}`);
+if (rows.length !== 2) throw new Error(`expected one successor arm, got ${rows.length} after waiting: ${rows.join(" | ")}`);
 if (prompts !== 1) throw new Error(`expected one blocked wake prompt, got ${prompts}`);
 if (rowsAtPrompt !== 2) throw new Error(`wake prompt began before successor establishment (${rowsAtPrompt} arm rows)`);
 if (!/predecessor=[0-9]+/.test(rows[1])) throw new Error(`successor did not receive predecessor identity: ${rows[1]}`);
