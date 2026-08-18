@@ -383,6 +383,78 @@ test_no_mistakes_ci_probe_guard_wording() {
   pass "fm-brief.sh: no-mistakes DOD wires in the fm-ci-probe.sh unreachable-CI guard"
 }
 
+# Defect coverage for the two status-protocol failures that each cost a
+# supervision cycle per task: a worker appending `done:` right after its
+# implementation commit, and a worker parking on a long external wait (a gate,
+# a full test run, a validation pipeline step) with `working:` as its last line,
+# so its idle pane reads as a possible wedge for the whole run. Both fixes must
+# land where the worker reads the status verbs, not only in the definition of
+# done it reads at a different moment.
+test_status_protocol_done_boundary_and_pause_declaration() {
+  local home id brief id_mode mode signal
+  home="$TMP_ROOT/status-protocol-home"
+  mkdir -p "$home/data"
+
+  for id_mode in \
+    "brief-status-nm:no-mistakes:the pipeline reports CI checks green AND you have the PR URL" \
+    "brief-status-dpr:direct-PR:the PR is pushed and open, and its URL is in the line" \
+    "brief-status-lo:local-only:the branch is clean and ready, reported as ready in branch"; do
+    id=${id_mode%%:*}
+    mode=${id_mode#*:}
+    signal=${mode#*:}
+    mode=${mode%%:*}
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$mode brief was not scaffolded"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    assert_grep '`done:` is reserved for this task'"'"'s delivery-mode ready signal' "$brief" \
+      "$mode status protocol must reserve done: for the delivery-mode ready signal"
+    assert_grep "$signal" "$brief" \
+      "$mode status protocol must state its concrete ready signal beside the verb list"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    assert_grep 'Committing your implementation is a `working:` line.' "$brief" \
+      "$mode status protocol must classify the implementation commit as a working: event"
+    assert_grep 'append it at the MOMENT you park' "$brief" \
+      "$mode status protocol must require the pause to be declared when the worker parks"
+    assert_grep 'waiting on a validation pipeline step' "$brief" \
+      "$mode status protocol must name the validation-pipeline wait as a pause case"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    assert_grep 'Append a `working: ...` line when it resumes.' "$brief" \
+      "$mode status protocol must require a working: line when the wait clears"
+  done
+
+  # The no-mistakes definition of done was itself the ambiguity: it used to tell
+  # the worker to append `done: {summary}` immediately after committing, which is
+  # exactly the line the verb list now forbids. Its post-commit handoff is a
+  # working: gate, and `done:` waits for CI green plus the PR URL.
+  brief="$home/data/brief-status-nm/brief.md"
+  # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+  assert_no_grep 'append `done: {summary}`' "$brief" \
+    "no-mistakes definition of done must not signal done: on the implementation commit"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep 'append `working: implementation committed, ready for validation`' "$brief" \
+    "no-mistakes definition of done must hand off with a working: gate after committing"
+  assert_grep 'done: PR {url} checks green' "$brief" \
+    "no-mistakes definition of done must keep CI-green plus PR URL as its done: signal"
+
+  # A scout has no delivery mode, so it takes the pause fix and not the
+  # ship-only ready-signal boundary.
+  id="brief-status-scout"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "scout brief was not scaffolded"
+  assert_grep 'append it at the MOMENT you park' "$brief" \
+    "scout status protocol must require the pause to be declared when the worker parks"
+  assert_grep 'waiting on a validation pipeline step' "$brief" \
+    "scout status protocol must name the validation-pipeline wait as a pause case"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep 'Append a `working: ...` line when it resumes.' "$brief" \
+    "scout status protocol must require a working: line when the wait clears"
+  assert_no_grep 'delivery-mode ready signal' "$brief" \
+    "scout brief must not carry the ship-only delivery-mode ready signal"
+  pass "fm-brief.sh: status protocol reserves done: per mode and declares external waits"
+}
+
 test_ship_project_memory_wording() {
   local home id brief
   home="$TMP_ROOT/project-memory-home"
@@ -835,6 +907,7 @@ test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_no_mistakes_ci_probe_guard_wording
+test_status_protocol_done_boundary_and_pause_declaration
 test_ship_project_memory_wording
 test_completion_report_contract_wording
 test_scout_report_contract_wording

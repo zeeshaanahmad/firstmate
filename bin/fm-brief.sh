@@ -50,7 +50,13 @@
 # Every scaffold's status protocol distinguishes the configured
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
 # "blocked:": pause for a known external wait expected to clear on its own,
-# blocked when firstmate must act.
+# blocked when firstmate must act. It also names the concrete moments that call
+# for a pause (parking on a gate, a full test run, or a validation pipeline
+# step), because an undeclared park reads as a possible wedge for the whole run.
+# A ship scaffold's status protocol additionally reserves "done:" for that
+# task's delivery-mode ready signal, restated there as a one-line pointer to the
+# definition of done that owns it, so a worker reading the verb list alone
+# cannot mistake its implementation commit for the ready signal.
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
@@ -343,9 +349,12 @@ $GIT_STASH_RULE
    would act on and the needs-decision/blocked/paused/done/failed states. No step-by-step
    FYI progress lines; firstmate reads your pane for that.
    Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
-   known external wait you expect to clear on its own (an upstream release, a rate-limit reset):
-   firstmate then leaves your idle pane alone and rechecks it on a long cadence instead of
-   treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
+   known external wait you expect to clear on its own, and append it at the MOMENT you park: starting a
+   gate or a full test run and waiting for it, waiting on a validation pipeline step, an upstream release,
+   a rate-limit reset, or any other wait you expect to clear without firstmate doing anything.
+   Append a \`working: ...\` line when it resumes. Firstmate then leaves your idle pane alone and rechecks
+   it on a long cadence instead of treating it as a possible wedge. Use \`blocked:\` when you are stuck and
+   need help.
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 6. If a decision belongs to a human (product choices, destructive actions),
    append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
@@ -393,6 +402,7 @@ COMPLETION_REPORT_CONTRACT=${COMPLETION_REPORT_CONTRACT%$'\n'}
 case "$MODE" in
   direct-PR)
     SETUP2=""
+    DONE_SIGNAL='the PR is pushed and open, and its URL is in the line'
     RULE1='1. Never push to the default branch (push only your `fm/'"$ID"'` branch). Never merge a PR.'
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
@@ -406,6 +416,7 @@ EOF
     ;;
   local-only)
     SETUP2=""
+    DONE_SIGNAL='the branch is clean and ready, reported as ready in branch'
     RULE1="1. Never push to any remote and never open a PR. Work only on your \`fm/$ID\` branch; firstmate handles the merge into local \`main\`."
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
@@ -421,12 +432,13 @@ EOF
   *)  # no-mistakes
     SETUP2="
 2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`."
+    DONE_SIGNAL='the pipeline reports CI checks green AND you have the PR URL'
     RULE1='1. Never push to the default branch. Never merge a PR.'
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
 Delivery contract: mode=no-mistakes
 The task is complete only when committed on your branch.
-When you believe it is complete, append \`done: {summary}\` to the status file and stop.
+When you believe it is complete, append \`working: implementation committed, ready for validation\` to the status file and stop at that defined gate; committing is not \`done:\`.
 Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
 
 You drive no-mistakes by responding to its gates, not by implementing fixes.
@@ -486,11 +498,17 @@ $RULE1
    needs-decision/blocked/paused/done/failed states. No step-by-step FYI progress lines;
    firstmate reads your pane for that.
    A mid-task \`working:\` line (including setup complete) is nonterminal: do not end the
-   turn after it; continue the same stage until a defined \`done:\` gate under Definition of done.
+   turn after it; continue the same stage until a gate defined under Definition of done.
+   \`done:\` is reserved for this task's delivery-mode ready signal under Definition of done -
+   $DONE_SIGNAL - and is never any other event.
+   Committing your implementation is a \`working:\` line.
    Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
-   known external wait you expect to clear on its own (an upstream release, a rate-limit reset,
-   a scheduled window): firstmate then leaves your idle pane alone and rechecks it on a long
-   cadence instead of treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
+   known external wait you expect to clear on its own, and append it at the MOMENT you park: starting a
+   gate or a full test run and waiting for it, waiting on a validation pipeline step, an upstream release,
+   a rate-limit reset, a scheduled window, or any other wait you expect to clear without firstmate doing
+   anything. Append a \`working: ...\` line when it resumes. Firstmate then leaves your idle pane alone and
+   rechecks it on a long cadence instead of treating it as a possible wedge. Use \`blocked:\` when you are
+   stuck and need help.
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 6. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
    append \`needs-decision: {summary of options}\` and stop. Firstmate will apply the configured authority and reply with the decision.
