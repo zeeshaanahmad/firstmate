@@ -226,18 +226,46 @@ test_registered_source_is_time_bounded() {
 
 # --- built-in no-mistakes validation-run source ----------------------------
 
-nm_status_toon() {  # <branch> <head> <last_activity>
-  printf 'run:\n  id: "01TEST"\n  branch: %s\n  status: fixing\n  head: %s\n' "$1" "$2"
+nm_status_toon() {  # <branch> <head> <last_activity> [run_status]
+  printf 'run:\n  id: "01TEST"\n  branch: %s\n  status: %s\n  head: %s\n' "$1" "${4:-fixing}" "$2"
   printf '  active_steps[1]{step,status,active_for,last_activity,agent_pid,round}: review,fixing,12m41s,"%s",91959,fix 1\n' "$3"
 }
 
+# The same output with the cached branch_sync block `axi status` appends when
+# relevant. It repeats branch, status, and head at a deeper indent, so a reader
+# that matches those keys at any depth can read a sibling value instead of the
+# run's own - the fail-open direction this fixture pins shut.
+nm_status_toon_with_sync() {  # <branch> <head> <last_activity> <run_status> <sync_status>
+  nm_status_toon "$1" "$2" "$3" "$4"
+  printf 'branch_sync:\n  next_action: none\n  pipeline:\n    branch: %s\n    status: %s\n    head: %s\n' \
+    "$1" "$5" "$2"
+}
+
+# A real commit in a DIFFERENT repository, so it is guaranteed absent from the
+# task worktree's object store. This is what an in-flight run's head really is:
+# no-mistakes runs the pipeline in its own gate repo under ~/.no-mistakes/repos
+# and does not push until the push step, so from the first auto-fix round until
+# then `git rev-parse` in the crew worktree cannot resolve the reported head.
+make_unpushed_pipeline_head() {  # <dir>
+  local dir=$1
+  make_repo "$dir" fm/gate
+  printf 'pipeline fix\n' > "$dir/f"
+  git -C "$dir" commit --quiet -am 'no-mistakes: apply review fixes'
+  git -C "$dir" rev-parse HEAD
+}
+
 test_run_source_reads_its_own_run_activity() {
-  local dir state wt head
+  local dir state wt head behind
   dir="$TMP_ROOT/run-source"; state="$dir/state"; mkdir -p "$state" "$dir/fakebin"
   make_fake_no_mistakes "$dir/fakebin"
   wt="$dir/wt"
   make_repo "$wt" fm/task
+  # A second commit, so HEAD~1 is a real head this worktree can resolve but that
+  # local work has already advanced past.
+  printf 'local advance\n' > "$wt/f"
+  git -C "$wt" commit --quiet -am 'local advance'
   head=$(git -C "$wt" rev-parse HEAD)
+  behind=$(git -C "$wt" rev-parse HEAD~1)
   fm_write_meta "$state/task.meta" "window=t:fm-task" "worktree=$wt" "kind=ship" "mode=no-mistakes"
 
   export PATH="$dir/fakebin:$PATH"
@@ -256,11 +284,19 @@ test_run_source_reads_its_own_run_activity() {
   ! fm_liveness_run_age "$state" task >/dev/null \
     || fail "another branch's run was attributed to this task"
 
-  # Same branch, unrelated head: the branch tip was rewritten or diverged, so
-  # the run is not this code's run.
-  FM_FAKE_NM_STATUS=$(nm_status_toon fm/task 0000000000000000000000000000000000000000 "1s ago: log: x")
+  # Same branch, resolvable head that local work has advanced past: the run is
+  # validating superseded code, so it is not this code's run. An UNRESOLVABLE
+  # head is a different case entirely and is covered by
+  # test_run_source_reads_an_in_flight_pipeline_head below.
+  FM_FAKE_NM_STATUS=$(nm_status_toon fm/task "$behind" "1s ago: log: x")
   ! fm_liveness_run_age "$state" task >/dev/null \
-    || fail "a run on an unrelated head was attributed to this task"
+    || fail "a run behind this worktree's own head was attributed to this task"
+
+  # A head that is not a commit-ish token at all cannot bind anything, so it must
+  # never be read as the in-flight case below.
+  FM_FAKE_NM_STATUS=$(nm_status_toon fm/task "not-a-sha" "1s ago: log: x")
+  ! fm_liveness_run_age "$state" task >/dev/null \
+    || fail "a non-commit head token was attributed to this task"
 
   FM_FAKE_NM_STATUS='run:
   id: "01TEST"
@@ -279,6 +315,71 @@ test_run_source_reads_its_own_run_activity() {
     || fail "a scout consulted the validation run"
   unset FM_FAKE_NM_STATUS
   pass "the built-in source reads only a run attributed to this task's branch and current code"
+}
+
+# THE REGRESSION THIS TASK EXISTS FOR. A no-mistakes run is documented as
+# suppressing a wedge with no declaration at all, but it never did once the
+# pipeline had made a single fix commit. no-mistakes runs the pipeline in its own
+# gate repo and does not push until the push step, so from the first auto-fix
+# round until then `axi status` reports a head the crew worktree cannot resolve.
+# Requiring that head to resolve locally turned the overwhelmingly common case -
+# a long review step with auto-fix rounds - into no answer, and the wedge
+# escalator then fired every grace on provably healthy work.
+#
+# The two-lane cases below are the other half: the daemon reports the repo's
+# active-or-most-recent run, not the invoking worktree's, so a lane with no run
+# of its own is offered a sibling lane's activity. A single-lane fixture cannot
+# tell a correctly-bound implementation from an unbound one.
+test_run_source_reads_an_in_flight_pipeline_head() {
+  local dir state wt local_head gate_head st
+  dir="$TMP_ROOT/inflight"; state="$dir/state"; mkdir -p "$state" "$dir/fakebin"
+  make_fake_no_mistakes "$dir/fakebin"
+  wt="$dir/wt"
+  make_repo "$wt" fm/task
+  local_head=$(git -C "$wt" rev-parse HEAD)
+  gate_head=$(make_unpushed_pipeline_head "$dir/gate")
+  [ "$gate_head" != "$local_head" ] || fail "the fixture did not produce a distinct pipeline head"
+  git -C "$wt" rev-parse --verify --quiet "${gate_head}^{commit}" >/dev/null 2>&1 \
+    && fail "the fixture's pipeline head is resolvable in the task worktree, so it proves nothing"
+  fm_write_meta "$state/task.meta" "window=t:fm-task" "worktree=$wt" "kind=ship" "mode=no-mistakes"
+  export PATH="$dir/fakebin:$PATH"
+
+  FM_FAKE_NM_STATUS=$(nm_status_toon fm/task "$gate_head" "25s ago: log: applying")
+  export FM_FAKE_NM_STATUS
+  [ "$(fm_liveness_run_age "$state" task)" = 25 ] \
+    || fail "an in-flight run whose head is an unpushed pipeline commit did not answer"
+
+  # TWO LANES, and this task has no run of its own. The sibling's activity must
+  # never answer here, whether or not its head happens to resolve locally.
+  FM_FAKE_NM_STATUS=$(nm_status_toon fm/other "$gate_head" "1s ago: log: x")
+  ! fm_liveness_run_age "$state" task >/dev/null \
+    || fail "a sibling lane's in-flight run answered for this task"
+  FM_FAKE_NM_STATUS=$(nm_status_toon fm/other "$local_head" "1s ago: log: x")
+  ! fm_liveness_run_age "$state" task >/dev/null \
+    || fail "a sibling lane's run on a locally-known head answered for this task"
+
+  # A run that has genuinely stopped is not evidence of liveness, however fresh
+  # the activity rendered beside it. Prefer no claim over a wrong one.
+  for st in completed failed cancelled aborted; do
+    FM_FAKE_NM_STATUS=$(nm_status_toon fm/task "$gate_head" "1s ago: log: x" "$st")
+    ! fm_liveness_run_age "$state" task >/dev/null \
+      || fail "a $st run was read as evidence of liveness"
+  done
+
+  # branch_sync repeats branch, status, and head deeper in the same output. The
+  # run's own terminal status must win over a nested `status: running`.
+  FM_FAKE_NM_STATUS=$(nm_status_toon_with_sync fm/task "$gate_head" "1s ago: log: x" completed running)
+  ! fm_liveness_run_age "$state" task >/dev/null \
+    || fail "a nested branch_sync status was read as the run's own status"
+
+  # ...and the run's own live status must still be read correctly when a nested
+  # terminal one sits below it, so the anchoring is not just rejecting always.
+  FM_FAKE_NM_STATUS=$(nm_status_toon_with_sync fm/task "$gate_head" "30s ago: log: x" running completed)
+  [ "$(fm_liveness_run_age "$state" task)" = 30 ] \
+    || fail "a live run was rejected because branch_sync carried a terminal status"
+
+  unset FM_FAKE_NM_STATUS
+  pass "an in-flight run answers on its own unpushed pipeline head, and no sibling lane, stopped run, or nested field ever does"
 }
 
 # Each source speaks for different declared work, so any one of them showing
@@ -320,6 +421,9 @@ test_combined_answer_takes_the_freshest_source() {
 # to escalate - and differs ONLY in what the declared work reports.
 
 WEDGE_DIR=; WEDGE_STATE=; WEDGE_FAKEBIN=; WEDGE_WINDOW=; WEDGE_KEY=; WEDGE_PID=
+# The watcher's own demand-deep-inspection threshold, so the seeded count below
+# is the loudest tier by construction rather than by a copied literal.
+FM_WEDGE_DEMAND_INSPECT_COUNT_SEED=${FM_WEDGE_DEMAND_INSPECT_COUNT:-3}
 
 make_wedge_case() {  # <name> - sets the WEDGE_* globals
   WEDGE_DIR=$(make_case "$1")
@@ -381,6 +485,31 @@ test_live_declared_work_is_not_declared_stale() {
   [ "$(( now - anchor ))" -ge 15 ] \
     || fail "the wedge timer was reset to now instead of anchored on last progress"
   pass "a quiet pane whose declared external work is alive is not declared stale, and its timer anchors on that work"
+}
+
+# The escalation counter drives the demand-deep-inspection tier, which tells the
+# handler not to re-absorb on pane state alone. Dated evidence of progress breaks
+# the run of escalations it counts, so a deferral must clear it rather than let
+# the next genuine escalation open at an inflated tier claiming a consecutiveness
+# that did not happen.
+test_live_declared_work_resets_the_escalation_count() {
+  make_wedge_case liveness-escalation-reset
+  install_source "$WEDGE_STATE" quiet 'echo "age: 20"'
+  # This pane has already escalated to the loudest tier before the work answered.
+  printf '%s\n' "$FM_WEDGE_DEMAND_INSPECT_COUNT_SEED" > "$WEDGE_STATE/.wedge-escalations-$WEDGE_KEY"
+
+  run_wedge_watcher
+  # Gate on the counter itself, not on the timer anchor: the anchor is written
+  # just before the counter is cleared, so waiting on the anchor can observe the
+  # deferral one step early and reap mid-way through it.
+  # shellcheck disable=SC2016 # deliberately deferred: wait_absorbed evals this, not this shell
+  if ! wait_absorbed "$WEDGE_PID" '[ ! -e "$WEDGE_STATE/.wedge-escalations-$WEDGE_KEY" ]'; then
+    reap "$WEDGE_PID"
+    fail "an affirmative liveness answer left the escalation count at $(cat "$WEDGE_STATE/.wedge-escalations-$WEDGE_KEY" 2>/dev/null) (watcher $(wait_fail_word)): $(cat "$WEDGE_DIR/watch.out")"
+  fi
+  reap "$WEDGE_PID"; WEDGE_PID=
+  [ ! -s "$WEDGE_DIR/watch.out" ] || fail "the deferral still printed a wake reason: $(cat "$WEDGE_DIR/watch.out")"
+  pass "affirmative declared-work progress clears the wedge escalation count"
 }
 
 # THE REAL WEDGE, same fixture. The declared work has stopped answering, so the
@@ -584,8 +713,10 @@ test_registered_source_answers
 test_registered_source_requires_binding
 test_registered_source_is_time_bounded
 test_run_source_reads_its_own_run_activity
+test_run_source_reads_an_in_flight_pipeline_head
 test_combined_answer_takes_the_freshest_source
 test_live_declared_work_is_not_declared_stale
+test_live_declared_work_resets_the_escalation_count
 test_dead_declared_work_still_escalates
 test_stalled_declared_work_escalates
 test_undeclared_work_keeps_pane_reading

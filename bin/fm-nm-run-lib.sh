@@ -63,9 +63,33 @@ fm_nm_strip_quotes() {
   fm_nm_trim "$s"
 }
 
-# Scalar value of a TOON key in captured `axi status` output $1.
+# Scalar value of a TOON key in captured `axi status` output $1, at any depth,
+# first match wins. Correct for keys that appear once, including the top-level
+# `outcome:`, which is not part of the run object.
 fm_nm_field() {  # <toon-output> <key>
   printf '%s\n' "$1" | sed -n "s/^[[:space:]]*$2:[[:space:]]*\(.*\)/\1/p" | head -1
+}
+
+# Scalar value of a field of the RUN OBJECT specifically: a key indented exactly
+# one level inside the `run:` block. `axi status` also prints a cached
+# `branch_sync` block that repeats `branch`, `status`, and `head` at a deeper
+# indent, so a depth-blind read can return a neighbouring value instead of the
+# run's own - reporting a finished run as still running, which is the one
+# direction an attribution read must never fail in. Use this wherever the answer
+# must be the run's own identity or state; fm_nm_field stays correct for keys
+# that appear once.
+fm_nm_run_field() {  # <toon-output> <key>
+  printf '%s\n' "$1" | awk -v want="$2" '
+    !inrun && $0 ~ /^run:[ \t]*$/ { inrun = 1; next }
+    inrun && $0 ~ /^[^ \t]/ { exit }
+    inrun && index($0, "  " want ":") == 1 {
+      v = substr($0, length(want) + 4)
+      sub(/^[ \t]+/, "", v)
+      sub(/[ \t]+$/, "", v)
+      print v
+      exit
+    }
+  '
 }
 
 # 0 if run head $2 matches worktree $1's code identity, per the same rule
@@ -83,4 +107,44 @@ fm_nm_head_matches_worktree() {  # <worktree> <run_head>
   run_full=$(git -C "$wt" rev-parse --verify "${run_head}^{commit}" 2>/dev/null) || return 1
   [ "$run_full" = "$local_full" ] && return 0
   git -C "$wt" merge-base --is-ancestor "$local_full" "$run_full" 2>/dev/null
+}
+
+# 0 if run head $2 is consistent with worktree $1 owning an IN-FLIGHT run.
+#
+# fm_nm_head_matches_worktree above answers a question about code that is
+# already in hand, and rejects a head it cannot resolve. That is right for its
+# callers - teardown must never act on a run it cannot prove it owns - but it is
+# wrong for a liveness read, because a running pipeline's head is routinely
+# unresolvable here: no-mistakes commits its fixes in its own gate repo and does
+# not push them until the push step, so from the first auto-fix round until then
+# `axi status` reports a commit this object store has never seen. Requiring it to
+# resolve makes a healthy run indistinguishable from a dead one for the whole
+# review step, which is exactly the period the read exists to cover.
+#
+# So resolvability selects the question rather than deciding the answer:
+#   - not a commit-ish token: reject, so prose or a truncated read can never be
+#     mistaken for the unresolvable case below
+#   - unreadable worktree: reject, so a broken checkout is never read as in-flight
+#   - head resolves here: apply the strict rule above unchanged, which still
+#     rejects a run validating superseded or rewritten code
+#   - head does not resolve here: accept as a pipeline commit not yet pushed
+#
+# Accepting the unresolvable case does NOT weaken attribution, because it is not
+# what binds the run to the task. `axi status` resolves its repo from the
+# invoking directory and refuses outright outside a registered one, and within a
+# repo git allows a branch to be checked out by only one worktree, so the
+# caller's branch match is what proves ownership. This function's remaining job
+# is to reject a run on that branch that is not the current work, and it keeps
+# doing that whenever the head is resolvable. Callers must still bound liveness
+# on the run's own non-terminal state and dated activity.
+fm_nm_head_allows_inflight() {  # <worktree> <run_head>
+  local wt=$1 run_head=$2
+  case "$run_head" in ''|*[!0-9a-fA-F]*) return 1 ;; esac
+  [ "${#run_head}" -ge 7 ] && [ "${#run_head}" -le 40 ] || return 1
+  git -C "$wt" rev-parse --verify --quiet HEAD >/dev/null 2>&1 || return 1
+  if git -C "$wt" rev-parse --verify --quiet "${run_head}^{commit}" >/dev/null 2>&1; then
+    fm_nm_head_matches_worktree "$wt" "$run_head"
+    return
+  fi
+  return 0
 }

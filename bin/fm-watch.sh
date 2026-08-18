@@ -331,6 +331,14 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
     *)
       age=$(( $(date +%s) - since ))
       if [ "$age" -ge "$STALE_ESCALATE_SECS" ] && liveness_defers_wedge "$win" "$since_file"; then
+        # Dated evidence of progress ends the run of escalations, so the counter
+        # starts over. It exists to say "this pane has escalated N times IN A
+        # ROW", and at FM_WEDGE_DEMAND_INSPECT_COUNT it tells the handler not to
+        # re-absorb on pane state alone. Carrying a count across a deferral would
+        # make both claims false: the row was broken by the work itself proving
+        # it was progressing, and opening the next genuine escalation at an
+        # inflated tier is the same eroded signal this path exists to prevent.
+        rm -f "$escalation_file"
         return 0
       fi
       if [ "$age" -ge "$STALE_ESCALATE_SECS" ]; then

@@ -178,13 +178,30 @@ fm_liveness_active_step_field() {  # <field>
 }
 
 # Age since the task's own no-mistakes validation run last made progress, or 1
-# if there is no such evidence. Attribution is deliberately strict and reuses
-# the ONE owner of the branch+code-identity rule (fm_nm_head_matches_worktree in
-# bin/fm-nm-run-lib.sh): `axi status` falls back to displaying some other
-# branch's run when this branch has none, and borrowing another crew's activity
-# to suppress this crew's wedge is exactly the failure this must not have.
+# if there is no such evidence.
+#
+# Three independent things must all hold before an age is reported, because each
+# closes a different way this read could suppress a wedge it has no business
+# suppressing:
+#
+#   1. The run is on THIS task's branch. `axi status` answers for the repo of the
+#      invoking directory, not for that worktree's own branch, so it happily
+#      reports a sibling lane's run to a lane that has none. Within a repo git
+#      allows a branch in only one worktree, so the branch match is what binds
+#      the run to this task.
+#   2. The reported head is consistent with this worktree owning an in-flight run
+#      (fm_nm_head_allows_inflight in bin/fm-nm-run-lib.sh, the ONE owner of run
+#      attribution). Note that a running pipeline's head is normally NOT
+#      resolvable here; that owner explains why, and why demanding otherwise made
+#      this whole source silent for the entire review step.
+#   3. The run is not terminal, and it reports dated activity on an active step.
+#      Both are required: a stopped run must never read as alive however fresh
+#      the activity printed beside it, so the run state is an allow-list of
+#      non-terminal values rather than a denial list a new terminal value could
+#      slip past. All identity and state fields are read from the run object
+#      itself, never from the deeper branch_sync block that repeats their names.
 fm_liveness_run_age() {  # <state> <task>
-  local state=$1 task=$2 meta wt kind mode branch out run_branch value token age best=
+  local state=$1 task=$2 meta wt kind mode branch out run_branch run_status value token age best=
   meta="$state/$task.meta"
   [ -f "$meta" ] || return 1
   kind=$(fm_liveness_meta_value "$meta" kind)
@@ -198,9 +215,14 @@ fm_liveness_run_age() {  # <state> <task>
   [ -n "$branch" ] || return 1
   out=$(fm_nm_run_checked "$wt" "$FM_LIVENESS_NM_TIMEOUT" axi status) || return 1
   [ -n "$out" ] || return 1
-  run_branch=$(fm_nm_strip_quotes "$(fm_nm_field "$out" branch)")
+  run_branch=$(fm_nm_strip_quotes "$(fm_nm_run_field "$out" branch)")
   [ "$run_branch" = "$branch" ] || return 1
-  fm_nm_head_matches_worktree "$wt" "$(fm_nm_strip_quotes "$(fm_nm_field "$out" head)")" || return 1
+  fm_nm_head_allows_inflight "$wt" "$(fm_nm_strip_quotes "$(fm_nm_run_field "$out" head)")" || return 1
+  run_status=$(fm_nm_strip_quotes "$(fm_nm_run_field "$out" status)")
+  case "$run_status" in
+    running|fixing|pending) ;;
+    *) return 1 ;;
+  esac
   while IFS= read -r value; do
     # last_activity reads like "25s ago: log: ..." and, once no-mistakes has
     # flagged the step quiet, "quiet 6m12s: ...". Anchor the token at the start

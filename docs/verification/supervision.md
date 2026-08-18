@@ -491,3 +491,34 @@ Observed output:
 ```
 
 The safe command-channel contract is covered without a notification by `tests/fm-daemon.test.sh`: the summary reaches both `$1` and stdin, every channel is process-group bounded, and a failed channel falls through.
+
+## Validation-run liveness attribution
+
+This record supports the guarantee that a `no-mistakes` validation run suppresses a wedge verdict with no declared liveness source, which `AGENTS.md` states and `bin/fm-liveness-lib.sh` implements.
+
+The shape of `no-mistakes axi status` is a vendor surface, so the portable tests feed a fake binary and can only confirm the shape transcribed into that fake.
+`tests/fm-nm-status-shape-live-e2e.test.sh` is the opt-in guard that reads the real binary instead, and it is the command that refreshes this record:
+
+```sh
+FM_NM_STATUS_SHAPE_DRIFT=1 bash tests/fm-nm-status-shape-live-e2e.test.sh
+```
+
+Run on 2026-08-18 against `no-mistakes version v1.48.0 (2ac3769) 2026-08-08T06:39:10Z`.
+
+Observed output:
+
+```
+ok - axi status prints a run object whose branch, status, and head read at the anchored depth
+ok - the reported run head is a commit token attribution can bind on
+ok - the reported run status is a value firstmate classifies
+ok - axi status answers only for the repository it is invoked in
+```
+
+Two facts from that release are load-bearing for the attribution rule in `bin/fm-nm-run-lib.sh`.
+
+`axi status` answers for the repository of the invoking directory and refuses outside a registered one, and git allows a branch in only one worktree of a repository, so matching the run's branch is what binds a run to a task.
+It does not answer for the invoking worktree's branch, so a lane with no run of its own is offered a sibling lane's run and the branch match is what rejects it.
+
+The reported `head` is the run's own head, which advances with each pipeline fix commit, and those commits live in the gate repository under `~/.no-mistakes/repos` until the push step.
+On run `01M0A59VG3NQH744BWH66W96S8` the submitted head was `5317c6e0ee` while the run head reached `696a534a3d`, and the review step's four auto-fix rounds moved it beyond local knowledge roughly an hour before push.
+Requiring that head to resolve locally is therefore what made the built-in source silent for most of a normal run.
