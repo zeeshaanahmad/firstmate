@@ -1,29 +1,46 @@
 #!/usr/bin/env bash
 # Prints whether a GitHub repo has any reachable CI check surface, derived
 # from the forge's own answer rather than any per-project hardcoding:
-#   none      no Actions run ever completed from an event that attaches a
-#             check to a pull request (pull_request or push) - no-mistakes'
-#             ci step has no reachable end condition (kunchenguid/no-mistakes#475,
-#             #666: it polls its full timeout, historically 168h, for a check
-#             that can never register). Start no-mistakes with --skip=ci.
-#   present   at least one pull_request- or push-triggered Actions run exists
-#             - checks may land on a PR.
-#   unknown   the forge's answer could not be read (auth, network, missing
-#             repo, or API error). Never guess: treat like "present" and let
-#             the ci step run, or fail loudly and ask before skipping it.
+#   none      every real workflow on the repo (i.e. every workflow whose path
+#             is not GitHub's own dynamically-provided "dynamic/..." kind) is
+#             in a non-active state (disabled_manually, disabled_inactivity,
+#             disabled_fork, or deleted) - no real workflow can ever run, so
+#             no check can ever register on a PR. no-mistakes' ci step has no
+#             reachable end condition (kunchenguid/no-mistakes#475, #666: it
+#             polls its full timeout, historically 168h, for a check that can
+#             never arrive). Start no-mistakes with --skip=ci.
+#   present   at least one real (non-dynamic) workflow is active - a check may
+#             land on a PR.
+#   unknown   the repo to probe could not even be determined (no origin
+#             remote, or its URL could not be parsed). Never guess: treat
+#             like "present" and let the ci step run, or fail loudly and ask
+#             before skipping it.
+#
+# Judges on the CURRENT STATE of the repo's workflows
+# (repos/{o}/{r}/actions/workflows), never on historical run counts
+# (repos/{o}/{r}/actions/runs): a repo can carry Actions run history from
+# before its workflows were disabled (e.g. hundreds of old pull_request runs
+# on a workflow now state=disabled_manually), which would misreport "present"
+# for a repo that can no longer ever complete a check.
+#
+# Excludes every workflow whose path starts with "dynamic/" - GitHub's own
+# dynamically-provided workflows (Dependabot Updates, Copilot code review,
+# Copilot cloud agent) that have no YAML file in the repository. These read
+# state=active but never register a check on an ordinary code pull request,
+# so counting them as "present" would arm a ci step that still wedges
+# forever. The "dynamic/" path prefix is a structural fact of the API
+# response, not a name a release note could rename out from under this
+# check.
 #
 # Deliberately does not call the repos/{o}/{r}/actions/permissions endpoint:
 # it 403s for anyone without admin rights on the repo, which is the common
 # case for a contributor fork, and would degrade every such probe to unknown.
-# The actions/runs total_count needs only ordinary read access.
+# The actions/workflows list needs only ordinary read access.
 #
-# Filters actions/runs by event=pull_request and event=push rather than
-# counting every run ever completed: a repo can carry real Actions history
-# from dependabot, schedule, or workflow_dispatch triggers while none of its
-# workflows are configured to run on pull_request or push at all, so no check
-# can ever register on a PR. Counting all runs regardless of triggering event
-# would misreport that repo as "present" and the ci step would still wedge
-# forever waiting for a check that can never land.
+# When the forge's workflow-state answer cannot be read or understood (API
+# error, auth failure, an unparseable response), this reports "present" -
+# not "none" - so an unreadable answer never silently disarms CI. Only a
+# failure to even determine which repo to ask about reports "unknown".
 #
 # Usage: fm-ci-probe.sh [<owner/repo>]
 #   With no argument, resolves owner/repo by parsing the current directory's
@@ -72,25 +89,39 @@ if [ -z "$REPO" ]; then
   fi
 fi
 
-TOTAL=0
-for EVENT in pull_request push; do
-  COUNT=$(gh api "repos/$REPO/actions/runs?event=$EVENT&per_page=1" -q .total_count 2>/dev/null) || {
-    echo "unknown"
-    echo "error: could not read repos/$REPO/actions/runs (event=$EVENT)" >&2
-    exit 0
-  }
-  case "$COUNT" in
-    ''|*[!0-9]*)
-      echo "unknown"
-      echo "error: repos/$REPO/actions/runs (event=$EVENT) returned a non-numeric total_count: $COUNT" >&2
-      exit 0
+STATES=$(gh api "repos/$REPO/actions/workflows" --paginate -q \
+  '.workflows[] | select((.path | startswith("dynamic/")) | not) | .state' 2>/dev/null) || {
+  echo "present"
+  echo "error: could not read repos/$REPO/actions/workflows" >&2
+  exit 0
+}
+
+HAS_ACTIVE=0
+UNPARSEABLE=0
+while IFS= read -r STATE; do
+  [ -z "$STATE" ] && continue
+  case "$STATE" in
+    active)
+      HAS_ACTIVE=1
+      ;;
+    disabled_fork|disabled_inactivity|disabled_manually|deleted)
+      ;;
+    *)
+      UNPARSEABLE=1
       ;;
   esac
-  TOTAL=$((TOTAL + COUNT))
-done
+done <<EOF
+$STATES
+EOF
 
-if [ "$TOTAL" = "0" ]; then
-  echo "none"
-else
+if [ "$UNPARSEABLE" = "1" ]; then
   echo "present"
+  echo "error: repos/$REPO/actions/workflows returned an unparseable workflow state" >&2
+  exit 0
+fi
+
+if [ "$HAS_ACTIVE" = "1" ]; then
+  echo "present"
+else
+  echo "none"
 fi
