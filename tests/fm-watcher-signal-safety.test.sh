@@ -318,7 +318,16 @@ test_cleanup_is_bounded_against_a_permanent_lock_holder() {
   }
 
   kill -TERM "$pid" 2>/dev/null || true
-  if ! exited_within "$pid" 150; then
+  # The code's own bound here is FM_WATCHER_CLEANUP_LOCK_TICKS (5 ticks, 0.5s):
+  # this patience is the TEST's margin around that, not the behavior under test.
+  # Measured CI runs of this exact case land consistently around 18-19s of real
+  # wall clock (fork/exec and process-polling overhead on a shared runner, not
+  # a growing hang - three independent CI failures all gave up within a second
+  # of each other), so 150 ticks (15s) left CI with essentially no margin while
+  # comfortably passing on faster/quieter hardware. 900 ticks (90s) keeps this
+  # a real bound - it still fails loudly on an actual regression - while giving
+  # a loaded runner enough room to clear the assertion instead of racing it.
+  if ! exited_within "$pid" 900; then
     force_stop "$pid"; force_stop "$EXTERNAL_HOLDER_PID"
     fail "shutdown blocked indefinitely on a marker lock held by another live process"
   fi
