@@ -376,8 +376,11 @@ test_no_mistakes_ci_probe_guard_wording() {
   assert_grep '`present` means proceed without that flag' "$brief" \
     "no-mistakes DOD must translate a present verdict into proceeding unchanged"
   # shellcheck disable=SC2016
-  assert_grep '`unknown` means the probe could not read the forge'"'"'s answer; never guess' "$brief" \
-    "no-mistakes DOD must refuse to guess on an unknown verdict"
+  assert_grep 'a forge-read failure (API error, auth failure, an unparseable workflow-state response), which verdicts `present`' "$brief" \
+    "no-mistakes DOD must document that a forge-read failure verdicts present, not unknown"
+  # shellcheck disable=SC2016
+  assert_grep '`unknown` means the probe could not even determine which repo to ask about' "$brief" \
+    "no-mistakes DOD must narrow unknown to a repo-determination failure and refuse to guess"
   assert_grep "append \`blocked: {the probe's error}\` and stop" "$brief" \
     "no-mistakes DOD must block rather than start the run on an unknown verdict"
   pass "fm-brief.sh: no-mistakes DOD wires in the fm-ci-probe.sh unreachable-CI guard"

@@ -453,8 +453,8 @@ Three firstmate-specific rules layer on top of that guidance:
 - Avoid \`--yes\`: it would silently bypass firstmate's authority check and any required captain escalation.
 - Before starting the run, check whether this repo's forge can ever report a CI result: run \`$FM_ROOT/bin/fm-ci-probe.sh\` from inside the worktree.
   \`none\` means no check can ever register, so start with \`--skip=ci\` appended (the ci step would otherwise monitor for a result that will never arrive).
-  \`present\` means proceed without that flag.
-  \`unknown\` means the probe could not read the forge's answer; never guess - append \`blocked: {the probe's error}\` and stop rather than starting the run.
+  \`present\` means proceed without that flag - this also covers a forge-read failure (API error, auth failure, an unparseable workflow-state response), which verdicts \`present\` rather than guessing \`none\`.
+  \`unknown\` means the probe could not even determine which repo to ask about (no origin remote, or its URL could not be parsed); never guess - append \`blocked: {the probe's error}\` and stop rather than starting the run.
 
 $COMPLETION_REPORT_CONTRACT
 After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop. You are finished.
