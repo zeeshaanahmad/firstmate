@@ -63,6 +63,9 @@ make_fake_no_mistakes() {  # <fakebin>
 #!/usr/bin/env bash
 set -u
 [ "${1:-}" = axi ] && [ "${2:-}" = status ] || exit 2
+# FM_FAKE_NM_EXIT makes the read itself fail, which is a different case from a
+# read that succeeds and says nothing useful. Both must yield no claim.
+[ -n "${FM_FAKE_NM_EXIT:-}" ] && exit "$FM_FAKE_NM_EXIT"
 printf '%s\n' "${FM_FAKE_NM_STATUS:-}"
 exit 0
 SH
@@ -506,6 +509,73 @@ test_run_source_answers_on_the_run_state_not_an_activity_age() {
   pass "an executing step answers alive on the run state whatever it last logged, and a stopped, parked, queued, or unattributed one never does"
 }
 
+# THE FAIL-SILENT DIRECTION, which the executing-step rule above must not have
+# widened. Every way the status read can come back useless has to collapse to NO
+# CLAIM, leaving the ordinary pane reading in force - never to a claim of life.
+# A missing claim costs a turn; a false one costs the alarm itself.
+test_an_unreadable_status_yields_no_liveness_claim() {
+  local dir state wt head live saved_path
+  dir="$TMP_ROOT/unreadable"; state="$dir/state"; mkdir -p "$state" "$dir/fakebin"
+  make_fake_no_mistakes "$dir/fakebin"
+  wt="$dir/wt"
+  make_repo "$wt" fm/task
+  head=$(git -C "$wt" rev-parse HEAD)
+  fm_write_meta "$state/task.meta" "window=t:fm-task" "worktree=$wt" "kind=ship" "mode=no-mistakes"
+  export PATH="$dir/fakebin:$PATH"
+  export FM_FAKE_NM_STATUS
+
+  # The control: with the same fixture readable, this task DOES answer. Without
+  # it, every assertion below would pass on a task that could never answer at
+  # all, and the case would prove nothing.
+  live=$(nm_status_toon_rows fm/task "$head" running "$SILENT_CI_ROW")
+  FM_FAKE_NM_STATUS=$live
+  [ "$(fm_liveness_run_age "$state" task)" = 0 ] \
+    || fail "the control fixture did not answer, so the no-claim cases below are vacuous"
+
+  FM_FAKE_NM_STATUS=""
+  ! fm_liveness_run_age "$state" task >/dev/null \
+    || fail "an empty status read produced a liveness claim"
+
+  FM_FAKE_NM_STATUS="no-mistakes: repo not initialized"
+  ! fm_liveness_run_age "$state" task >/dev/null \
+    || fail "an error message on stdout produced a liveness claim"
+
+  FM_FAKE_NM_STATUS="totally unparseable prose with no run object"
+  ! fm_liveness_run_age "$state" task >/dev/null \
+    || fail "unparseable status output produced a liveness claim"
+
+  # A truncated read that stops before the steps table: the run looks live, but
+  # nothing says a step is executing, so there is no claim to make.
+  FM_FAKE_NM_STATUS=$(printf 'run:\n  id: "01TEST"\n  branch: fm/task\n  status: running\n  head: %s\n' "$head")
+  ! fm_liveness_run_age "$state" task >/dev/null \
+    || fail "a run object with no steps at all produced a liveness claim"
+
+  # The read itself failing is a different case from a read that says nothing.
+  FM_FAKE_NM_STATUS=$live
+  export FM_FAKE_NM_EXIT=1
+  ! fm_liveness_run_age "$state" task >/dev/null \
+    || fail "a failing axi status read produced a liveness claim"
+  unset FM_FAKE_NM_EXIT
+
+  # And so is the binary being gone entirely. A hermetic PATH rather than a
+  # stripped one: earlier cases in this suite leave their own fake on PATH, so
+  # removing just this case's directory would still find one and prove nothing.
+  # /usr/bin:/bin carries every tool this read needs and no no-mistakes. Both
+  # halves of that are asserted, so the case cannot pass for the wrong reason.
+  saved_path=$PATH
+  PATH=/usr/bin:/bin
+  ! command -v no-mistakes >/dev/null 2>&1 \
+    || fail "the hermetic PATH still has a no-mistakes, so this case proves nothing"
+  command -v git >/dev/null 2>&1 \
+    || fail "the hermetic PATH has no git, so this case would fail for the wrong reason"
+  ! fm_liveness_run_age "$state" task >/dev/null \
+    || fail "a missing no-mistakes binary produced a liveness claim"
+  PATH=$saved_path
+
+  unset FM_FAKE_NM_STATUS
+  pass "every unreadable status read yields no liveness claim rather than a false one"
+}
+
 # Each source speaks for different declared work, so any one of them showing
 # recent progress answers; the freshest wins.
 test_combined_answer_takes_the_freshest_source() {
@@ -900,6 +970,7 @@ test_registered_source_is_time_bounded
 test_run_source_reads_its_own_run_activity
 test_run_source_reads_an_in_flight_pipeline_head
 test_run_source_answers_on_the_run_state_not_an_activity_age
+test_an_unreadable_status_yields_no_liveness_claim
 test_combined_answer_takes_the_freshest_source
 test_live_declared_work_is_not_declared_stale
 test_live_declared_work_resets_the_escalation_count
