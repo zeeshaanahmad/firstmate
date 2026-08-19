@@ -406,6 +406,23 @@ fm_lock_claim() {
 fm_lock_try_create() {
   local lockdir=$1 allowed_steal_owner=${2:-} ownerdir
   FM_LOCK_OWNER_DIR=
+  # A steal already in flight for this exact lockdir owns any observed absence
+  # of it: the steal winner in fm_lock_try_acquire removes the stale directory
+  # and then recreates it, and an unrelated caller landing in that gap - the
+  # bare fast path at the top of fm_lock_try_acquire, or its absent-lockdir
+  # recovery retry further down - can otherwise win the ln -s race for the same
+  # path. fm_lock_claim already reverts such a claim once made (this same
+  # helper, applied after the fact), but winning the race first can still cost
+  # the legitimate winner the path, leaving NEITHER side holding the lock
+  # (reproduced under heavy concurrency as "expected exactly one stale-lock
+  # stealer, got 0", and even a double win when a second reclaim starts from
+  # the wreckage). Checking before ever attempting ln -s, rather than only
+  # after, means only the recognized steal owner - matched by
+  # allowed_steal_owner - can create this lockdir while its steal is held, so
+  # the winner's own recreate never has to compete for the path at all.
+  if fm_lock_claim_blocked_by_steal "$lockdir" "$allowed_steal_owner"; then
+    return 1
+  fi
   ownerdir=$(fm_lock_owner_dir "$lockdir") || return 1
   if [ -e "$lockdir" ] || [ -L "$lockdir" ]; then
     fm_lock_discard_owner "$ownerdir"
