@@ -40,6 +40,12 @@
 #      already reports per-active-step `last_activity`. The overwhelmingly
 #      common case should need no setup.
 #
+# The built-in source answers from the RUN STATE - an attributed, non-terminal
+# run that is executing a step - rather than from how recently that step logged.
+# An activity age only holds while a step chooses to log, and a step running a
+# long silent job does not; fm_liveness_run_age below owns why that made the age
+# read a systematic false alarm, and what firstmate gives up by dropping it.
+#
 # Cost: both sources are read only at the moment a caller is about to declare a
 # wedge, never on every poll. See bin/fm-watch.sh's wedge_timer_check.
 set -u
@@ -177,6 +183,34 @@ fm_liveness_active_step_field() {  # <field>
   '
 }
 
+# 0 when <status> is a run status that is still going. An allow-list rather than
+# a denial list, so a newly invented terminal value cannot quietly read as alive;
+# the cost is that a newly invented active value goes silent, which is the safe
+# direction and is what tests/fm-nm-status-shape-live-e2e.test.sh watches for.
+fm_liveness_status_is_live() {  # <status>
+  case "$1" in
+    running|fixing|pending) return 0 ;;
+  esac
+  return 1
+}
+
+# 0 when <step-status> means that step is EXECUTING right now, which is stricter
+# than the run-level test above.
+#
+# This is the whole liveness claim for a running pipeline, so what it excludes
+# matters as much as what it admits. A step that is merely queued says nothing
+# about whether anything is moving, and a step parked at an approval or
+# fix-review gate is waiting on FIRSTMATE - exactly the case supervision must
+# still surface - so neither may read as executing. An allow-list is what keeps
+# that true: a gate or terminal state no-mistakes invents later goes silent
+# rather than quietly reading as alive. The same drift guard watches this list.
+fm_liveness_step_is_executing() {  # <step-status>
+  case "$1" in
+    running|fixing) return 0 ;;
+  esac
+  return 1
+}
+
 # Age since the task's own no-mistakes validation run last made progress, or 1
 # if there is no such evidence.
 #
@@ -194,14 +228,41 @@ fm_liveness_active_step_field() {  # <field>
 #      attribution). Note that a running pipeline's head is normally NOT
 #      resolvable here; that owner explains why, and why demanding otherwise made
 #      this whole source silent for the entire review step.
-#   3. The run is not terminal, and it reports dated activity on an active step.
-#      Both are required: a stopped run must never read as alive however fresh
-#      the activity printed beside it, so the run state is an allow-list of
-#      non-terminal values rather than a denial list a new terminal value could
-#      slip past. All identity and state fields are read from the run object
-#      itself, never from the deeper branch_sync block that repeats their names.
+#   3. The run is not terminal, and it is executing a step. A stopped or parked
+#      run must never read as alive however busy the detail printed beside it, so
+#      both the run status and the step status are allow-lists of live values
+#      rather than denial lists a new terminal or gate value could slip past. All
+#      identity and state fields are read from the run object itself, never from
+#      the deeper branch_sync block that repeats their names.
+#
+# An executing step answers with NO AGE at all, and that is the point. An
+# activity age answers "has this step's agent stalled?", which only works while
+# the step chooses to log. Two steps measured on 2026-08-19 prove that it does
+# not: the `ci` step has no agent and emits one forge heartbeat every few
+# minutes, and a `test` step driving a containerized gate logs once at start and
+# then nothing until the container exits. Both are silent for far longer than the
+# wedge grace while working perfectly, so an age read escalated provably healthy
+# work as a possible wedge on every validating lane - and a systematic false
+# alarm is how a real one later gets waved through. Any step running a long
+# silent job defeats an activity age, so the fix can be neither a list of such
+# steps nor a wider threshold; a wider threshold only makes the alarm later
+# rather than correct, and delays a genuinely wedged step by the same amount.
+#
+# The run state is the one signal that does not depend on a step choosing to log,
+# and it is read live from the daemon that owns the run every single time, so the
+# claim cannot outlive the work: the moment the run stops or parks, the very next
+# read says so and the ordinary pane-quiet timer resumes within one grace period.
+# What firstmate gives up is spotting a step whose agent died while the daemon
+# still reports it running - deliberately, because an activity age cannot tell
+# that apart from a healthy silent job, and the pipeline's own step bounds are
+# what end such a run. Prefer a source that goes quiet too early over one that
+# speaks too long: a missing claim costs a turn, a false one costs the alarm.
+#
+# A dated activity age still answers as a fallback for a non-terminal run with no
+# step executing yet, so nothing the earlier reading covered is lost.
 fm_liveness_run_age() {  # <state> <task>
-  local state=$1 task=$2 meta wt kind mode branch out run_branch run_status value token age best=
+  local state=$1 task=$2 meta wt kind mode branch out run_branch run_status
+  local step_status value token age best=
   meta="$state/$task.meta"
   [ -f "$meta" ] || return 1
   kind=$(fm_liveness_meta_value "$meta" kind)
@@ -219,10 +280,20 @@ fm_liveness_run_age() {  # <state> <task>
   [ "$run_branch" = "$branch" ] || return 1
   fm_nm_head_allows_inflight "$wt" "$(fm_nm_strip_quotes "$(fm_nm_run_field "$out" head)")" || return 1
   run_status=$(fm_nm_strip_quotes "$(fm_nm_run_field "$out" status)")
-  case "$run_status" in
-    running|fixing|pending) ;;
-    *) return 1 ;;
-  esac
+  fm_liveness_status_is_live "$run_status" || return 1
+  # Reported as 0, the same "alive, no useful age" value a registered source's
+  # `alive` maps to, and the freshest answer possible - so it short-circuits the
+  # fallback scan below rather than competing with it. Read separately from that
+  # scan, so an active_steps table without a status column loses only this rule
+  # and leaves the age reading exactly as it was.
+  while IFS= read -r step_status; do
+    if fm_liveness_step_is_executing "$step_status"; then
+      printf '0'
+      return 0
+    fi
+  done <<EOF
+$(printf '%s\n' "$out" | fm_liveness_active_step_field status)
+EOF
   while IFS= read -r value; do
     # last_activity reads like "25s ago: log: ..." and, once no-mistakes has
     # flagged the step quiet, "quiet 6m12s: ...". Anchor the token at the start

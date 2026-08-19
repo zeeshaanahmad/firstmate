@@ -63,6 +63,9 @@ make_fake_no_mistakes() {  # <fakebin>
 #!/usr/bin/env bash
 set -u
 [ "${1:-}" = axi ] && [ "${2:-}" = status ] || exit 2
+# FM_FAKE_NM_EXIT makes the read itself fail, which is a different case from a
+# read that succeeds and says nothing useful. Both must yield no claim.
+[ -n "${FM_FAKE_NM_EXIT:-}" ] && exit "$FM_FAKE_NM_EXIT"
 printf '%s\n' "${FM_FAKE_NM_STATUS:-}"
 exit 0
 SH
@@ -123,6 +126,11 @@ test_active_step_field_parsing() {
   [ -z "$out" ] || fail "a table without the column produced a value: $out"
   out=$(printf '%s\n' 'run:' '  status: fixing' | fm_liveness_active_step_field last_activity)
   [ -z "$out" ] || fail "output with no active_steps table produced a value: $out"
+  # The run object carries its own `status:` key, and the executing-step rule
+  # reads a column of the same name. A run with no active_steps table must yield
+  # no step status at all, or that scalar would read as a step that is executing.
+  out=$(printf '%s\n' 'run:' '  status: running' | fm_liveness_active_step_field status)
+  [ -z "$out" ] || fail "the run's own status scalar was read as an active-step status: $out"
 
   # An embedded escaped quote followed later by an unescaped comma is the exact
   # shape that desynced the old naive quote toggle: the escaped quote must not
@@ -226,9 +234,21 @@ test_registered_source_is_time_bounded() {
 
 # --- built-in no-mistakes validation-run source ----------------------------
 
-nm_status_toon() {  # <branch> <head> <last_activity> [run_status]
+nm_status_toon() {  # <branch> <head> <last_activity> [run_status] [step_status]
   printf 'run:\n  id: "01TEST"\n  branch: %s\n  status: %s\n  head: %s\n' "$1" "${4:-fixing}" "$2"
-  printf '  active_steps[1]{step,status,active_for,last_activity,agent_pid,round}: review,fixing,12m41s,"%s",91959,fix 1\n' "$3"
+  printf '  active_steps[1]{step,status,active_for,last_activity,agent_pid,round}: review,%s,12m41s,"%s",91959,fix 1\n' "${5:-fixing}" "$3"
+}
+
+# The same run object with caller-supplied active_steps rows, so a step other
+# than the agent-driven `review` above can be exercised. Rows are passed already
+# rendered, exactly as `axi status` prints them.
+nm_status_toon_rows() {  # <branch> <head> <run_status> <row>...
+  local branch=$1 head=$2 run_status=$3
+  shift 3
+  printf 'run:\n  id: "01TEST"\n  branch: %s\n  status: %s\n  head: %s\n' \
+    "$branch" "$run_status" "$head"
+  printf '  active_steps[%d]{step,status,active_for,last_activity,agent_pid,round}:\n' "$#"
+  printf '    %s\n' "$@"
 }
 
 # The same output with the cached branch_sync block `axi status` appends when
@@ -271,10 +291,16 @@ test_run_source_reads_its_own_run_activity() {
   export PATH="$dir/fakebin:$PATH"
   FM_FAKE_NM_STATUS=$(nm_status_toon fm/task "$head" "25s ago: log: applying")
   export FM_FAKE_NM_STATUS
+  [ "$(fm_liveness_run_age "$state" task)" = 0 ] \
+    || fail "an attributed run executing a step did not answer alive"
+
+  # The activity-age fallback, on a run with nothing executing: it is the only
+  # path that still parses last_activity, so its two shapes are pinned here.
+  FM_FAKE_NM_STATUS=$(nm_status_toon fm/task "$head" "25s ago: log: applying" pending pending)
   [ "$(fm_liveness_run_age "$state" task)" = 25 ] \
     || fail "an attributed run's last_activity was not read"
 
-  FM_FAKE_NM_STATUS=$(nm_status_toon fm/task "$head" "quiet 6m12s: no activity")
+  FM_FAKE_NM_STATUS=$(nm_status_toon fm/task "$head" "quiet 6m12s: no activity" pending pending)
   [ "$(fm_liveness_run_age "$state" task)" = 372 ] \
     || fail "a quiet-prefixed last_activity was not read"
 
@@ -346,7 +372,7 @@ test_run_source_reads_an_in_flight_pipeline_head() {
 
   FM_FAKE_NM_STATUS=$(nm_status_toon fm/task "$gate_head" "25s ago: log: applying")
   export FM_FAKE_NM_STATUS
-  [ "$(fm_liveness_run_age "$state" task)" = 25 ] \
+  [ "$(fm_liveness_run_age "$state" task)" = 0 ] \
     || fail "an in-flight run whose head is an unpushed pipeline commit did not answer"
 
   # TWO LANES, and this task has no run of its own. The sibling's activity must
@@ -375,11 +401,179 @@ test_run_source_reads_an_in_flight_pipeline_head() {
   # ...and the run's own live status must still be read correctly when a nested
   # terminal one sits below it, so the anchoring is not just rejecting always.
   FM_FAKE_NM_STATUS=$(nm_status_toon_with_sync fm/task "$gate_head" "30s ago: log: x" running completed)
-  [ "$(fm_liveness_run_age "$state" task)" = 30 ] \
+  [ "$(fm_liveness_run_age "$state" task)" = 0 ] \
     || fail "a live run was rejected because branch_sync carried a terminal status"
 
   unset FM_FAKE_NM_STATUS
   pass "an in-flight run answers on its own unpushed pipeline head, and no sibling lane, stopped run, or nested field ever does"
+}
+
+# THE RESIDUAL GAP THIS TASK EXISTS FOR, left behind by the fix above. That fix
+# made an in-flight run answer at all; the answer it gave was derived from the
+# active step's `last_activity`, which measures only whether that step chose to
+# log recently. Two steps measured on 2026-08-19 defeat that:
+#
+#   ci   - no agent at all. It is the daemon watching the forge, and it emits one
+#          heartbeat every few minutes, so its freshest evidence is already past
+#          the wedge grace by the time supervision reads it.
+#   test - a containerized gate. It logs one line when it starts and then nothing
+#          at all until the container exits.
+#
+# Both are working perfectly while silent, and both escalated as a possible
+# wedge, every grace, on every validating lane. The rows below are the shapes
+# measured on those two runs.
+SILENT_CI_ROW='ci,running,45m16s,"5m6s ago: log: CI checks running, waiting for results...","",starting'
+SILENT_TEST_ROW='test,running,18m2s,"14m51s ago: log: ci/local/gate.sh starting",91960,round 1'
+# The grace the watcher escalates at, matching run_wedge_watcher's own setting.
+WEDGE_GRACE=240
+
+# The age a row's own last_activity parses to, so a case can prove it is really
+# past the grace rather than asserting into a fixture that quietly went fresh.
+row_activity_age() {  # <toon-output>
+  fm_liveness_duration_secs "$(printf '%s\n' "$1" \
+    | fm_liveness_active_step_field last_activity \
+    | grep -oE '^[0-9]+[dhms]([0-9]+[dhms])*' | head -1)"
+}
+
+test_run_source_answers_on_the_run_state_not_an_activity_age() {
+  local dir state wt head toon age st
+  dir="$TMP_ROOT/silent-step"; state="$dir/state"; mkdir -p "$state" "$dir/fakebin"
+  make_fake_no_mistakes "$dir/fakebin"
+  wt="$dir/wt"
+  make_repo "$wt" fm/task
+  head=$(git -C "$wt" rev-parse HEAD)
+  fm_write_meta "$state/task.meta" "window=t:fm-task" "worktree=$wt" "kind=ship" "mode=no-mistakes"
+  export PATH="$dir/fakebin:$PATH"
+  export FM_FAKE_NM_STATUS
+
+  # Neither case may go quietly vacuous: each row's own activity age must really
+  # be past the grace, or "answers without an age" would prove nothing.
+  for toon in "$SILENT_CI_ROW" "$SILENT_TEST_ROW"; do
+    FM_FAKE_NM_STATUS=$(nm_status_toon_rows fm/task "$head" running "$toon")
+    age=$(row_activity_age "$FM_FAKE_NM_STATUS")
+    [ "$age" -gt "$WEDGE_GRACE" ] \
+      || fail "row '$toon' parses to ${age}s, not past the ${WEDGE_GRACE}s grace, so this case proves nothing"
+    [ "$(fm_liveness_run_age "$state" task)" = 0 ] \
+      || fail "an executing but silent step did not answer alive on the run state: $toon"
+  done
+
+  # Not a special case for those two steps: ANY executing step answers, with the
+  # staleness of its own log irrelevant either way.
+  FM_FAKE_NM_STATUS=$(nm_status_toon_rows fm/task "$head" fixing \
+    'review,fixing,12m41s,"quiet 9m2s: no activity",91959,fix 2')
+  [ "$(fm_liveness_run_age "$state" task)" = 0 ] \
+    || fail "a step no-mistakes had itself flagged quiet did not answer alive"
+
+  # A run with NOTHING executing keeps the earlier reading: a dated activity age
+  # still answers, so this rule only ever added an answer.
+  FM_FAKE_NM_STATUS=$(nm_status_toon_rows fm/task "$head" pending \
+    'review,pending,0s,"45s ago: log: queued",,round 1')
+  [ "$(fm_liveness_run_age "$state" task)" = 45 ] \
+    || fail "a run with no executing step lost its activity-age fallback"
+
+  # THE CASE THAT MUST STILL SURFACE. A run parked at an approval or fix-review
+  # gate is waiting on FIRSTMATE, so it is not alive however recently it logged.
+  # If this ever answers, the rule has disarmed the alarm it was meant to keep
+  # honest rather than fix.
+  for st in awaiting_approval fix_review; do
+    FM_FAKE_NM_STATUS=$(nm_status_toon_rows fm/task "$head" running \
+      "review,$st,12m41s,\"3s ago: log: awaiting decision\",91959,fix 1")
+    [ "$(fm_liveness_run_age "$state" task)" = 3 ] \
+      || fail "a step parked at the $st gate was read as executing rather than falling back to its age"
+    FM_FAKE_NM_STATUS=$(nm_status_toon_rows fm/task "$head" "$st" \
+      "review,$st,12m41s,\"3s ago: log: awaiting decision\",91959,fix 1")
+    ! fm_liveness_run_age "$state" task >/dev/null \
+      || fail "a run parked at the $st gate answered as alive"
+  done
+
+  # A stopped run is not alive however busy its steps are rendered beside it.
+  for st in completed failed cancelled aborted; do
+    FM_FAKE_NM_STATUS=$(nm_status_toon_rows fm/task "$head" "$st" "$SILENT_CI_ROW")
+    ! fm_liveness_run_age "$state" task >/dev/null \
+      || fail "a $st run with an executing step was read as evidence of liveness"
+  done
+
+  # Attribution is unchanged: a sibling lane's executing step must not answer
+  # here, or the rule would become a way around the branch match.
+  FM_FAKE_NM_STATUS=$(nm_status_toon_rows fm/other "$head" running "$SILENT_CI_ROW")
+  ! fm_liveness_run_age "$state" task >/dev/null \
+    || fail "a sibling lane's executing step answered for this task"
+
+  # An active_steps table with no status column loses only this rule; the
+  # activity age keeps answering exactly as it did before.
+  FM_FAKE_NM_STATUS=$(printf 'run:\n  id: "01TEST"\n  branch: fm/task\n  status: running\n  head: %s\n  active_steps[1]{step,active_for,last_activity}: ci,45m16s,"30s ago: log: x"\n' "$head")
+  [ "$(fm_liveness_run_age "$state" task)" = 30 ] \
+    || fail "dropping the status column broke the activity-age reading"
+
+  unset FM_FAKE_NM_STATUS
+  pass "an executing step answers alive on the run state whatever it last logged, and a stopped, parked, queued, or unattributed one never does"
+}
+
+# THE FAIL-SILENT DIRECTION, which the executing-step rule above must not have
+# widened. Every way the status read can come back useless has to collapse to NO
+# CLAIM, leaving the ordinary pane reading in force - never to a claim of life.
+# A missing claim costs a turn; a false one costs the alarm itself.
+test_an_unreadable_status_yields_no_liveness_claim() {
+  local dir state wt head live saved_path
+  dir="$TMP_ROOT/unreadable"; state="$dir/state"; mkdir -p "$state" "$dir/fakebin"
+  make_fake_no_mistakes "$dir/fakebin"
+  wt="$dir/wt"
+  make_repo "$wt" fm/task
+  head=$(git -C "$wt" rev-parse HEAD)
+  fm_write_meta "$state/task.meta" "window=t:fm-task" "worktree=$wt" "kind=ship" "mode=no-mistakes"
+  export PATH="$dir/fakebin:$PATH"
+  export FM_FAKE_NM_STATUS
+
+  # The control: with the same fixture readable, this task DOES answer. Without
+  # it, every assertion below would pass on a task that could never answer at
+  # all, and the case would prove nothing.
+  live=$(nm_status_toon_rows fm/task "$head" running "$SILENT_CI_ROW")
+  FM_FAKE_NM_STATUS=$live
+  [ "$(fm_liveness_run_age "$state" task)" = 0 ] \
+    || fail "the control fixture did not answer, so the no-claim cases below are vacuous"
+
+  FM_FAKE_NM_STATUS=""
+  ! fm_liveness_run_age "$state" task >/dev/null \
+    || fail "an empty status read produced a liveness claim"
+
+  FM_FAKE_NM_STATUS="no-mistakes: repo not initialized"
+  ! fm_liveness_run_age "$state" task >/dev/null \
+    || fail "an error message on stdout produced a liveness claim"
+
+  FM_FAKE_NM_STATUS="totally unparseable prose with no run object"
+  ! fm_liveness_run_age "$state" task >/dev/null \
+    || fail "unparseable status output produced a liveness claim"
+
+  # A truncated read that stops before the steps table: the run looks live, but
+  # nothing says a step is executing, so there is no claim to make.
+  FM_FAKE_NM_STATUS=$(printf 'run:\n  id: "01TEST"\n  branch: fm/task\n  status: running\n  head: %s\n' "$head")
+  ! fm_liveness_run_age "$state" task >/dev/null \
+    || fail "a run object with no steps at all produced a liveness claim"
+
+  # The read itself failing is a different case from a read that says nothing.
+  FM_FAKE_NM_STATUS=$live
+  export FM_FAKE_NM_EXIT=1
+  ! fm_liveness_run_age "$state" task >/dev/null \
+    || fail "a failing axi status read produced a liveness claim"
+  unset FM_FAKE_NM_EXIT
+
+  # And so is the binary being gone entirely. A hermetic PATH rather than a
+  # stripped one: earlier cases in this suite leave their own fake on PATH, so
+  # removing just this case's directory would still find one and prove nothing.
+  # /usr/bin:/bin carries every tool this read needs and no no-mistakes. Both
+  # halves of that are asserted, so the case cannot pass for the wrong reason.
+  saved_path=$PATH
+  PATH=/usr/bin:/bin
+  ! command -v no-mistakes >/dev/null 2>&1 \
+    || fail "the hermetic PATH still has a no-mistakes, so this case proves nothing"
+  command -v git >/dev/null 2>&1 \
+    || fail "the hermetic PATH has no git, so this case would fail for the wrong reason"
+  ! fm_liveness_run_age "$state" task >/dev/null \
+    || fail "a missing no-mistakes binary produced a liveness claim"
+  PATH=$saved_path
+
+  unset FM_FAKE_NM_STATUS
+  pass "every unreadable status read yields no liveness claim rather than a false one"
 }
 
 # Each source speaks for different declared work, so any one of them showing
@@ -393,7 +587,11 @@ test_combined_answer_takes_the_freshest_source() {
   head=$(git -C "$wt" rev-parse HEAD)
   fm_write_meta "$state/task.meta" "window=t:fm-task" "worktree=$wt" "kind=ship" "mode=no-mistakes"
   export PATH="$dir/fakebin:$PATH"
-  FM_FAKE_NM_STATUS=$(nm_status_toon fm/task "$head" "5m ago: log: applying")
+  # A run with nothing executing yet, so the run source reports an AGE and the
+  # freshest-source comparison below has two ages to choose between. An executing
+  # step answers 0, which no other source can beat, and is covered on its own in
+  # test_run_source_answers_on_the_run_state_not_an_activity_age.
+  FM_FAKE_NM_STATUS=$(nm_status_toon fm/task "$head" "5m ago: log: applying" pending pending)
   export FM_FAKE_NM_STATUS
 
   [ "$(fm_liveness_age "$state" task)" = 300 ] \
@@ -546,6 +744,63 @@ test_stalled_declared_work_escalates() {
   grep -F "possible wedge" "$WEDGE_DIR/watch.out" >/dev/null \
     || fail "a stalled declared-work escalation omitted its wedge reason"
   pass "declared work whose own last progress is past the grace escalates normally"
+}
+
+# THE RESIDUAL GAP AS SUPERVISION ACTUALLY MEETS IT: a quiet pane, no registered
+# source at all, and a validation run executing a step that has gone silent. This
+# is the case that escalated repeatedly in one night across every validating
+# lane, so it is pinned at the watcher rather than only at the library.
+test_silent_executing_step_is_not_declared_stale() {
+  local dir wt head anchor_baseline
+  make_wedge_case liveness-silent-step
+  [ ! -e "$WEDGE_STATE/quiet.liveness.sh" ] || fail "the silent-step fixture installed a source"
+  dir="$WEDGE_DIR"
+  wt="$dir/wt"
+  make_repo "$wt" fm/quiet
+  head=$(git -C "$wt" rev-parse HEAD)
+  fm_write_meta "$WEDGE_STATE/quiet.meta" "window=$WEDGE_WINDOW" "worktree=$wt" \
+    "kind=ship" "mode=no-mistakes"
+  make_fake_no_mistakes "$WEDGE_FAKEBIN"
+  FM_FAKE_NM_STATUS=$(nm_status_toon_rows fm/quiet "$head" running "$SILENT_TEST_ROW")
+  export FM_FAKE_NM_STATUS
+  # shellcheck disable=SC2034 # read inside the wait_absorbed predicate string below
+  anchor_baseline=$(cat "$WEDGE_STATE/.stale-since-$WEDGE_KEY" 2>/dev/null || true)
+
+  run_wedge_watcher
+  # shellcheck disable=SC2016 # deliberately deferred: wait_absorbed evals this, not this shell
+  if ! wait_absorbed "$WEDGE_PID" '[ "$(cat "$WEDGE_STATE/.stale-since-$WEDGE_KEY" 2>/dev/null || true)" != "$anchor_baseline" ]'; then
+    reap "$WEDGE_PID"; fail "watcher escalated a wedge while the run was executing a silent step (watcher $(wait_fail_word)): $(cat "$WEDGE_DIR/watch.out")"
+  fi
+  [ ! -s "$WEDGE_DIR/watch.out" ] || { reap "$WEDGE_PID"; fail "a silent executing step still printed a wake reason: $(cat "$WEDGE_DIR/watch.out")"; }
+  [ ! -s "$WEDGE_STATE/.wake-queue" ] || { reap "$WEDGE_PID"; fail "a silent executing step still enqueued a wake"; }
+  reap "$WEDGE_PID"; WEDGE_PID=
+  unset FM_FAKE_NM_STATUS
+  pass "a quiet pane whose validation run is executing a long silent step is not declared stale"
+}
+
+# THE REAL WEDGE, same fixture and the same silent step: once the run stops, the
+# claim stops with it and the ordinary pane reading escalates within the grace.
+# This is what keeps the rule above from being a way to silence the alarm.
+test_finished_run_on_a_silent_step_still_escalates() {
+  local wt head
+  make_wedge_case liveness-silent-step-finished
+  wt="$WEDGE_DIR/wt"
+  make_repo "$wt" fm/quiet
+  head=$(git -C "$wt" rev-parse HEAD)
+  fm_write_meta "$WEDGE_STATE/quiet.meta" "window=$WEDGE_WINDOW" "worktree=$wt" \
+    "kind=ship" "mode=no-mistakes"
+  make_fake_no_mistakes "$WEDGE_FAKEBIN"
+  FM_FAKE_NM_STATUS=$(nm_status_toon_rows fm/quiet "$head" completed "$SILENT_TEST_ROW")
+  export FM_FAKE_NM_STATUS
+
+  run_wedge_watcher
+  wait_for_exit "$WEDGE_PID" 80 \
+    || fail "a stopped run on a silent step stopped escalating: $(cat "$WEDGE_DIR/watch.out")"
+  WEDGE_PID=
+  grep -F "possible wedge" "$WEDGE_DIR/watch.out" >/dev/null \
+    || fail "the escalation for a stopped run lost its wedge reason"
+  unset FM_FAKE_NM_STATUS
+  pass "a stopped run rendering an executing step still escalates within the ordinary grace"
 }
 
 # The specific case is added AHEAD of the pane reading, not in place of it: a
@@ -714,11 +969,15 @@ test_registered_source_requires_binding
 test_registered_source_is_time_bounded
 test_run_source_reads_its_own_run_activity
 test_run_source_reads_an_in_flight_pipeline_head
+test_run_source_answers_on_the_run_state_not_an_activity_age
+test_an_unreadable_status_yields_no_liveness_claim
 test_combined_answer_takes_the_freshest_source
 test_live_declared_work_is_not_declared_stale
 test_live_declared_work_resets_the_escalation_count
 test_dead_declared_work_still_escalates
 test_stalled_declared_work_escalates
+test_silent_executing_step_is_not_declared_stale
+test_finished_run_on_a_silent_step_still_escalates
 test_undeclared_work_keeps_pane_reading
 test_housekeeping_live_declared_work_defers_and_reanchors
 test_housekeeping_dead_declared_work_still_escalates
