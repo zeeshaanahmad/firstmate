@@ -522,3 +522,39 @@ It does not answer for the invoking worktree's branch, so a lane with no run of 
 The reported `head` is the run's own head, which advances with each pipeline fix commit, and those commits live in the gate repository under `~/.no-mistakes/repos` until the push step.
 On run `01M0A59VG3NQH744BWH66W96S8` the submitted head was `5317c6e0ee` while the run head reached `696a534a3d`, and the review step's four auto-fix rounds moved it beyond local knowledge roughly an hour before push.
 Requiring that head to resolve locally is therefore what made the built-in source silent for most of a normal run.
+
+A third fact, measured on 2026-08-19 against the same release, is what the run-state reading rests on.
+An active step's `last_activity` only advances while that step chooses to log, and two steps in normal use do not.
+
+The `ci` step has no agent of its own: it is the daemon watching the forge, and it emits one heartbeat every few minutes.
+On run `01M0BAAG45E1EWN7EA76G1S46C` for [PR 16](https://github.com/zeeshaanahmad/firstmate/pull/16), whose `ci` step ran 3413951 ms and passed, the active row read:
+
+```
+ci,running,45m16s,"5m6s ago: log: CI checks running, waiting for results...","",starting
+```
+
+A `test` step driving a containerized gate is silent in the same way for a different reason.
+Observed on 2026-08-19 on another project of this fleet, whose `ci/local/gate.sh` logs one line when it starts and then emits nothing until the container exits, so that step's `last_activity` also passes the grace within minutes of a healthy run.
+That observation is reported from the operating fleet rather than captured by a command in this repository; the `ci` row above is the one reproduced here, and the portable regression in `tests/fm-liveness-source.test.sh` pins both shapes.
+
+Both are 300-second-plus ages against a 240-second `FM_STALE_ESCALATE_SECS`, on provably healthy work, so deriving liveness from that age escalated a possible wedge for the whole step on every validating lane.
+Any step running a long silent job defeats the age reading, which is why `bin/fm-liveness-lib.sh` answers from the run state instead of enumerating such steps or widening the threshold.
+
+The same guard refreshes this record:
+
+```sh
+FM_NM_STATUS_SHAPE_DRIFT=1 bash tests/fm-nm-status-shape-live-e2e.test.sh
+```
+
+Run on 2026-08-19 against `no-mistakes version v1.48.0 (2ac3769) 2026-08-08T06:39:10Z`:
+
+```
+ok - axi status prints a run object whose branch, status, and head read at the anchored depth
+ok - the reported run head is a commit token attribution can bind on
+ok - the reported run status is a value firstmate classifies
+# no run is executing here, so active-step statuses were not observed; re-run this guard during a run to cover them
+ok - axi status answers only for the repository it is invoked in
+```
+
+The active-step status vocabulary is load-bearing, because the executing-step allow-list is the whole liveness claim: an unclassified value goes silent, and a gate state that ever read as executing would suppress a run waiting on firstmate.
+Those statuses are only observable while a run is executing, so the guard reports that gap explicitly rather than passing over it, and this record is refreshed during a run to cover them.

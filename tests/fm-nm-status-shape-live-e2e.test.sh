@@ -30,6 +30,8 @@ fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$ROOT/bin/fm-nm-run-lib.sh"
+# shellcheck source=bin/fm-liveness-lib.sh
+. "$ROOT/bin/fm-liveness-lib.sh"
 
 LAB=
 cleanup_all() { [ -n "${LAB:-}" ] && rm -rf "$LAB"; }
@@ -105,6 +107,34 @@ case "$run_status" in
   *) drift "unknown run status '$run_status'; classify it in bin/fm-liveness-lib.sh before it is read as alive or silently ignored" ;;
 esac
 pass "the reported run status is a value firstmate classifies"
+
+# --- the active-step status vocabulary has not grown ------------------------
+#
+# This one carries the whole liveness claim for a running pipeline.
+# fm_liveness_step_is_executing allow-lists the step statuses that mean "moving
+# right now", and deliberately excludes both a queued step and one parked at a
+# gate, since a parked run is waiting on firstmate and must still surface. A
+# value no-mistakes invents later goes silent - safe, but it reopens exactly the
+# systematic false alarm this rule closed - and a gate value that ever appeared
+# here under a new name would be far worse, because it would read as executing.
+# Catch either here rather than in production.
+
+ACTIVE_STATUSES=$(printf '%s\n' "$STATUS_OUT" | fm_liveness_active_step_field status)
+if [ -z "$ACTIVE_STATUSES" ]; then
+  note "no run is executing here, so active-step statuses were not observed; re-run this guard during a run to cover them"
+else
+  while IFS= read -r step_status; do
+    [ -n "$step_status" ] || continue
+    case "$step_status" in
+      running|fixing|pending|awaiting_approval|fix_review) ;;
+      completed|failed|cancelled|aborted|skipped) ;;
+      *) drift "unknown active-step status '$step_status'; classify it in bin/fm-liveness-lib.sh before it is read as executing or silently ignored" ;;
+    esac
+  done <<EOF
+$ACTIVE_STATUSES
+EOF
+  pass "every active-step status firstmate saw is a value it classifies"
+fi
 
 # --- axi status is scoped to the invoking repository ------------------------
 #
