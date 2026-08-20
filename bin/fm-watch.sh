@@ -420,7 +420,14 @@ clear_pause_tracking() {  # <window>
 
 # Reconcile a declared pause or captain-held status with authoritative crew state.
 # Only a confidently dead ordinary crew may recover paused classification after
-# fm-crew-state has fallen back to stopped or unknown.
+# fm-crew-state has fallen back to stopped or unknown. That liveness read is a
+# PROMOTION of an inconclusive verdict, never a demotion of an authoritative one:
+# a live agent is the normal shape of a declared external wait (the crew is
+# parked at its own composer waiting to be told to go), so judging `paused` on
+# agent liveness would make the verdict unreachable for every healthy parked
+# crew. Whether a live parked crew should still be SURFACED once - it may be
+# sitting at an interactive gate its pause line does not describe - is a
+# separate question, owned by paused_gate_needs_surface below.
 pause_state_class() {  # <window> <task>
   local win=$1 task=$2 key last recheck_file class agent_alive
   key=${win//:/_}
@@ -434,37 +441,61 @@ pause_state_class() {  # <window> <task>
     return
   fi
   if [ -e "$STATE/.paused-$key" ] && [ "$(age_of "$recheck_file")" -lt "$STALE_ESCALATE_SECS" ]; then
-    if [ "$(window_kind "$win")" != secondmate ]; then
-      agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
-      if [ "$agent_alive" != dead ]; then
-        rm -f "$recheck_file"
-        printf 'none'
-        return
-      fi
-    fi
     printf 'paused'
     return
   fi
   class=$(crew_absorb_class "$task")
-  if [ "$class" = working ]; then
-    rm -f "$recheck_file"
-    printf 'working'
-    return
-  fi
+  case "$class" in
+    working)
+      rm -f "$recheck_file"
+      printf 'working'
+      return
+      ;;
+    paused)
+      date +%s > "$recheck_file"
+      printf 'paused'
+      return
+      ;;
+  esac
+  # class is none: fm-crew-state fell back to stopped, finished, or unreadable
+  # despite the declared wait. A confidently dead ordinary crew recovers paused
+  # classification here, because a captain-held or parked crew whose agent has
+  # exited is exactly the bounded-cadence case; every other reading stays
+  # inconclusive and surfaces.
   if [ "$(window_kind "$win")" != secondmate ]; then
     agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
-    if [ "$agent_alive" != dead ]; then
-      rm -f "$recheck_file"
-      printf 'none'
+    if [ "$agent_alive" = dead ]; then
+      date +%s > "$recheck_file"
+      printf 'paused'
       return
     fi
   fi
-  [ "$class" = none ] && [ "${agent_alive:-unknown}" = dead ] && class=paused
-  case "$class" in
-    paused) date +%s > "$recheck_file" ;;
-    *) rm -f "$recheck_file" ;;
-  esac
-  printf '%s' "$class"
+  rm -f "$recheck_file"
+  printf 'none'
+}
+
+# 0 when a stale lane under a declared pause or captain hold must SURFACE once
+# rather than absorb on the bounded cadence: its agent is not confidently dead,
+# so it may be sitting at an interactive gate the pause line does not describe,
+# AND this exact declaration has not been surfaced yet. The one-shot is anchored
+# on the STATUS FILE - a marker older than the status file means a newer
+# paused:/captain-held line has landed since the last surface - never on the
+# pane hash, for the same reason handle_paused_stale anchors its re-surface
+# cadence there: a churny idle pane (a rotating hint, a token counter) repaints
+# on its own, and a hash-tied one-shot re-arms on every repaint, turning "surface
+# once" into one wake per repaint for a crew that never moved.
+paused_gate_needs_surface() {  # <window> <task>
+  local win=$1 task=$2 key rf marker status_mtime
+  [ "$(window_kind "$win")" != secondmate ] || return 1
+  [ "$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null || echo unknown)" != dead ] || return 1
+  key=$(printf '%s' "$win" | tr ':/.' '___')
+  rf="$STATE/.paused-resurfaced-$key"
+  [ -e "$rf" ] || return 0
+  marker=$(stat_mtime "$rf")
+  status_mtime=$(stat_mtime "$STATE/$task.status")
+  case "$marker" in ''|*[!0-9]*) return 1 ;; esac
+  case "$status_mtime" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$marker" -lt "$status_mtime" ]
 }
 
 surface_nonterminal_stale() {  # <window> <hash>
@@ -1099,8 +1130,9 @@ EOF
         # firstmate. Detection itself is unchanged from above.
         if [ "$kind" = secondmate ]; then
           case "$(pause_state_class "$w" "$task")" in
-            paused) handle_paused_stale "$w" "$task" "$h" ;;
-            *)      clear_pause_tracking "$w" ;;
+            paused)  handle_paused_stale "$w" "$task" "$h" ;;
+            working) clear_pause_tracking "$w" ;;
+            *)       rm -f "$ssf" "$ewf" ;;
           esac
         elif afk_present; then
           # Daemon owns triage: one-shot per distinct stale hash, as before.
@@ -1171,7 +1203,14 @@ EOF
                 triage_log "absorbed non-terminal stale (provably working): $w"
                 ;;
               paused)
-                handle_paused_stale "$w" "$task" "$h"
+                # Surface a live parked crew once per declaration (it may be at
+                # an interactive gate); absorb every later sighting of the same
+                # declaration on the bounded cadence.
+                if paused_gate_needs_surface "$w" "$task"; then
+                  surface_nonterminal_stale "$w" "$h"
+                else
+                  handle_paused_stale "$w" "$task" "$h"
+                fi
                 ;;
               *)
                 surface_nonterminal_stale "$w" "$h"
@@ -1202,7 +1241,15 @@ EOF
         else
           rm -f "$ssf" "$ewf"
         fi
-        if [ -e "$pf" ] && { [ "$n" -ge 2 ] || ! status_is_paused_or_captain_held "$(last_status_line "$STATE/$(window_to_task "$w" "$STATE").status")"; }; then
+        # Only a status that is no longer a declared pause or captain hold drops
+        # the pause markers. A pane that merely READS busy for one poll is not a
+        # resumption: a crew that genuinely resumed writes a working: line (the
+        # clear at the top of this loop owns that), and one whose run restarted
+        # without one is caught by the working) arms through crew_absorb_class.
+        # Clearing on a busy blip instead destroys .stale-<key> and the
+        # declaration one-shot, which re-arms a first-sight surface for a crew
+        # that never moved.
+        if [ -e "$pf" ] && ! status_is_paused_or_captain_held "$(last_status_line "$STATE/$(window_to_task "$w" "$STATE").status")"; then
           clear_pause_tracking "$w"
         fi
       fi
@@ -1217,11 +1264,15 @@ EOF
       task=$(window_to_task "$w" "$STATE")
       if ! afk_present && status_is_paused_or_captain_held "$(last_status_line "$STATE/$task.status")" && [ "$busy_now" -ne 0 ]; then
         case "$(pause_state_class "$w" "$task")" in
-          paused) handle_paused_stale "$w" "$task" "$h" ;;
-          *)      clear_pause_tracking "$w" ;;
+          paused)  handle_paused_stale "$w" "$task" "$h" ;;
+          working) clear_pause_tracking "$w" ;;
+          # Inconclusive under a still-declared pause: drop the wedge
+          # bookkeeping, but keep the pause markers so a repaint cannot re-arm
+          # the declaration one-shot below.
+          *)       rm -f "$ssf" "$ewf" ;;
         esac
-      else
-        [ -e "$pf" ] && clear_pause_tracking "$w"
+      elif [ -e "$pf" ] && { afk_present || ! status_is_paused_or_captain_held "$(last_status_line "$STATE/$task.status")"; }; then
+        clear_pause_tracking "$w"
       fi
     fi
   done < <(recorded_windows)

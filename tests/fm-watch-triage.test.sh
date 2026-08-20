@@ -760,7 +760,7 @@ test_nonterminal_stale_paused_absorbed_then_resurfaced() {
 # must surface once, while the unchanged hash must not append the same wake on
 # every watcher re-arm.
 test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
-  local dir state fakebin out capture_file statusf window key pane_hash sig pid back round wakes bare counted
+  local dir state fakebin out capture_file statusf window key pane_hash sig pid back round wakes bare counted redrawn_hash
   dir=$(make_case exited-declared-pause); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/held.status"
   window="test:fm-held"
@@ -863,12 +863,241 @@ test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
     || { reap "$pid"; fail "live external-decision gate escalated on the wedge timer after its immediate surface: $(cat "$out")"; }
   [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "live external-decision gate lost its pause cadence marker"; }
   [ ! -e "$state/.stale-since-$key" ] || { reap "$pid"; fail "live external-decision gate retained the wedge timer"; }
+  # Same watcher, same live gate, same declaration - but now the PANE repaints.
+  # The immediate surface above is a one-shot per declaration; a pane that
+  # redraws itself must not re-arm it. Without this leg the case only ever saw
+  # an unchanged hash, so a one-shot re-armed by repaint would pass unnoticed.
+  printf 'idle external-decision gate (redrawn)\n' > "$capture_file"
+  # shellcheck disable=SC2034 # read by the deferred wait_absorbed predicate below
+  redrawn_hash=$(hash_text 'idle external-decision gate (redrawn)')
+  # shellcheck disable=SC2016 # deliberately deferred: wait_absorbed evals this, not this shell
+  wait_absorbed "$pid" '[ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "$redrawn_hash" ]' \
+    || { reap "$pid"; fail "a repaint of the live external-decision gate re-armed its one-shot surface (watcher $(wait_fail_word)): $(cat "$out")"; }
+  counted=$(cat "$state/.count-$key" 2>/dev/null || true)
+  wait_stale_passes "$state" "$key" "$pid" "$counted" 2 \
+    || { reap "$pid"; fail "the repainted live gate surfaced on a later poll: $(cat "$out")"; }
+  [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "the repainted live gate lost its pause cadence marker"; }
   reap "$pid"
   wakes=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' "$state/.wake-queue")
   bare=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w && $5 == "stale: " w { n++ } END { print n + 0 }' "$state/.wake-queue")
   [ "$wakes" -eq 0 ] || fail "acknowledged external-decision surface replayed $wakes wakes"
   [ "$bare" -eq 0 ] || fail "acknowledged external-decision bare stale remained queued"
+
   pass "exited declared-pause and captain-held panes use bounded pause cadence while a live decision gate still surfaces once"
+}
+
+# --- a declared pause must survive benign pane repaint ------------------------
+# The 2026-08-20 incident: a lane parked on `paused:` with an idle but LIVE
+# agent raised a bare stale wake roughly every 25 minutes with nothing changed.
+# Every input the watcher reads was constant except the rendered pane, which
+# repaints on its own (a rotating hint, a context/token figure). The pane-hash
+# arms dropped the pause markers, and the missing stale suppressor re-armed the
+# first-sight surface two polls later.
+#
+# Both cadences are set unreachable here, so a wake in this case can only be the
+# first-sight surface - never the pause re-surface and never the wedge timer.
+#
+# The pane hash is the signal deliberately driven apart, and the case asserts
+# the divergence itself: it fails if the hash did NOT move, and the busy phase
+# waits for the hash to change and come back byte-identical. A future watcher
+# that stopped reading the pane cannot turn this into a test of nothing.
+test_declared_pause_survives_benign_pane_repaint() {
+  local dir state fakebin out capture_file statusf window key pid counted
+  local pane_a pane_b pane_busy hash_a hash_b hash_busy back queued
+  dir=$(make_case paused-benign-repaint); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/parked.status"
+  window="test:fm-parked"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_a='idle at an empty composer   ctx 42% used'
+  pane_b='idle at an empty composer   ctx 41% used'
+  pane_busy='thinking...  Ctrl+c:cancel'
+  hash_a=$(hash_text "$pane_a")
+  hash_b=$(hash_text "$pane_b")
+  hash_busy=$(hash_text "$pane_busy")
+  # Fixture vacuity guards: the three pane texts must actually differ, or the
+  # phases below would assert nothing.
+  [ "$hash_a" != "$hash_b" ] || fail "repaint fixture is vacuous: both idle pane texts hash the same"
+  [ "$hash_busy" != "$hash_b" ] || fail "busy fixture is vacuous: the busy pane hashes the same as the idle pane"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/parked.meta"
+  printf 'paused: implementation complete, waiting for the validation slot\n' > "$statusf"
+  back=$(( $(date +%s) - 120 ))
+  set_mtime "$back" "$statusf"
+  printf '%s' "$(seen_sig "$statusf")" > "$state/.seen-parked_status"
+  printf '%s' "$pane_a" > "$capture_file"
+  # The steady state a parked lane sits in between polls: suppressor on the
+  # current hash, pause flag set, this declaration already surfaced once.
+  printf '%s' "$hash_a" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  printf '%s' "$hash_a" > "$state/.stale-$key"
+  : > "$state/.paused-$key"
+  date +%s > "$state/.paused-resurfaced-$key"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok \
+    FM_FAKE_CREW_STATE='state: paused · source: status-log · waiting for the validation slot' \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=999999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+
+  # Phase A - control: the pane does not move, and the lane absorbs.
+  wait_stale_passes "$state" "$key" "$pid" 1 3 \
+    || { reap "$pid"; fail "a parked lane with an unchanged pane was not absorbed: $(cat "$out")"; }
+  [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "$hash_a" ] \
+    || { reap "$pid"; fail "control phase moved the stale suppressor off the absorbed hash"; }
+
+  # Phase B - the ONLY change is the rendered pane.
+  printf '%s' "$pane_b" > "$capture_file"
+  # shellcheck disable=SC2016 # deliberately deferred: wait_absorbed evals this, not this shell
+  wait_absorbed "$pid" '[ "$(cat "$state/.hash-$key" 2>/dev/null || true)" = "$hash_b" ]' \
+    || { reap "$pid"; fail "a parked lane surfaced on a benign pane repaint (watcher $(wait_fail_word)): $(cat "$out")"; }
+  # Assert the divergence itself, so this case cannot go vacuous.
+  [ "$(cat "$state/.hash-$key" 2>/dev/null || true)" != "$hash_a" ] \
+    || { reap "$pid"; fail "the repaint never reached the watcher: pane hash unchanged"; }
+  counted=$(cat "$state/.count-$key" 2>/dev/null || true)
+  wait_stale_passes "$state" "$key" "$pid" "$counted" 2 \
+    || { reap "$pid"; fail "a repainted parked lane surfaced instead of re-absorbing: $(cat "$out")"; }
+  [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "$hash_b" ] \
+    || { reap "$pid"; fail "the stale suppressor did not follow the repaint, so first sight stays armed"; }
+  [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "a benign repaint dropped the pause flag"; }
+  [ -e "$state/.paused-resurfaced-$key" ] \
+    || { reap "$pid"; fail "a benign repaint dropped the declaration one-shot marker"; }
+
+  # Phase C - one busy poll, then the pane returns BYTE-IDENTICAL to phase B.
+  # Net change across this phase is zero in every observable the watcher reads.
+  printf '%s' "$pane_busy" > "$capture_file"
+  # shellcheck disable=SC2016 # deliberately deferred: wait_absorbed evals this, not this shell
+  wait_absorbed "$pid" '[ "$(cat "$state/.hash-$key" 2>/dev/null || true)" = "$hash_busy" ]' \
+    || { reap "$pid"; fail "a parked lane surfaced while its pane read busy (watcher $(wait_fail_word)): $(cat "$out")"; }
+  printf '%s' "$pane_b" > "$capture_file"
+  # shellcheck disable=SC2016 # deliberately deferred: wait_absorbed evals this, not this shell
+  wait_absorbed "$pid" '[ "$(cat "$state/.hash-$key" 2>/dev/null || true)" = "$hash_b" ]' \
+    || { reap "$pid"; fail "a parked lane surfaced after its pane returned to the absorbed text (watcher $(wait_fail_word)): $(cat "$out")"; }
+  counted=$(cat "$state/.count-$key" 2>/dev/null || true)
+  wait_stale_passes "$state" "$key" "$pid" "$counted" 2 \
+    || { reap "$pid"; fail "a busy blip re-armed a first-sight surface on an unchanged parked lane: $(cat "$out")"; }
+  [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "a busy blip dropped the pause flag"; }
+  [ -e "$state/.paused-resurfaced-$key" ] \
+    || { reap "$pid"; fail "a busy blip dropped the declaration one-shot marker"; }
+  reap "$pid"
+  assert_reaped_on_term "declared pause across benign pane repaint"
+
+  [ ! -s "$out" ] || fail "a parked lane printed a wake reason across three benign pane phases: $(cat "$out")"
+  queued=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' \
+    "$state/.wake-queue" 2>/dev/null || echo 0)
+  [ "$queued" -eq 0 ] \
+    || fail "a parked lane queued $queued stale wake(s) with nothing but its pane changing"
+  pass "a declared pause absorbs across benign pane repaint and a busy blip, with the pane hash proven to have moved"
+}
+
+# --- the live-gate one-shot is anchored on the DECLARATION, not the pane ------
+# A crew that wrote paused: may still be sitting at an interactive gate its
+# pause line does not describe, so a live parked crew surfaces once. "Once" has
+# to mean once per pause DECLARATION: anchoring it on the pane hash, which
+# repaints on its own, is what turned it into one wake per repaint.
+#
+# Part 2 is the A/B on that anchor. Both halves enter first sight in exactly the
+# same state and differ in ONE input - whether the declaration marker predates
+# the status file - so neither half can pass for an incidental reason.
+test_live_declared_pause_gate_surfaces_once_per_declaration() {
+  local dir state fakebin out capture_file statusf window key pid counted bare round
+  local paused_verdict repaint_hash pane back
+  paused_verdict='state: paused · source: status-log · waiting at an external-decision gate'
+  window="test:fm-gate-once"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+
+  # Part 1a: a live parked crew whose declaration has never been surfaced.
+  dir=$(make_case paused-gate-one-shot); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/gate.status"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/gate.meta"
+  printf 'paused: waiting at an external-decision gate\n' > "$statusf"
+  printf '%s' "$(seen_sig "$statusf")" > "$state/.seen-gate_status"
+  printf '%s' 'idle external-decision gate  [0]' > "$capture_file"
+  printf '%s' "$(hash_text 'idle external-decision gate  [0]')" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE="$paused_verdict" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=999999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
+  pid=$!
+  wait_for_exit "$pid" "$FM_TEST_WAIT_TICKS" \
+    || fail "a live declared pause did not surface on first sight of its declaration"
+  bare=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w && $5 == "stale: " w { n++ } END { print n + 0 }' "$state/.wake-queue")
+  [ "$bare" -eq 1 ] || fail "first sight of a live declared pause queued $bare bare stale wakes, expected 1"
+  [ -e "$state/.paused-resurfaced-$key" ] || fail "the live-gate surface did not record its declaration marker"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional live-gate surface"
+
+  # Part 1b: the SAME declaration, two repaints under ONE watcher. No new wake.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE="$paused_verdict" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=999999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
+  pid=$!
+  round=1
+  while [ "$round" -le 2 ]; do
+    printf '%s' "idle external-decision gate  [$round]" > "$capture_file"
+    # shellcheck disable=SC2034 # read by the deferred wait_absorbed predicate below
+    repaint_hash=$(hash_text "idle external-decision gate  [$round]")
+    # shellcheck disable=SC2016 # deliberately deferred: wait_absorbed evals this, not this shell
+    wait_absorbed "$pid" '[ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "$repaint_hash" ]' \
+      || { reap "$pid"; fail "repaint $round re-armed the live-gate one-shot (watcher $(wait_fail_word)): $(cat "$out")"; }
+    round=$((round + 1))
+  done
+  counted=$(cat "$state/.count-$key" 2>/dev/null || true)
+  wait_stale_passes "$state" "$key" "$pid" "$counted" 2 \
+    || { reap "$pid"; fail "a repainted live gate surfaced on a later poll: $(cat "$out")"; }
+  reap "$pid"
+  assert_reaped_on_term "live-gate one-shot across repaints"
+  bare=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w && $5 == "stale: " w { n++ } END { print n + 0 }' "$state/.wake-queue")
+  [ "$bare" -eq 0 ] \
+    || fail "two benign repaints of an already-surfaced declaration queued $bare bare stale wakes, expected 0"
+
+  # Part 2: same first-sight entry twice; the ONLY difference is whether the
+  # declaration marker predates the status file.
+  pane='idle at the gate'
+  for round in already-surfaced new-declaration; do
+    dir=$(make_case "paused-gate-$round"); state="$dir/state"; fakebin="$dir/fakebin"
+    out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/gate.status"
+    printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/gate.meta"
+    printf 'paused: waiting at an external-decision gate\n' > "$statusf"
+    printf '%s' "$pane" > "$capture_file"
+    printf '%s' "$(hash_text "$pane")" > "$state/.hash-$key"
+    printf '1\n' > "$state/.count-$key"
+    : > "$state/.paused-$key"
+    : > "$state/.paused-resurfaced-$key"
+    back=$(( $(date +%s) - 300 ))
+    if [ "$round" = already-surfaced ]; then
+      set_mtime "$back" "$statusf"          # declaration older than its marker
+    else
+      set_mtime "$back" "$state/.paused-resurfaced-$key"   # a NEWER declaration
+    fi
+    printf '%s' "$(seen_sig "$statusf")" > "$state/.seen-gate_status"
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+      FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE="$paused_verdict" \
+      FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+      FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=999999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+      FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
+    pid=$!
+    if [ "$round" = already-surfaced ]; then
+      wait_stale_passes "$state" "$key" "$pid" 1 2 \
+        || { reap "$pid"; fail "an already-surfaced declaration surfaced again on first sight: $(cat "$out")"; }
+      reap "$pid"
+      assert_reaped_on_term "declaration anchor, already surfaced"
+    else
+      wait_for_exit "$pid" "$FM_TEST_WAIT_TICKS" \
+        || { reap "$pid"; fail "a declaration newer than its marker did not surface: $(cat "$out")"; }
+    fi
+    bare=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w && $5 == "stale: " w { n++ } END { print n + 0 }' \
+      "$state/.wake-queue" 2>/dev/null || echo 0)
+    if [ "$round" = already-surfaced ]; then
+      [ "$bare" -eq 0 ] || fail "an already-surfaced declaration queued $bare bare stale wakes, expected 0"
+    else
+      [ "$bare" -eq 1 ] || fail "a new declaration queued $bare bare stale wakes, expected 1"
+    fi
+  done
+  pass "the live declared-pause surface fires once per declaration, not once per pane repaint"
 }
 
 test_secondmate_paused_resurfaces_in_normal_mode() {
@@ -1950,6 +2179,8 @@ test_busy_pane_default_turn_age_bound_is_3600s
 test_nonterminal_stale_not_working_surfaced
 test_nonterminal_stale_paused_absorbed_then_resurfaced
 test_exited_declared_pause_is_bounded_but_live_gate_surfaces
+test_declared_pause_survives_benign_pane_repaint
+test_live_declared_pause_gate_surfaces_once_per_declaration
 test_secondmate_paused_resurfaces_in_normal_mode
 test_secondmate_nonpaused_stale_remains_suppressed
 test_secondmate_unpause_clears_pause_tracking
