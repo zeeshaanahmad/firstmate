@@ -273,6 +273,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/merge-time-static-guard.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/orca-backend.md",
       "audience": "operator-current"
     },
