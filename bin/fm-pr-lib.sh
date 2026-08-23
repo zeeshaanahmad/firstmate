@@ -285,6 +285,22 @@ fm_pr_regular_destination_on_device_or_absent() {
   [ ! -e "$path" ] || [ "$(fm_pr_file_device "$path")" = "$device" ]
 }
 
+# The one shape a merge_guard= value may take. bin/fm-pr-merge.sh writes it and
+# fm_pr_metadata_identity_parse accepts it after the identity block, so the
+# accepted set lives here once rather than in both.
+fm_pr_merge_guard_value_valid() {  # <value>
+  local value=${1-}
+  case "$value" in
+    *[[:cntrl:]]*) return 1 ;;
+    green|red|off) return 0 ;;
+    'unguarded: '?*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Read a task's PR identity out of its metadata, refusing metadata whose
+# identity block is followed by anything other than the keys firstmate itself
+# writes there: pr_head=, the Relay link keys, and the merge guard's verdict.
 fm_pr_metadata_identity_parse() {
   local file=$1 line value pr_count=0 seen_pr=0 post_pr_invalid=0
   FM_PR_META_PROVIDER=
@@ -316,6 +332,9 @@ fm_pr_metadata_identity_parse() {
         fi
         ;;
       x_request=*|x_request_ts=*|x_followups=*|x_platform=*|x_reply_max_chars=*)
+        ;;
+      merge_guard=*)
+        fm_pr_merge_guard_value_valid "${line#merge_guard=}" || post_pr_invalid=1
         ;;
       *)
         [ "$seen_pr" -eq 0 ] || post_pr_invalid=1
