@@ -106,7 +106,7 @@ $ bin/fm-lint.sh
 fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
 
 $ bin/fm-doc-audience-check.sh
-fm-doc-audience-check: ok surfaces=68 local_links=253
+fm-doc-audience-check: ok surfaces=69 local_links=257
 
 $ git diff --check
 (no output)
