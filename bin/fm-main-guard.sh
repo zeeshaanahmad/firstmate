@@ -42,6 +42,11 @@
 # state/<check-id>.main-guard-output for firstmate to read; the wake line names
 # it rather than carrying it, because a wake line is one line.
 #
+# A KILLED CHECK IS NOT A GREEN TIP. A checker that exceeds
+# FM_MAIN_GUARD_BUDGET reaches no verdict, so the tip is left unrecorded and the
+# next poll retries. Unlike the merge-time half, this one grants nothing on a
+# timeout, so it has nothing to refuse; see docs/merge-time-static-guard.md.
+#
 # TIMING. The watcher allows FM_CHECK_TIMEOUT (default 30s) per check. The
 # common poll is one `git ls-remote` on an unchanged branch. A poll that does
 # find a new tip adds a private object-store preparation, one incremental fetch,
@@ -292,8 +297,13 @@ cmd_poll() {
       fi
       ;;
     *)
-      # No verdict: stay silent and do not record the tip, so the next poll
-      # tries again instead of treating an unreachable checker as green.
+      # No verdict, whether the check was unreachable or was killed by
+      # MAIN_GUARD_BUDGET before it answered. Stay silent and do not record the
+      # tip, so the next poll tries again instead of treating either as green.
+      # Detection needs no separate timeout refusal the way bin/fm-pr-merge.sh
+      # does: this half authorizes nothing, so the worst a killed check costs
+      # here is a repeated poll. A project whose checker cannot finish inside
+      # this budget is the arming-time problem the header describes.
       ;;
   esac
 }

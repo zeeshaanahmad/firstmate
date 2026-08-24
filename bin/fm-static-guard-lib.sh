@@ -47,6 +47,14 @@
 # (git 2.38 and later). Older git cannot compute it, which reads as no verdict
 # and degrades to unguarded rather than to a silent pass.
 #
+# A CUT-OFF CHECK IS NOT NO-VERDICT. "unguarded" means the guard could not
+# reach the check at all - nothing discoverable, no forge, no object store, a
+# git too old. A check that WAS discovered, WAS launched, and was then killed
+# by its budget is a different outcome and gets its own verdict, "timeout",
+# because it has a way forward the unguarded cases do not: run it again with
+# room. Collapsing the two is what let a killed check read as permission to
+# merge on 2026-08-24.
+#
 # Every function returns non-zero rather than exiting, so a sourcing script
 # keeps control of its own refusal path.
 set -u
@@ -73,8 +81,18 @@ FM_STATIC_CHECK_SOURCE=
 # Seconds allowed for one git network call and for one whole check run. Both
 # are overridable so a slower project or a slower link can be accommodated
 # without editing this file.
+#
+# THE CHECK BUDGET IS A HANG BOUND, NOT A PERFORMANCE TARGET. Its only job is
+# to stop a wedged checker from hanging a merge forever, so it must clear the
+# slowest check that genuinely finishes. The original 180s was sized against a
+# fast linter (ruff, ~2s) and was marginal for a project whose own gate is
+# slower: firstmate's own shellcheck gate measured 439s and 507s across two runs
+# on one machine, so 180s killed a check that was in fact green. 900s clears
+# that with headroom for the observed run-to-run spread; docs/verification/
+# merge-time-static-guard.md holds the measurement. A project slower than this
+# raises FM_STATIC_CHECK_TIMEOUT for that merge - the refusal names the knob.
 FM_STATIC_GUARD_FETCH_TIMEOUT=${FM_STATIC_GUARD_FETCH_TIMEOUT:-60}
-FM_STATIC_CHECK_TIMEOUT=${FM_STATIC_CHECK_TIMEOUT:-180}
+FM_STATIC_CHECK_TIMEOUT=${FM_STATIC_CHECK_TIMEOUT:-900}
 
 # Private refs the guard writes into its own bare repository. They never touch
 # the project clone, so their names only have to be stable here.
@@ -332,11 +350,14 @@ fm_static_check_run() {  # <command> <dir> <seconds> <out-file>
 
 # The shared verdict: discover the project's static check from <trusted-rev>
 # and run it against <tree-ish>. Sets:
-#   FM_STATIC_GUARD_VERDICT  green | red | unguarded
+#   FM_STATIC_GUARD_VERDICT  green | red | timeout | unguarded
 #   FM_STATIC_GUARD_DETAIL   one line naming what happened
 #   FM_STATIC_GUARD_OUTPUT   file holding the checker's output, or empty
-# "unguarded" is never a pass: it means no verdict was reached, and every
-# caller is required to say so out loud rather than merge or sleep quietly.
+# Neither "unguarded" nor "timeout" is a pass. "unguarded" means the check was
+# never reached; "timeout" means it was reached, launched, and killed before it
+# could answer. Callers own what each one costs - the merge-time guard refuses a
+# timeout and proceeds loudly on unguarded - but no caller may read either as
+# green.
 fm_static_guard_evaluate_tree() {  # <gitdir> <trusted-rev> <tree-ish> [<seconds>]
   local gitdir=$1 rev=$2 treeish=$3 secs=${4:-$FM_STATIC_CHECK_TIMEOUT} dir rc=0
   # shellcheck disable=SC2034 # VERDICT/DETAIL/OUTPUT are this function's whole
@@ -368,9 +389,18 @@ fm_static_guard_evaluate_tree() {  # <gitdir> <trusted-rev> <tree-ish> [<seconds
       FM_STATIC_GUARD_VERDICT=red
       FM_STATIC_GUARD_DETAIL="$FM_STATIC_CHECK_SOURCE: $FM_STATIC_CHECK_CMD"
       ;;
-    *)
+    2)
+      # The check was killed with its answer still unwritten. Whatever partial
+      # output it left measured nothing, so it is not offered as evidence.
       # shellcheck disable=SC2034 # Read by both guards; see the note above.
+      FM_STATIC_GUARD_VERDICT=timeout
       FM_STATIC_GUARD_DETAIL="the static check did not finish within ${secs}s"
+      FM_STATIC_GUARD_OUTPUT=
+      ;;
+    *)
+      # The check could not be started at all, which is the unguarded class.
+      # shellcheck disable=SC2034 # Read by both guards; see the note above.
+      FM_STATIC_GUARD_DETAIL='the static check could not be run'
       FM_STATIC_GUARD_OUTPUT=
       ;;
   esac

@@ -294,6 +294,10 @@ fm_pr_merge_guard_value_valid() {  # <value>
     *[[:cntrl:]]*) return 1 ;;
     green|red|off) return 0 ;;
     'unguarded: '?*) return 0 ;;
+    # A check that was killed rather than answered: refused by default, merged
+    # only under an explicit operator flag. The two are kept apart so an audit
+    # can tell a refusal from a deliberate override.
+    'timeout: '?*|'timeout-allowed: '?*) return 0 ;;
     *) return 1 ;;
   esac
 }

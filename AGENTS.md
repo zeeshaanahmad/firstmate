@@ -328,6 +328,7 @@ Never merge a red PR.
 Without a current explicit captain instruction that states the concrete merge, that default stands, and standing `yolo` cannot authorize a red merge; section 1 owns when such an instruction overrides a Firstmate-written standing rule within its exact scope.
 Use `bin/fm-pr-merge.sh` for every task PR merge so merge metadata is recorded, and use `bin/fm-merge-local.sh` for approved local-only landing; never call a lower-level merge command around their guards.
 That merge path re-checks the exact merge result against the current default branch and refuses a red one, which means the lane must rebase onto current main and re-gate rather than the check being worked around ([`docs/merge-time-static-guard.md`](docs/merge-time-static-guard.md)).
+It also refuses when that check could not finish, because an unmeasured merge result is not a green one; give the check more room and re-run rather than reaching for the override the refusal names.
 After an autonomous merge, give the captain a one-line full-URL or local-main outcome.
 
 ### Validate

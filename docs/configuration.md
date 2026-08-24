@@ -542,7 +542,8 @@ FM_INACTIVE_RECONCILE_SECS=900  # 60..1800-second watcher cadence and inactivity
 FM_INACTIVE_RECONCILE_BUDGET_SECS=10  # 1..30-second aggregate bound per inactive-outcome scan
 FM_CHECK_INTERVAL=300   # seconds between slow checks (authenticated merge polls, custom checks, or Relay dispatch)
 FM_CHECK_TIMEOUT=30     # seconds allowed per slow check script
-FM_MERGE_GUARD=         # off skips fm-pr-merge.sh's merge-time static guard and records merge_guard=off (docs/merge-time-static-guard.md)
+FM_MERGE_GUARD=         # fm-pr-merge.sh's merge-time static guard posture: unset guards fully, off skips it and records merge_guard=off, allow-timeout still refuses red but merges past a check that could not finish; any other value is refused (docs/merge-time-static-guard.md)
+FM_STATIC_CHECK_TIMEOUT=900  # seconds allowed for one whole merge-time check run; a hang bound, not a performance target, so raise it for a project whose own gate is slower rather than letting a green check be killed (docs/merge-time-static-guard.md)
 FM_MAIN_GUARD_BUDGET=20  # seconds capping the discovered static checker inside fm-main-guard.sh's poll, within the outer FM_CHECK_TIMEOUT (docs/merge-time-static-guard.md)
 FM_STATIC_GUARD_FETCH_TIMEOUT=60   # seconds allowed per git fetch/ls-remote in bin/fm-static-guard-lib.sh, shared by the merge-time guard and fm-main-guard.sh
 FM_PROCEVENT_MAX_OUTPUT_BYTES=1048576   # bound on one captured process-to-event result

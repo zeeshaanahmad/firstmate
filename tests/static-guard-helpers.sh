@@ -15,19 +15,26 @@ fm_sg_git() {  # <repo> <git args...>
   git -C "$1" -c user.name=fmtest -c user.email=fmtest@example.invalid "${@:2}"
 }
 
-fm_sg_write_checker() {  # <dir>
-  cat > "$1/check.sh" <<'SH'
-#!/usr/bin/env bash
+# An optional <sleep-seconds> makes the same checker slower than a small budget
+# without changing what it decides, so a timeout case and a green case can share
+# one fixture and differ only in the budget they are given.
+fm_sg_write_checker() {  # <dir> [sleep-seconds]
+  local dir=$1 sleep_secs=${2:-}
+  {
+    printf '#!/usr/bin/env bash\n'
+    [ -n "$sleep_secs" ] && printf 'sleep %s\n' "$sleep_secs"
+    cat <<'SH'
 rc=0
 for n in $(grep -hoE 'USE_[A-Z_]+' ./*.py 2>/dev/null | sort -u); do
   grep -qE "^$n = " lib.py 2>/dev/null || { echo "undefined name: $n"; rc=1; }
 done
 exit "$rc"
 SH
-  chmod +x "$1/check.sh"
+  } > "$dir/check.sh"
+  chmod +x "$dir/check.sh"
 }
 
-# fm_sg_make_project <case_dir> [plain|nocheck|prconfig|makefile]
+# fm_sg_make_project <case_dir> [plain|nocheck|prconfig|makefile|slow]
 # Builds <case_dir>/origin.git (with HEAD on main and refs/pull/7/head) and
 # <case_dir>/work, and records the base commit in <case_dir>/base.sha.
 fm_sg_make_project() {
@@ -36,7 +43,13 @@ fm_sg_make_project() {
   git init -q --bare "$origin"
   git clone -q "$origin" "$work" 2>/dev/null
   printf 'USE_OLD = 1\n' > "$work/lib.py"
-  fm_sg_write_checker "$work"
+  if [ "$variant" = slow ]; then
+    # Slower than the small budget a timeout case passes, fast enough that the
+    # same fixture still finishes when a case gives it room.
+    fm_sg_write_checker "$work" 5
+  else
+    fm_sg_write_checker "$work"
+  fi
   case "$variant" in
     nocheck) ;;
     makefile)
