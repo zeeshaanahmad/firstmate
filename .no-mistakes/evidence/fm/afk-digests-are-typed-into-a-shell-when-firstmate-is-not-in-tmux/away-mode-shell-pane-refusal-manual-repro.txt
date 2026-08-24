@@ -1,0 +1,102 @@
+### 1. Start a REAL zsh pane with the captain's REAL starship prompt (no firstmate/agent involved), on a PRIVATE tmux socket ###
+socket=fm-manual-repro-20007 pane=%0
+
+--- rendered pane ---
+Muhammads-MacBook-Pro-9% eval "$(starship init zsh)"
+01M0TXPQBFSMVW7RS63YQMHRN1 on  HEAD [!]
+❯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+---------------------
+
+### 2. Classify with the SHAPE-ONLY composer classifier (bin/fm-composer-lib.sh via fm-backend.sh) ###
+fm_backend_composer_state tmux %0  =>  empty
+
+### 3. Classify with the NEW independent, non-rendered foreground-process signal ###
+fm_backend_pane_agent_state tmux %0  =>  dead
+
+### 4. Attempt an actual escalation delivery through the daemon's real injection path ###
+escalation buffer before flush attempt:
+task-a.status: done: closed all three _KNOWN_GAPS entries (pre-read)
+task-b.status: done: contract published, committed 68222d90
+
+RESULT: escalate_flush REFUSED/DEFERRED delivery (exit 1) -- correct behavior
+
+--- pane after the flush attempt (should be untouched, no typed digest, no parse error) ---
+Muhammads-MacBook-Pro-9% eval "$(starship init zsh)"
+01M0TXPQBFSMVW7RS63YQMHRN1 on  HEAD [!]
+❯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+-----------------------------------------------------------------------------------------
+
+escalation buffer AFTER the flush attempt (should still hold both entries):
+task-a.status: done: closed all three _KNOWN_GAPS entries (pre-read)
+task-b.status: done: contract published, committed 68222d90
+
+### 5. Contrast: an otherwise identical pane with a real agent-named foreground process ###
+fm_backend_pane_agent_state tmux %1 (agent-named foreground process)  =>  alive
+RESULT: escalate_flush DELIVERED to the agent-named pane (exit 0) -- correct: refusal discriminates, not a blanket block
+--- agent pane submitted-content log ---
+⁣FIRSTMATE_OP: v1 away-supervisor: Supervisor escalate (       3 event(s)): task-a.status: done: closed all three _KNOWN_GAPS entries (pre-read) | task-b.status: done: contract published, committed 68222d90 | task-c.status: done: agent-pane contrast case (pre-read; re-arm not needed — watcher daemon-managed)
+-----------------------------------------
+
+### 6. Daemon STARTUP refusal when no pane can be identified at all ###
+daemon exit code: 1
+--- stderr ---
+error: away mode cannot start here: firstmate is not running inside a tmux or herdr pane, so there is no pane to deliver escalations to (no FM_SUPERVISOR_TARGET, TMUX_PANE, or HERDR_ENV/HERDR_PANE_ID). Run firstmate inside tmux or herdr, or set FM_SUPERVISOR_TARGET (and FM_SUPERVISOR_BACKEND) to firstmate's own pane. Refusing to start rather than guessing a pane.
+--------------
+wedge marker present: yes
+fm away-mode daemon REFUSED TO START at 2026-08-25T01:50:24+0300
+away mode cannot start here: firstmate is not running inside a tmux or herdr pane, so there is no pane to deliver escalations to (no FM_SUPERVISOR_TARGET, TMUX_PANE, or HERDR_ENV/HERDR_PANE_ID). Run firstmate inside tmux or herdr, or set FM_SUPERVISOR_TARGET (and FM_SUPERVISOR_BACKEND) to firstmate's own pane. Refusing to start rather than guessing a pane.
+No escalation can be delivered until this is fixed. Buffered items:
