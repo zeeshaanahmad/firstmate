@@ -26,6 +26,14 @@
 #   (j) recording the verdict leaves the armed merge poll valid to the watcher
 #   (k) a Makefile lint: target is the second discovery source
 #   (l) an unreachable forge degrades loudly instead of wedging every merge
+#   (m) a check that does not finish within its budget REFUSES the merge:
+#       a killed check is unmeasured, and unmeasured is not green
+#   (n) non-vacuity for (m): the same slow project merges green when the
+#       budget gives it room, so (m) refuses the timeout and not the fixture
+#   (o) FM_MERGE_GUARD=allow-timeout is the explicit, recorded way past an
+#       unfinished check
+#   (p) that override is narrow: a red merge result is still refused under it
+#   (q) an unrecognised FM_MERGE_GUARD value is refused, not silently ignored
 set -u
 
 # shellcheck source=tests/static-guard-helpers.sh
@@ -319,6 +327,120 @@ test_unreachable_forge_is_loudly_unguarded() {
   pass "an unreachable forge degrades to a loud unguarded merge, not a wedge or a silent pass"
 }
 
+# The defect this suite was extended for: on 2026-08-24 a real merge printed
+# "UNGUARDED - the static check did not finish within 180s" and merged anyway.
+# A check that was killed mid-run measured nothing, and nothing is not green.
+test_unfinished_check_refuses_the_merge() {
+  local case_dir rc
+  case_dir=$(make_case check-timeout slow)
+  # The merge result would be GREEN given room, so a refusal here can only be
+  # the unfinished check - never the merge result itself.
+  fm_sg_advance_main_harmless "$case_dir"
+
+  set +e
+  FM_STATIC_CHECK_TIMEOUT=1 run_pr_merge "$case_dir" task-g1 https://github.com/example/repo/pull/7 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "check-timeout: an unfinished check must refuse the merge, not authorize it"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "check-timeout: the PR was merged without the static check ever finishing"
+  assert_grep 'merge refused' "$case_dir/stderr" \
+    "check-timeout: the refusal did not say the merge was refused"
+  assert_grep 'did not finish within 1s' "$case_dir/stderr" \
+    "check-timeout: the refusal did not name the budget that was exceeded"
+  assert_grep 'FM_STATIC_CHECK_TIMEOUT' "$case_dir/stderr" \
+    "check-timeout: the refusal did not name the budget to retry with"
+  assert_grep 'FM_MERGE_GUARD=allow-timeout' "$case_dir/stderr" \
+    "check-timeout: the refusal did not name the explicit override"
+  assert_grep 'merge_guard=timeout' "$case_dir/state/task-g1.meta" \
+    "check-timeout: the unfinished check was not recorded in task metadata"
+  pass "a static check that does not finish refuses the merge instead of authorizing it"
+}
+
+# (m) must refuse because the check ran out of budget, not because this fixture
+# can never pass. The same project, given room, merges green.
+test_slow_check_merges_green_when_given_room() {
+  local case_dir
+  case_dir=$(make_case slow-check-with-room slow)
+  fm_sg_advance_main_harmless "$case_dir"
+
+  FM_STATIC_CHECK_TIMEOUT=60 run_pr_merge "$case_dir" task-g1 https://github.com/example/repo/pull/7 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "slow-check-with-room: fm-pr-merge failed: $(cat "$case_dir/stderr")"
+
+  assert_grep 'merge-guard: green' "$case_dir/stdout" \
+    "slow-check-with-room: the slow check did not reach a green verdict with room to finish"
+  assert_grep 'pr merge 7 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    "slow-check-with-room: the PR did not merge on a green verdict"
+  assert_grep 'merge_guard=green' "$case_dir/state/task-g1.meta" \
+    "slow-check-with-room: the green outcome was not recorded in task metadata"
+  pass "the same slow project merges green when the budget gives its check room to finish"
+}
+
+test_allow_timeout_is_explicit_and_recorded() {
+  local case_dir
+  case_dir=$(make_case allow-timeout slow)
+  fm_sg_advance_main_harmless "$case_dir"
+
+  FM_MERGE_GUARD=allow-timeout FM_STATIC_CHECK_TIMEOUT=1 \
+    run_pr_merge "$case_dir" task-g1 https://github.com/example/repo/pull/7 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "allow-timeout: the explicit override should merge: $(cat "$case_dir/stderr")"
+
+  assert_grep 'UNGUARDED' "$case_dir/stderr" \
+    "allow-timeout: merging past an unfinished check was not announced"
+  assert_grep 'FM_MERGE_GUARD=allow-timeout' "$case_dir/stderr" \
+    "allow-timeout: the announcement did not say the override was what allowed it"
+  assert_grep 'pr merge 7 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    "allow-timeout: the explicit override did not merge"
+  assert_grep 'merge_guard=timeout-allowed' "$case_dir/state/task-g1.meta" \
+    "allow-timeout: metadata does not distinguish an operator override from a default"
+  pass "merging past an unfinished check takes an explicit flag and is recorded as one"
+}
+
+# The override answers "the check could not finish", never "the check said no".
+test_allow_timeout_still_refuses_a_red_merge_result() {
+  local case_dir rc
+  case_dir=$(make_case allow-timeout-red)
+  fm_sg_advance_main_rename "$case_dir"
+
+  set +e
+  FM_MERGE_GUARD=allow-timeout run_pr_merge "$case_dir" task-g1 https://github.com/example/repo/pull/7 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "allow-timeout-red: a red merge result must still be refused under the override"
+  assert_grep 'merge refused' "$case_dir/stderr" \
+    "allow-timeout-red: the red refusal was lost under the override"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "allow-timeout-red: the timeout override became a second off switch"
+  assert_grep 'merge_guard=red' "$case_dir/state/task-g1.meta" \
+    "allow-timeout-red: the red outcome was not recorded in task metadata"
+  pass "the unfinished-check override does not weaken the red refusal"
+}
+
+test_unknown_guard_mode_is_refused() {
+  local case_dir rc
+  case_dir=$(make_case unknown-guard-mode)
+  fm_sg_advance_main_rename "$case_dir"
+
+  set +e
+  FM_MERGE_GUARD=allow-timout run_pr_merge "$case_dir" task-g1 https://github.com/example/repo/pull/7 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 2 "$rc" "unknown-guard-mode: a misspelled guard mode must refuse, not be ignored"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "unknown-guard-mode: the PR merged under a guard mode nothing understood"
+  assert_grep 'FM_MERGE_GUARD' "$case_dir/stderr" \
+    "unknown-guard-mode: the refusal did not name the setting it could not read"
+  pass "an unrecognised FM_MERGE_GUARD value is refused rather than silently ignored"
+}
+
 test_refuses_red_merge_result
 test_allows_green_merge_result
 test_each_side_is_green_alone
@@ -331,3 +453,8 @@ test_second_merge_attempt_still_records
 test_recorded_verdict_keeps_the_merge_poll_valid
 test_makefile_lint_target_is_the_second_source
 test_unreachable_forge_is_loudly_unguarded
+test_unfinished_check_refuses_the_merge
+test_slow_check_merges_green_when_given_room
+test_allow_timeout_is_explicit_and_recorded
+test_allow_timeout_still_refuses_a_red_merge_result
+test_unknown_guard_mode_is_refused

@@ -11,8 +11,11 @@
 # and execution). A red result refuses the merge and tells the lane to rebase
 # onto current main and re-gate; a conflicted merge is refused on the same
 # ground. The guard runs unconditionally rather than behind a staleness probe:
-# it was measured at a 1.0s median across 106 merges, which does not pay for the
-# extra branch. It never writes to the project.
+# it was measured at a 1.0s median across 106 merges of a project whose checker
+# is a fast linter, which does not pay for the extra branch. That median is not
+# universal - a project whose own gate is a slow one pays that gate on every
+# merge here; see docs/verification/merge-time-static-guard.md. It never writes
+# to the project.
 #
 # WHAT THE GUARD DOES NOT CATCH. The static class only - undefined names,
 # imports, formatting, and whatever else the project's own checker reports.
@@ -20,18 +23,41 @@
 #
 # THE GUARD DOES NOT SURVIVE AN AIRGAPPED SITE. It needs the forge to learn the
 # current default-branch tip, and a pinned checker fetched by its pin needs the
-# network on a cold cache. Where it cannot reach a verdict it says
+# network on a cold cache. Where it cannot REACH the check at all it says
 # "merge-guard: UNGUARDED - <reason>" out loud and merges as before, rather than
-# implying a check that did not happen or wedging every merge.
+# implying a check that did not happen or wedging every merge behind an
+# unrelated outage.
+#
+# A CHECK THAT RAN OUT OF BUDGET IS DIFFERENT, AND REFUSES. The unguarded cases
+# above have no next step: the forge is gone, or the project declares no check.
+# A check that was discovered, launched, and then killed by its budget has an
+# obvious one - run it again with room - and it measured nothing, so treating it
+# as permission to merge is exactly the "unmeasured is green" conflation this
+# guard exists to remove. On 2026-08-24 that conflation merged a PR after
+# printing its own absence. A timeout now refuses, naming the budget that was
+# exceeded and the two ways forward.
 #
 # The verdict is recorded in the task's metadata as ONE field:
-#   merge_guard=green | red | off | unguarded: <reason>
-# so teardown and any later audit can see whether it ran and what it said.
+#   merge_guard=green | red | off
+#              | unguarded: <reason>       no verdict reachable; merged
+#              | timeout: <reason>         check killed; merge REFUSED
+#              | timeout-allowed: <reason> check killed; merged by explicit flag
+# so teardown and any later audit can see whether it ran and what it said, and
+# can tell an operator's deliberate override from a default.
 #
-# FM_MERGE_GUARD=off skips the guard entirely and records merge_guard=off. It
-# exists for the one case refusing cannot fix: a default branch already red for
-# reasons this PR did not cause, where every merge would otherwise be blocked.
-# Turning it off is a deliberate decision, not a way past an inconvenient red.
+# FM_MERGE_GUARD selects the guard's posture and takes exactly three values:
+#   unset          run the guard; refuse red, conflicts, and an unfinished check
+#   off            skip the guard entirely and record merge_guard=off. For the
+#                  one case refusing cannot fix: a default branch already red for
+#                  reasons this PR did not cause, where every merge would
+#                  otherwise be blocked. A deliberate decision, not a way past an
+#                  inconvenient red.
+#   allow-timeout  run the guard and still refuse red and conflicts, but merge
+#                  past a check that could not finish. Narrower than off on
+#                  purpose: it answers "the check could not finish", never "the
+#                  check said no".
+# Any other value is refused rather than silently ignored, so a misspelled
+# override never quietly becomes a different posture than the operator asked for.
 #
 # Merge method defaults to --squash when the caller passes none of --squash,
 # --merge, --rebase, or --method after the optional -- separator. Extra args
@@ -95,6 +121,17 @@ reject_repo_overrides() {
 }
 
 reject_repo_overrides "$@" || exit 1
+
+# Resolved once, before any work, so an unreadable posture stops the merge
+# rather than half-running it.
+MERGE_GUARD_MODE=${FM_MERGE_GUARD:-}
+case "$MERGE_GUARD_MODE" in
+  ''|off|allow-timeout) ;;
+  *)
+    echo "error: FM_MERGE_GUARD must be unset, off, or allow-timeout" >&2
+    exit 2
+    ;;
+esac
 
 # Task-derived paths are constructed only after the canonical ID validation.
 META="$STATE/$ID.meta"
@@ -235,13 +272,17 @@ merge_guard_evaluate() {
       MERGE_GUARD_VERDICT=red
       MERGE_GUARD_NOTE="the squash result of this PR onto $branch@${base:0:12} fails ${FM_STATIC_GUARD_DETAIL}"
       ;;
+    timeout)
+      MERGE_GUARD_VERDICT=timeout
+      MERGE_GUARD_NOTE="$FM_STATIC_GUARD_DETAIL"
+      ;;
     *)
       merge_guard_unguarded "$FM_STATIC_GUARD_DETAIL"
       ;;
   esac
 }
 
-if [ "${FM_MERGE_GUARD:-}" = off ]; then
+if [ "$MERGE_GUARD_MODE" = off ]; then
   echo "merge-guard: OFF by FM_MERGE_GUARD=off - merging without a static check of the merge result" >&2
   merge_guard_record off || { echo "error: guard outcome could not be recorded" >&2; exit 1; }
 else
@@ -261,6 +302,21 @@ else
       # failure must never turn a red merge result into a merge.
       merge_guard_record red || echo "error: guard outcome could not be recorded" >&2
       exit 1
+      ;;
+    timeout)
+      if [ "$MERGE_GUARD_MODE" = allow-timeout ]; then
+        echo "merge-guard: UNGUARDED - $MERGE_GUARD_NOTE; merging by explicit FM_MERGE_GUARD=allow-timeout" >&2
+        MERGE_GUARD_VERDICT="timeout-allowed: $MERGE_GUARD_NOTE"
+      else
+        echo "error: merge refused - $MERGE_GUARD_NOTE" >&2
+        echo "the check was killed, not passed; an unmeasured merge result is not a green one" >&2
+        echo "re-run with room (FM_STATIC_CHECK_TIMEOUT=<seconds>), or merge past it deliberately with FM_MERGE_GUARD=allow-timeout" >&2
+        # The refusal stands even if the record cannot be written, exactly as it
+        # does for red: a recording failure must never turn a refusal into a merge.
+        merge_guard_record "timeout: $MERGE_GUARD_NOTE" \
+          || echo "error: guard outcome could not be recorded" >&2
+        exit 1
+      fi
       ;;
     *)
       echo "merge-guard: UNGUARDED - $MERGE_GUARD_NOTE; merging without a static check of the merge result" >&2

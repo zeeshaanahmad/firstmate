@@ -341,6 +341,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/merge-time-static-guard.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/muse.md",
       "audience": "maintainer-verification"
     },
