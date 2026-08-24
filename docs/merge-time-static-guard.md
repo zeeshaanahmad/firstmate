@@ -13,7 +13,8 @@ Firstmate owns both halves because both are merge-path concerns, and both are ch
 It computes the exact squash result of the PR head onto the current default-branch tip with `git merge-tree --write-tree`, writes that tree out, and runs the project's own pinned static check against it.
 A red result refuses the merge and tells the lane to rebase onto current main and re-gate.
 A merge that conflicts is refused on the same ground, because a conflicted merge is not a mergeable PR.
-The guard runs unconditionally rather than behind a staleness probe: the check's median cost does not pay for the extra branch.
+The guard runs unconditionally rather than behind a staleness probe: it was measured at a 1.0s median across 106 merges of a project whose checker is a fast linter, which does not pay for the extra branch.
+That median is not universal - a project whose own gate is a slow one pays that gate on every merge here, and whether such a project should get a staleness probe instead is a follow-up above this document, not yet decided (see [`verification/merge-time-static-guard.md`](verification/merge-time-static-guard.md) for the measurement).
 
 **Detection** lives in `bin/fm-main-guard.sh`, armed once per repository as an ordinary registered watcher check.
 When the default branch's SHA moves, it runs the same discovered check against the new tip and wakes firstmate with one line when that tip is red.
