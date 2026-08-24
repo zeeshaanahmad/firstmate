@@ -25,9 +25,15 @@
 # identification"). A guessed injection target cannot be made safe by a warning,
 # so discovery now fails instead of guessing and the daemon refuses to start.
 #
-# The BACKEND default survives: it is only ever reached when a target WAS
-# resolved (an explicit FM_SUPERVISOR_TARGET with no explicit backend), where
-# tmux remains the documented reading of a bare target string.
+# The BACKEND default survives, because unlike the removed target guess it
+# never by itself gets a keystroke typed into a pane. bin/fm-afk-launch.sh only
+# calls discover_supervisor_backend after a target has already resolved,
+# typically an explicit FM_SUPERVISOR_TARGET with no explicit backend.
+# bin/fm-supervise-daemon.sh resolves BACKEND before TARGET (see its own
+# "auto-discover the supervisor BACKEND ... first" comment), so there the
+# fallback can run even with no target signals at all; that guess is simply
+# discarded the moment target identification then refuses to start. Either
+# way, tmux remains the documented reading of a bare target string.
 FM_SUPERVISOR_BACKEND_DEFAULT="tmux"
 
 # discover_supervisor_target: resolve the pane running firstmate. Priority:
@@ -69,7 +75,9 @@ discover_supervisor_target() {
 #   1. FM_SUPERVISOR_BACKEND env (explicit override).
 #   2. $TMUX_PANE set - tmux.
 #   3. $HERDR_ENV=1 (with $HERDR_PANE_ID present) - herdr.
-#   4. FM_SUPERVISOR_BACKEND_DEFAULT (tmux) - matches the target fallback. Returns 1.
+#   4. FM_SUPERVISOR_BACKEND_DEFAULT (tmux) - kept even though the target
+#      fallback above it was removed; see the rationale where it's declared.
+#      Returns 1.
 discover_supervisor_backend() {
   if [ -n "${FM_SUPERVISOR_BACKEND:-}" ]; then
     printf '%s' "$FM_SUPERVISOR_BACKEND"
