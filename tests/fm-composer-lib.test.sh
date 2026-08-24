@@ -269,19 +269,23 @@ test_matrix_herdr_halfblock_rule_bounds_bare_wrap() {
   # rather than the box-drawing family. Without treating those as edges, a bare
   # composer's WRAP region walks through its own closing rule and swallows the
   # footer, whose real content turns an idle pane into a false `pending`.
-  # Captured live from a herdr cursor pane.
+  # Captured live from a herdr cursor pane. The non-ASCII glyphs are written as
+  # octal BYTE escapes, matching bin/fm-composer-lib.sh's own convention: bash's
+  # `\uNNNN` escape needs bash 4.2, so under macOS's system bash 3.2 it produced
+  # the literal text `\u2580` and this case failed everywhere that bash is the
+  # test interpreter.
   local screen plain out
-  plain=$'transcript\n \u2584\u2584\u2584\u2584\u2584\u2584\u2584\u2584\n  \u2192 Add a follow-up\n \u2580\u2580\u2580\u2580\u2580\u2580\u2580\u2580\n  Cursor Grok 4.5 High \u00b7 6.7%   Run Everything\n  ~/wt \u00b7 64cdd3a'
+  plain=$'transcript\n \342\226\204\342\226\204\342\226\204\342\226\204\342\226\204\342\226\204\342\226\204\342\226\204\n  \342\206\222 Add a follow-up\n \342\226\200\342\226\200\342\226\200\342\226\200\342\226\200\342\226\200\342\226\200\342\226\200\n  Cursor Grok 4.5 High \302\267 6.7%   Run Everything\n  ~/wt \302\267 64cdd3a'
   # The closing rule must bound the region, so the footer below is not input.
-  fm_composer_row_has_edge " $(printf '\u2580\u2580\u2580')" \
+  fm_composer_row_has_edge " $(printf '\342\226\200\342\226\200\342\226\200')" \
     || fail "a half-block rule row must count as a structural edge"
-  fm_composer_row_has_edge " $(printf '\u2584\u2584\u2584')" \
+  fm_composer_row_has_edge " $(printf '\342\226\204\342\226\204\342\226\204')" \
     || fail "the upper half-block rule must count as a structural edge"
   # Non-vacuousness: the footer rows really are non-blank content that would be
   # swallowed if the rule did not bound the region.
   case "$plain" in *"Run Everything"*) : ;; *) fail "fixture lost its footer content" ;; esac
   ESC_LOCAL=$(printf '\033')
-  screen=$'transcript\n \u2584\u2584\u2584\u2584\u2584\u2584\u2584\u2584\n'"  ${ESC_LOCAL}[2m\u2192 ${ESC_LOCAL}[0;7mA${ESC_LOCAL}[0;2mdd a follow-up${ESC_LOCAL}[0m"$'\n \u2580\u2580\u2580\u2580\u2580\u2580\u2580\u2580\n  Cursor Grok 4.5 High \u00b7 6.7%   Run Everything\n  ~/wt \u00b7 64cdd3a'
+  screen=$'transcript\n \342\226\204\342\226\204\342\226\204\342\226\204\342\226\204\342\226\204\342\226\204\342\226\204\n'"  ${ESC_LOCAL}[2m\342\206\222 ${ESC_LOCAL}[0;7mA${ESC_LOCAL}[0;2mdd a follow-up${ESC_LOCAL}[0m"$'\n \342\226\200\342\226\200\342\226\200\342\226\200\342\226\200\342\226\200\342\226\200\342\226\200\n  Cursor Grok 4.5 High \302\267 6.7%   Run Everything\n  ~/wt \302\267 64cdd3a'
   out=$(fm_composer_classify_screen "$CAPS_STYLED" "$(printf '%b' "$screen")")
   [ "$out" = empty ] \
     || fail "an idle cursor composer inside herdr half-block rules must read empty, got '$out'"

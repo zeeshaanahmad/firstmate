@@ -77,6 +77,24 @@
 # Both glyph sets are declared
 # exactly once below; every decision reaches them through the declarations.
 #
+# THE LIMIT OF THAT RULE, and what callers owe on top of it (2026-08-24;
+# docs/verification/runtime-backends.md "Away-mode supervisor pane
+# identification"): the shell glyph list above is a list of characters a shell
+# was ASSUMED to draw, and real shells draw whatever their prompt is configured
+# to. starship - the default prompt on many machines - draws `❯`, which is
+# byte-identical to claude's bare agent glyph, so a plain interactive zsh
+# renders exactly the shape this file proves `empty`. Widening the shell list
+# cannot fix that: the next unrecognized prompt would be equally invisible, and
+# every character a shell can draw is also a character a harness can draw.
+# The honest boundary is that this file classifies RENDERED SHAPE, and shape
+# can never establish WHO owns the pane. A caller that merely OBSERVES a verdict
+# is fine with shape alone. A caller that ACTS on `empty` by sending keystrokes
+# into the pane must corroborate with a second, independent, non-rendered
+# signal - the kernel's own foreground-process facts for that pane, whose
+# single owner is fm_backend_pane_agent_state (bin/fm-backend.sh). The away-mode
+# injector (bin/fm-supervise-daemon.sh) requires both, and refuses on anything
+# short of an exact `alive`.
+#
 # GHOST/PLACEHOLDER TEXT (task afk-herdr-false-pending): a harness fills an
 # otherwise-empty composer with de-emphasized ghost text - claude's rotating
 # prompt suggestion, codex's idle suggestion, grok's placeholder, or cursor's

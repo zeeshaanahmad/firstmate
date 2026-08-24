@@ -145,9 +145,20 @@ case "${1:-}" in
   display-message)
     [ "${FM_FAKE_TMUX_PANE_ALIVE:-1}" = "1" ] || exit 1
     _print=0
-    # Return cursor_y when the format asks for it (pane_input_pending).
+    # Return cursor_y when the format asks for it (pane_input_pending), and the
+    # pane's process identity when the away-mode agent-proof guard asks for it.
+    # That guard requires a live agent to own the pane before anything is typed
+    # into it, so this fake stands in for a pane running the primary harness
+    # these tests configure (FM_DAEMON_PRIMARY_HARNESS=claude). Override
+    # FM_FAKE_TMUX_PANE_COMMAND to construct the shell/unowned pane instead.
+    # pane_tty stays a non-/dev name so the `ps` half of the probe is skipped
+    # and the fake never describes a real process on the host.
     for _a in "$@"; do
-      case "$_a" in *cursor_y*) printf '%s\n' "${FM_FAKE_TMUX_CURSOR_Y:-0}"; exit 0 ;; esac
+      case "$_a" in
+        *cursor_y*) printf '%s\n' "${FM_FAKE_TMUX_CURSOR_Y:-0}"; exit 0 ;;
+        *pane_current_command*) printf '%s\n' "${FM_FAKE_TMUX_PANE_COMMAND:-claude}"; exit 0 ;;
+        *pane_tty*) printf '%s\n' "${FM_FAKE_TMUX_PANE_TTY:-fakepane}"; exit 0 ;;
+      esac
       [ "$_a" = "-p" ] && _print=1
     done
     [ "$_print" = 1 ] && printf 'fakepane\n'
@@ -236,7 +247,15 @@ write_composer() {
 case "${1:-}" in
   display-message)
     print=0
-    for a in "$@"; do case "$a" in *cursor_y*) printf '1\n'; exit 0 ;; esac; done
+    # cursor_y for the composer reader; pane identity for the away-mode
+    # agent-proof guard (see make_supercase's fake for the contract).
+    for a in "$@"; do
+      case "$a" in
+        *cursor_y*) printf '1\n'; exit 0 ;;
+        *pane_current_command*) printf '%s\n' "${FM_FAKE_TMUX_PANE_COMMAND:-claude}"; exit 0 ;;
+        *pane_tty*) printf '%s\n' "${FM_FAKE_TMUX_PANE_TTY:-fakepane}"; exit 0 ;;
+      esac
+    done
     for a in "$@"; do [ "$a" = "-p" ] && print=1; done
     [ "$print" = 1 ] && printf 'fakepane\n'
     exit 0 ;;

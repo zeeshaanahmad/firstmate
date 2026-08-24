@@ -909,6 +909,30 @@ fm_backend_agent_state() {  # <backend> <target>
   esac
 }
 
+# fm_backend_pane_agent_state: the same agent/endpoint evidence for a target
+# the caller has ALREADY established resolves to the exact endpoint it means -
+# a raw tmux pane id (`$TMUX_PANE`), or a herdr "<session>:<pane-id>". Prints
+# the same vocabulary as fm_backend_agent_state minus `missing` for tmux, whose
+# window-inventory guard is the caller's half here.
+#
+# It exists for the away-mode supervisor pane: firstmate's OWN pane is normally
+# a pane id, which fm_backend_agent_state's `session:window` guard can only ever
+# report `unreadable` for. Away-mode injection needs a POSITIVE agent verdict
+# for that pane before it may type into it (bin/fm-supervise-daemon.sh), so it
+# needs the evidence half without the inventory half.
+#
+# Only the two backends the away-mode daemon supports answer; everything else is
+# `unverified`, which is not a positive verdict and so never authorizes typing.
+fm_backend_pane_agent_state() {  # <backend> <target>
+  local backend=$1 target=$2
+  fm_backend_source "$backend" || { printf 'unverified'; return 0; }
+  case "$backend" in
+    tmux) fm_backend_tmux_pane_agent_state "$target" ;;
+    herdr) fm_backend_herdr_agent_state "$target" ;;
+    *) printf 'unverified' ;;
+  esac
+}
+
 # Backward-compatible three-state view for existing callers. An
 # authoritatively missing endpoint is confidently not a live agent, while every
 # ambiguous, unreadable, or unverified result stays unknown.

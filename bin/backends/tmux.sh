@@ -263,8 +263,7 @@ fm_backend_tmux_foreground_argv0s() {  # <target>
 # authoritative for the negative verdicts, since it is the only source that can
 # distinguish a truly idle pane from a rewritten process title.
 fm_backend_tmux_agent_state() {  # <target>
-  local target=$1 comm session window windows inventory_status
-  local foreground argv0s name fg_seen=0 fg_shell=0 fg_other=0
+  local target=$1 session window windows inventory_status
   case "$target" in
     *:*:*|'':*|*:'') printf 'unreadable'; return 0 ;;
     *:*) ;;
@@ -293,6 +292,26 @@ fm_backend_tmux_agent_state() {  # <target>
     return 0
   fi
 
+  fm_backend_tmux_pane_agent_state "$target"
+}
+
+# fm_backend_tmux_pane_agent_state: the PROCESS-EVIDENCE half of the verdict
+# above, for a target the caller has ALREADY established resolves to the exact
+# endpoint it means. Prints alive|dead|ambiguous|unreadable - never `missing`,
+# because establishing that the endpoint exists is the caller's half.
+#
+# It exists because the window-inventory guard above only accepts a
+# `session:window` target, while the away-mode supervisor pane is normally a
+# raw pane id (`$TMUX_PANE`, e.g. `%3`) that no `list-windows` inventory can
+# name. Splitting the two halves keeps ONE copy of the name-source combination
+# logic rather than a second, drifting one for pane-id callers.
+#
+# The evidence rule is unchanged: either name source naming a verified harness
+# is enough for `alive`, and a readable foreground process group is what settles
+# the negative verdicts, so only a group that is nothing but shells is
+# confidently agent-free.
+fm_backend_tmux_pane_agent_state() {  # <target>
+  local target=$1 comm foreground argv0s name fg_seen=0 fg_shell=0 fg_other=0
   foreground=$(fm_backend_tmux_foreground_comms "$target")
   while IFS= read -r name; do
     [ -n "$name" ] || continue

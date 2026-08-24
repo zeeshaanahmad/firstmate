@@ -110,7 +110,12 @@ test_routine_then_terminal_after_restart() {
   sent="$dir/sent.log"; : > "$sent"
   printf '❯\n' > "$dir/pane.txt"
   afk_enter "$state"
+  # The supervisor pane is named explicitly: injection no longer substitutes a
+  # guessed pane, and it requires the target to be a proven live agent pane
+  # (the fake tmux in tests/wake-helpers.sh reports one). The refusal side of
+  # that contract is owned by tests/fm-afk-shell-pane-refusal.test.sh.
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_PANE_ALIVE=1 FM_FAKE_TMUX_SENT="$sent" \
+    FM_SUPERVISOR_TARGET=fakepane FM_SUPERVISOR_BACKEND=tmux \
     FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" FM_ESCALATE_BATCH_SECS=0 escalate_flush "$state" \
     || fail "escalate_flush failed for the buffered digest"
   [ "$(grep -c '\[ENTER\]' "$sent")" -eq 1 ] || fail "buffered digest was not submitted exactly once"

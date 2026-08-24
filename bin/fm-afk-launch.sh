@@ -458,17 +458,53 @@ fm_afk_launch_create_tmux() {  # <captain-target> <captain-backend>
   fm_afk_launch_log "daemon launched in detached tmux session '$session', supervising $captain_target"
 }
 
+# fm_afk_launch_resolve_captain_pane: identify the pane firstmate itself is
+# running in, before away mode is armed. Sets FM_AFK_LAUNCH_CAPTAIN_TARGET /
+# FM_AFK_LAUNCH_CAPTAIN_BACKEND on success.
+#
+# Both away-mode entry paths need this, and the NATIVE path needs it most: it
+# hosts the daemon inside the harness's own background job rather than a
+# terminal this script creates, so it used to write the away-mode flag and let
+# the daemon auto-discover its own target. On 2026-08-24 that auto-discovery had
+# nothing to discover - firstmate was running outside tmux entirely - fell back
+# to a guessed pane holding an ordinary shell, and away-mode digests were typed
+# into that shell and executed as commands. Discovery no longer guesses, so the
+# native path would now arm away mode and only then have the daemon die. Running
+# the identification HERE is what turns that into a plain refusal at /afk time,
+# with away mode never armed.
+#
+# This is deliberately IDENTIFICATION only, not the daemon's agent-alive proof.
+# That proof belongs at the keystroke, where bin/fm-supervise-daemon.sh applies
+# it on startup AND before every digest: a launch-time snapshot of it would go
+# stale the moment the agent exits, so it could never replace the per-digest
+# guard, only duplicate it.
+fm_afk_launch_resolve_captain_pane() {
+  local target backend
+  FM_AFK_LAUNCH_CAPTAIN_TARGET=""
+  FM_AFK_LAUNCH_CAPTAIN_BACKEND=""
+  target=$(discover_supervisor_target) || {
+    fm_afk_launch_log "away mode cannot start here: firstmate is not running inside a tmux or herdr pane, so there is no pane to deliver escalations to. Run firstmate inside tmux or herdr, or set FM_SUPERVISOR_TARGET (and FM_SUPERVISOR_BACKEND) to firstmate's own pane."
+    return 1
+  }
+  backend=$(discover_supervisor_backend) || {
+    fm_afk_launch_log "could not resolve the captain supervisor backend (set FM_SUPERVISOR_BACKEND)"
+    return 1
+  }
+  FM_AFK_LAUNCH_CAPTAIN_TARGET=$target
+  FM_AFK_LAUNCH_CAPTAIN_BACKEND=$backend
+}
+
 fm_afk_launch_start() {
   local captain_target captain_backend backup artifact had_afk=0 result
   if [ -e "$FM_AFK_LAUNCH_STATE/.afk-return-catchup" ]; then
     fm_afk_launch_log "return catch-up is still pending; run bin/fm-afk-return.sh check before re-entering away mode"
     return 1
   fi
-  # Capture the captain pane FIRST, before creating anything.
-  captain_target=$(discover_supervisor_target) || {
-    fm_afk_launch_log "could not resolve the captain supervisor pane (set FM_SUPERVISOR_TARGET)"; return 1; }
-  captain_backend=$(discover_supervisor_backend) || {
-    fm_afk_launch_log "could not resolve the captain supervisor backend (set FM_SUPERVISOR_BACKEND)"; return 1; }
+  # Capture and positively identify the captain pane FIRST, before creating
+  # anything.
+  fm_afk_launch_resolve_captain_pane || return 1
+  captain_target=$FM_AFK_LAUNCH_CAPTAIN_TARGET
+  captain_backend=$FM_AFK_LAUNCH_CAPTAIN_BACKEND
 
   mkdir -p "$FM_AFK_LAUNCH_STATE"
 
@@ -534,6 +570,10 @@ fm_afk_launch_start_native() {
     fm_afk_launch_log "return catch-up is still pending; run bin/fm-afk-return.sh check before re-entering away mode"
     return 1
   fi
+  # Identify the captain pane FIRST, before any durable away-mode state is
+  # written: the native path never passes a target through, so this is the only
+  # place it can refuse before arming away mode with an unusable supervisor.
+  fm_afk_launch_resolve_captain_pane || return 1
   if daemon_lock_held_by_live_daemon; then
     fm_afk_launch_record_validate_if_present || return 1
     fm_afk_launch_flag_write || return 1

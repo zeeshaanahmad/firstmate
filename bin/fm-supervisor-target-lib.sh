@@ -14,11 +14,20 @@
 # in bin/fm-supervise-daemon.sh, so its unit tests (tests/fm-daemon.test.sh)
 # keep exercising the same names after the daemon sources this file.
 
-# Default supervisor pane target/backend when nothing is configured or detected.
-# "firstmate:0" is a tmux session:window name, so the bare fallback (nothing
-# configured, nothing detected) assumes tmux - matching the daemon's pre-herdr
-# behavior byte-for-byte when run outside both tmux and herdr.
-FM_SUPERVISOR_TARGET_DEFAULT="firstmate:0"
+# There is NO default supervisor pane target. The away-mode daemon used to fall
+# back to the tmux name "firstmate:0" when nothing was configured or detected,
+# and warn. That warning scrolled past, and on a machine where firstmate runs
+# OUTSIDE tmux while the crew windows live in a tmux session that happens to be
+# named `firstmate`, the guess resolved to window 0 of that session - an
+# ordinary interactive shell. Every away-mode escalation was then typed into
+# that shell and executed as a command, and the daemon counted it as delivered
+# (2026-08-24; docs/verification/runtime-backends.md "Away-mode supervisor pane
+# identification"). A guessed injection target cannot be made safe by a warning,
+# so discovery now fails instead of guessing and the daemon refuses to start.
+#
+# The BACKEND default survives: it is only ever reached when a target WAS
+# resolved (an explicit FM_SUPERVISOR_TARGET with no explicit backend), where
+# tmux remains the documented reading of a bare target string.
 FM_SUPERVISOR_BACKEND_DEFAULT="tmux"
 
 # discover_supervisor_target: resolve the pane running firstmate. Priority:
@@ -33,8 +42,10 @@ FM_SUPERVISOR_BACKEND_DEFAULT="tmux"
 #      fm_backend_herdr_session) and $HERDR_PANE_ID. Checked after $TMUX_PANE so a
 #      tmux pane nested inside herdr still resolves to tmux, matching
 #      fm_backend_detect's innermost-first rule.
-#   4. FM_SUPERVISOR_TARGET_DEFAULT - legacy tmux fallback (may not resolve if the
-#      session is named differently). Returns 1 so the caller can warn.
+# With none of those present, firstmate is not running inside a supported
+# multiplexer pane at all, so there is nothing to inject into: this prints
+# NOTHING and returns 1, and every caller must treat that as a refusal rather
+# than substituting a guess.
 discover_supervisor_target() {
   if [ -n "${FM_SUPERVISOR_TARGET:-}" ]; then
     printf '%s' "$FM_SUPERVISOR_TARGET"
@@ -48,7 +59,6 @@ discover_supervisor_target() {
     printf '%s:%s' "${HERDR_SESSION:-default}" "$HERDR_PANE_ID"
     return 0
   fi
-  printf '%s' "$FM_SUPERVISOR_TARGET_DEFAULT"
   return 1
 }
 

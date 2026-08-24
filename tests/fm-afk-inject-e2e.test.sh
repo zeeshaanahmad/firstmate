@@ -80,6 +80,19 @@ SUPERVISOR_PANE=$("$REAL_TMUX" -L "$SOCKET" display-message -p -t supervisor '#{
 # line verbatim (hex + text + classification). It draws the in-progress input
 # itself instead of relying on the terminal driver's canonical-mode echo, because
 # tmux cursor placement for that echo varies across CI environments.
+# The loop runs under an AGENT-NAMED interpreter, not a bare `bash`. Away-mode
+# injection now requires positive, non-rendered proof that a live verified
+# harness owns the supervisor pane before it types anything into it
+# (bin/fm-supervise-daemon.sh's POSITIVE TARGET IDENTIFICATION), and that proof
+# is the pane's foreground process identity. A bare `bash` loop is exactly the
+# dead-shell pane the daemon must refuse, so the fixture must carry a real
+# process the kernel names as a harness. A SYMLINK, never a copy: a copied
+# platform binary fails code-signing validation and is killed on macOS arm64;
+# the symlink name is what the kernel records. The refusal side of this contract
+# is owned by tests/fm-afk-shell-pane-refusal.test.sh.
+AGENT_SHIM="$STATE_DIR/claude-shim"
+ln -s "$(command -v bash)" "$AGENT_SHIM"
+
 LOOP_SCRIPT="$STATE_DIR/supervisor-loop.sh"
 cat > "$LOOP_SCRIPT" <<'LOOP'
 #!/usr/bin/env bash
@@ -134,7 +147,7 @@ chmod +x "$LOOP_SCRIPT"
 
 # Start the loop in the supervisor pane.
 "$REAL_TMUX" -L "$SOCKET" send-keys -t "$SUPERVISOR_PANE" \
-  "bash '$LOOP_SCRIPT' '$LOG_FILE'" Enter
+  "'$AGENT_SHIM' '$LOOP_SCRIPT' '$LOG_FILE'" Enter
 sleep 1  # let the loop start and settle
 
 # tmux shim: redirects bare `tmux` to the private socket. Optionally swallows

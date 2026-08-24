@@ -24,6 +24,14 @@ fi
 TMP_ROOT=$(fm_test_tmproot fm-daemon-tests)
 FM_DAEMON_PRIMARY_HARNESS=claude
 export FM_DAEMON_PRIMARY_HARNESS
+# The supervisor pane every injection case here targets. It must be named
+# explicitly: the daemon no longer substitutes a guessed pane when none is
+# identified, and inject_msg refuses outright with no target (tests/
+# fm-afk-shell-pane-refusal.test.sh owns that refusal). The fake tmux in
+# tests/wake-helpers.sh answers for any target name and reports it as a live
+# claude pane, which is what the agent-proof guard requires before typing.
+FM_SUPERVISOR_TARGET=fakepane
+export FM_SUPERVISOR_TARGET
 
 test_afk_start_refuses_when_flag_cannot_be_written() {
   local dir state out status
@@ -1671,12 +1679,16 @@ test_discover_supervisor_target_herdr() {
   out=$(FM_SUPERVISOR_TARGET='' TMUX_PANE='' HERDR_ENV=1 HERDR_PANE_ID=w1:p9 HERDR_SESSION=iso1 discover_supervisor_target)
   [ "$out" = "iso1:w1:p9" ] || fail "herdr target should use an explicit HERDR_SESSION: $out"
 
+  # No override and no multiplexer markers means firstmate is not running in a
+  # pane at all. Discovery must REFUSE - print nothing and return non-zero -
+  # rather than name a pane it has not identified: the old "firstmate:0" guess
+  # is what typed away-mode digests into an unrelated interactive shell.
   if out=$(FM_SUPERVISOR_TARGET='' TMUX_PANE='' HERDR_ENV='' HERDR_PANE_ID='' discover_supervisor_target); then
-    fail "bare fallback should return non-zero"
+    fail "an unidentifiable supervisor pane should return non-zero"
   fi
-  [ "$out" = "firstmate:0" ] || fail "bare fallback should still print firstmate:0: $out"
+  [ -z "$out" ] || fail "an unidentifiable supervisor pane must print no target, got: $out"
 
-  pass "discover_supervisor_target: override > TMUX_PANE > herdr '<session>:<pane-id>' composition > firstmate:0 fallback"
+  pass "discover_supervisor_target: override > TMUX_PANE > herdr '<session>:<pane-id>' composition > refusal, never a guess"
 }
 
 test_pane_is_busy_herdr_native_busy_state() {
@@ -1757,6 +1769,9 @@ test_inject_msg_herdr_composer_guard_defers() {
   afk_enter "$state"
   (
     fm_backend_target_exists() { return 0; }
+    # The pane is a live agent pane; these cases exercise the guards AFTER
+    # the agent-proof one (tests/fm-afk-shell-pane-refusal.test.sh owns that).
+    fm_backend_pane_agent_state() { printf 'alive'; }
     pane_is_busy() { return 1; }
     fm_backend_composer_state() { [ "$1" = herdr ] && [ "$2" = "default:w1:p2" ] || fail "unexpected composer_state args: $1 $2"; printf 'pending'; }
     fm_backend_send_text_submit() { fail "send_text_submit should not run when the composer-guard defers"; }
@@ -1790,6 +1805,9 @@ test_inject_msg_herdr_submits_through_backend_dispatch() {
   afk_enter "$state"
   (
     fm_backend_target_exists() { return 0; }
+    # The pane is a live agent pane; these cases exercise the guards AFTER
+    # the agent-proof one (tests/fm-afk-shell-pane-refusal.test.sh owns that).
+    fm_backend_pane_agent_state() { printf 'alive'; }
     pane_is_busy() { return 1; }
     fm_backend_composer_state() { printf 'empty'; }
     fm_backend_send_text_submit() {
@@ -1815,6 +1833,9 @@ test_inject_msg_defers_on_dead_shell_unknown() {
   afk_enter "$state"
   (
     fm_backend_target_exists() { return 0; }
+    # The pane is a live agent pane; these cases exercise the guards AFTER
+    # the agent-proof one (tests/fm-afk-shell-pane-refusal.test.sh owns that).
+    fm_backend_pane_agent_state() { printf 'alive'; }
     pane_is_busy() { return 1; }
     fm_backend_composer_state() { printf 'unknown'; }
     fm_backend_send_text_submit() { fail "send_text_submit must NOT run when the composer is a dead shell (unknown)"; }
@@ -1832,6 +1853,9 @@ test_inject_msg_defers_on_unrecognized_composer_state() {
   afk_enter "$state"
   (
     fm_backend_target_exists() { return 0; }
+    # The pane is a live agent pane; these cases exercise the guards AFTER
+    # the agent-proof one (tests/fm-afk-shell-pane-refusal.test.sh owns that).
+    fm_backend_pane_agent_state() { printf 'alive'; }
     pane_is_busy() { return 1; }
     fm_backend_composer_state() { printf 'future-state'; }
     fm_backend_send_text_submit() { fail "send_text_submit must not run for an unrecognized composer state"; }

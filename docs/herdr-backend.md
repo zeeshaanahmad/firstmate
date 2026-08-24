@@ -284,7 +284,8 @@ There is still one watcher process; the event reader is a bounded child of that 
 The away daemon supports tmux and Herdr supervisor panes only.
 It refuses Zellij, Orca, and cmux as supervisor backends rather than applying the wrong transport.
 For Herdr, target existence, native state, capture, composer state, and verified submit all route through the shared backend dispatcher and the explicit named-session CLI owner.
-The pane-independent max-defer alert is configured in [`wedge-alarm.md`](wedge-alarm.md).
+The supervisor pane must additionally be identified, and proven to hold a live agent through the same dispatcher, before the daemon starts and before every digest; Herdr answers that proof from its native pane agent state.
+The pane-independent max-defer alert is configured in [`wedge-alarm.md`](wedge-alarm.md), and a startup refusal for an unproven pane raises it too.
 
 Harnesses with native tracked background execution can run the daemon in their terminal.
 Pi has no such mechanism.

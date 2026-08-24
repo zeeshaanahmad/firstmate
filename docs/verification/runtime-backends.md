@@ -205,6 +205,41 @@ Cursor is deliberately outside this cursor-anchored empty-composer matrix becaus
 
 `zellij action dump-screen --pane-id <id> --ansi` was verified at zellij 0.44.0 to preserve ANSI styling (real Claude Code rendered inside a zellij pane dumped `ESC[m` `❯` U+00A0 for its idle composer row), which is the capability the zellij composer classifier reads.
 
+### Away-mode supervisor pane identification
+
+Rendered shape alone cannot establish that a pane belongs to an agent, so away-mode injection requires a second, non-rendered proof.
+The measurement below is the active evidence for that boundary: it shows a real interactive shell reaching the classifier's strongest positive verdict.
+
+Verified 2026-08-24 on tmux 3.6b, macOS 26.5.2 arm64, on a private socket, against `zsh -f -i` running starship 1.24.0 with the captain's own configuration, whose `success_symbol` is starship's shipped default: the `❯` character rendered in purple.
+
+```sh
+tmux -L "$socket" new-session -d -s shellpane -x 120 -y 30 "zsh -f -i"
+tmux -L "$socket" send-keys -t "$pane" 'eval "$(starship init zsh)"' Enter
+. bin/fm-backend.sh && fm_backend_composer_state tmux "$pane"
+```
+
+Observed output:
+
+```text
+plain capture, last row:   ❯
+styled capture, last row:  ESC[35m ❯ ESC[39m
+cursor_y:                  1
+fm_backend_composer_state: empty
+```
+
+The shell's prompt glyph is byte-identical to claude's bare agent glyph, so the classifier proves the pane an empty agent composer.
+With that verdict alone authorizing a keystroke, the away-mode daemon typed a batched digest into the shell, which executed it (`zsh: parse error near ')'`) and cleared the escalation buffer as delivered.
+
+The same pane under the foreground-process probe that [Agent liveness name sources](#agent-liveness-name-sources) already owns:
+
+```text
+fm_backend_pane_agent_state tmux "$pane": dead
+```
+
+`bin/fm-supervise-daemon.sh` therefore requires both an `empty` composer verdict and an exact `alive` from that probe before it types, and requires the `alive` again at startup.
+`tests/fm-afk-shell-pane-refusal.test.sh` is the portable regression that keeps both halves honest: it constructs the shell pane with real processes, asserts the two signals still diverge, and asserts that an otherwise identical pane with a harness-named foreground process is still delivered to.
+Refresh this record by rerunning that regression after any change to the classifier or to the liveness name sources.
+
 ## Herdr
 
 The compatibility floor is protocol 14.
