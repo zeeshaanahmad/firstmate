@@ -183,7 +183,7 @@ feed_keyed_answers() {  # <adapter> <source-id> <result-file>
   local adapter=$1 id=$2 result=$3 script origin seq err
   script=$(adapter_script "$adapter")
   [ -f "$script" ] && [ ! -L "$script" ] || return 1
-  err=$(mktemp "${TMPDIR:-/tmp}/fm-procevent-binding-err.XXXXXX") || return 1
+  err=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-procevent-binding-err.XXXXXX") || return 1
   if ! origin=$("$SCRIPT_DIR/fm-decision-hold.sh" binding "$id" 2>"$err"); then
     [ -s "$err" ] && cat -- "$err" >&2
     rm -f -- "$err"
