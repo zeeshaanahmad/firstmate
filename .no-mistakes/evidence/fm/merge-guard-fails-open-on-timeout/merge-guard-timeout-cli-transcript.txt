@@ -1,0 +1,54 @@
+======================================================================
+SCENARIO 1: static check exceeds its budget, default posture (fixed code)
+operator command: FM_STATIC_CHECK_TIMEOUT=1 bin/fm-pr-merge.sh task-g1 <pr-url>
+======================================================================
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+armed: state/task-g1.check.sh
+error: merge refused - the static check did not finish within 1s
+the check was killed, not passed; an unmeasured merge result is not a green one
+re-run with room (FM_STATIC_CHECK_TIMEOUT=<seconds>), or merge past it deliberately with FM_MERGE_GUARD=allow-timeout
+---
+exit code: 1
+gh-axi.log (forge calls actually made):
+task metadata after refusal:
+merge_guard=timeout: the static check did not finish within 1s
+
+======================================================================
+SCENARIO 2: same slow check, operator passes the explicit override
+operator command: FM_MERGE_GUARD=allow-timeout FM_STATIC_CHECK_TIMEOUT=1 bin/fm-pr-merge.sh task-g1 <pr-url>
+======================================================================
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+armed: state/task-g1.check.sh
+merge-guard: UNGUARDED - the static check did not finish within 1s; merging by explicit FM_MERGE_GUARD=allow-timeout
+---
+exit code: 0
+gh-axi.log (forge calls actually made):
+pr merge 7 --repo example/repo --squash
+task metadata after override merge:
+merge_guard=timeout-allowed: the static check did not finish within 1s
+
+======================================================================
+SCENARIO 3: misspelled FM_MERGE_GUARD value is refused up front
+operator command: FM_MERGE_GUARD=allow-timout bin/fm-pr-merge.sh task-g1 <pr-url>
+======================================================================
+error: FM_MERGE_GUARD must be unset, off, or allow-timeout
+---
+exit code: 2
+gh-axi.log (forge calls actually made):
+
+======================================================================
+CLEANUP
+======================================================================
+removed /var/folders/3m/025g2l697z5gxqyzmlnt2w140000gn/T//fm-evidence-capture.991taS
