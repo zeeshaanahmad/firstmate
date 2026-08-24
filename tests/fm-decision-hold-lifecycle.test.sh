@@ -994,6 +994,98 @@ EOF
   pass "a channel source with no decision binding closes nothing"
 }
 
+# read_binding's own contract (fm-decision-hold.sh) treats an unreadable or
+# wrong-schema binding record as a hard error, never a silent "unbound" -
+# feeding nothing is the safe direction only when it is a deliberate choice.
+# The captured-result channel (fm-procevent.sh feed_keyed_answers) must forward
+# that diagnostic instead of swallowing it, while a genuinely unbound source
+# alongside it stays exactly as silent as before, so the loud path is specific
+# to corruption and does not leak into the ordinary unbound case.
+test_corrupted_binding_forwards_its_diagnostic() {
+  local home id result out err show
+  home=$(make_home procevent-corrupted-binding)
+  id=sample-corrupted-binding
+  mkdir -p "$home/data/$id"
+  tasks_in "$home" add "$id" "Review sample with a corrupted binding" --kind scout --repo sample --start >/dev/null \
+    || fail "could not create the corrupted-binding origin"
+  write_origin_meta "$home" "$id"
+  printf 'done: deck ready\n' > "$home/state/$id.status"
+  printf '# Corrupted binding review\n\nOne captain choice remains.\n' > "$home/data/$id/report.md"
+  run_decisions "$home" hold "$id" only-choice \
+    --title "Captain call: only-choice" --reason "captain only-choice pending" --repo sample >/dev/null \
+    || fail "could not register the hold"
+
+  run_decisions "$home" bind fixture-src "$id" >/dev/null \
+    || fail "could not bind the fixture source to its origin"
+  [ "$(run_decisions "$home" binding fixture-src)" = "$id" ] \
+    || fail "the binding did not resolve before it was corrupted"
+  # Corrupt the record on disk the way a stale or incompatible schema would,
+  # not by removing it - removal is the already-covered unbound case.
+  printf 'schema=fm-decision-binding.v0\norigin=%s\n' "$id" > "$home/state/decision-bindings/fixture-src.origin"
+
+  mkdir -p "$home/state/procevent-inbox"
+  result="$home/state/procevent-inbox/fixture-src.1.result"
+  cat > "$result" <<'EOF'
+session:
+  file: /review.html
+  status: feedback
+prompts[1]{uid,prompt,selector,tag,text}:
+  "2","Only choice: yes\n\nContext data:\n{\n  \"question\": \"only-choice\",\n  \"answer\": \"yes\"\n}","form",choice,"Only choice: yes"
+EOF
+
+  mkdir -p "$home/adapter-root/bin"
+  cat > "$home/adapter-root/bin/fm-procevent-fixturechan.sh" <<SH
+#!/usr/bin/env bash
+# Fixture channel: reports keyed captain answers and nothing else.
+case "\${1-}" in
+  answers) exec "$ROOT/bin/fm-procevent-lavish.sh" answers "\${2-}" ;;
+esac
+exit 2
+SH
+  chmod +x "$home/adapter-root/bin/fm-procevent-fixturechan.sh"
+
+  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$home/adapter-root" FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROCEVENT_CLAIM_ROOT="$home/procevent-claims" \
+    "$ROOT/bin/fm-procevent.sh" register fixturechan fixture-src -- cat "$result" >/dev/null \
+    || fail "could not register the fixture channel source"
+  out=$(PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$home/adapter-root" FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROCEVENT_CLAIM_ROOT="$home/procevent-claims" \
+    "$ROOT/bin/fm-procevent.sh" start fixture-src 2>"$home/start.err")
+  err=$(cat "$home/start.err")
+
+  assert_not_contains "$out" "answers-fed: fixture-src" \
+    "a corrupted binding record still fed an answer"
+  assert_contains "$err" "decision binding has an incompatible schema" \
+    "the corrupted binding's diagnostic was not forwarded: $err"
+  show=$(tasks_in "$home" show "$id-decision-only-choice" --full)
+  assert_contains "$show" "state: queued" "a corrupted binding closed a captain hold anyway"
+  assert_contains "$show" "held: yes" "a corrupted binding released a captain hold"
+
+  # A genuinely unbound source processed the same way must stay silent: no
+  # diagnostic at all, proving the forwarding above is specific to corruption.
+  result2="$home/state/procevent-inbox/fixture-src-unbound.1.result"
+  cp "$result" "$result2"
+  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$home/adapter-root" FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROCEVENT_CLAIM_ROOT="$home/procevent-claims" \
+    "$ROOT/bin/fm-procevent.sh" register fixturechan fixture-src-unbound -- cat "$result2" >/dev/null \
+    || fail "could not register the unbound fixture source"
+  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$home/adapter-root" FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROCEVENT_CLAIM_ROOT="$home/procevent-claims" \
+    "$ROOT/bin/fm-procevent.sh" start fixture-src-unbound >"$home/unbound.out" 2>"$home/unbound.err"
+  assert_not_contains "$(cat "$home/unbound.out")" "answers-fed: fixture-src-unbound" \
+    "an unbound source fed an answer"
+  assert_not_contains "$(cat "$home/unbound.err")" "decision binding" \
+    "a genuinely unbound source printed a binding diagnostic"
+  assert_not_contains "$(cat "$home/unbound.err")" "fm-decision-hold:" \
+    "a genuinely unbound source forwarded any fm-decision-hold diagnostic"
+
+  pass "a corrupted binding record forwards its diagnostic instead of silently acting as unbound"
+}
+
 # The answer verb is the hold ledger's answer-time closure primitive, so it must
 # carry every guard the unrouted close path already had. Weakening any of them to
 # reach closure would trade the loss this fixes for a worse one.
@@ -1137,5 +1229,6 @@ test_secondmate_hold_stays_in_authoritative_home
 test_resolve_matches_quoted_blocked_by_edges
 test_bound_channel_answers_close_their_holds_at_answer_time
 test_unbound_source_closes_no_hold
+test_corrupted_binding_forwards_its_diagnostic
 test_answer_preserves_every_unrouted_close_guard
 test_chat_channel_feeds_the_same_keyed_answer_intake

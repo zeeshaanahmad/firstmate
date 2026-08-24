@@ -87,6 +87,7 @@ Additional quoted `blocked_by` regression verification date: 2026-07-17.
 Plural blocker-readiness and mixed-home projection verification date: 2026-07-22.
 Unrouted close-path verification date: 2026-08-13.
 Answer-time closure verification date: 2026-08-16.
+Corrupted-binding diagnostic forwarding verification date: 2026-08-24.
 
 The focused end-to-end regression uses only synthetic `sample` identities and decision text.
 It begins with a completed investigation and visual review whose genuine unresolved choice exists only in the report.
@@ -104,6 +105,7 @@ A bound source whose origin exposes six holds captures one review carrying five 
 Four holds whose answers route no work close, the one still blocking routed work is skipped and stays available to `resolve`, and the one whose key appears only inside the freeform prose never closes.
 The capture is left unacknowledged throughout, so the wake firstmate needs in order to act on the answers is never retired.
 A replayed delivery closes nothing new and is not rejected as a different decision, a source with no binding closes nothing at all, and the `answer` subcommand itself refuses an empty or missing decision file, an absent hold, and a drifted retry.
+A further regression corrupts a binding record's schema on disk and proves the binding lookup fails loud with a forwarded diagnostic instead of masquerading as an unbound source, while a genuinely unbound source alongside it still prints no diagnostic at all.
 A separate regression drives the real `fm-send` over a stubbed transport to prove the chat channel reaches the same intake for a decision already transferred to its hold, which the status ledger alone can no longer close.
 
 The final verification commands and their exact summarized outputs follow.
@@ -124,6 +126,7 @@ ok - main-home and secondmate-home captain holds remain correctly routed
 ok - resolve matches first/middle/last in quoted blocked_by and rejects a genuinely absent id
 ok - a bound channel's captured answers close their captain holds at answer time
 ok - a channel source with no decision binding closes nothing
+ok - a corrupted binding record forwards its diagnostic instead of silently acting as unbound
 ok - the answer path keeps every guard the unrouted close path already had
 ok - the chat channel feeds the same keyed-answer intake a captured review does
 
