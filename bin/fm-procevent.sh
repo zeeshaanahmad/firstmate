@@ -173,15 +173,23 @@ adapter_autohandle() {  # <adapter> <source-id> <result-file>
 
 # Pass a bound source's captured result to the one keyed-answer intake. The
 # adapter turns its own format into keyed lines; the intake owns everything those
-# lines mean. Silenced and best-effort exactly like the seams above: an unbound
-# source, an adapter with no `answers` command, and a failure on either side all
-# leave the capture untouched and still announced, because this never
-# acknowledges anything (see the keyed-answer note in the header).
+# lines mean. Best-effort exactly like the seams above: an unbound source, an
+# adapter with no `answers` command, and a failure on either side all leave the
+# capture untouched and still announced, because this never acknowledges
+# anything (see the keyed-answer note in the header). The binding lookup itself
+# stays loud on a corrupted record rather than silenced, per read_binding's own
+# contract in fm-decision-hold.sh.
 feed_keyed_answers() {  # <adapter> <source-id> <result-file>
-  local adapter=$1 id=$2 result=$3 script origin seq
+  local adapter=$1 id=$2 result=$3 script origin seq err
   script=$(adapter_script "$adapter")
   [ -f "$script" ] && [ ! -L "$script" ] || return 1
-  origin=$("$SCRIPT_DIR/fm-decision-hold.sh" binding "$id" 2>/dev/null) || return 1
+  err=$(mktemp "${TMPDIR:-/tmp}/fm-procevent-binding-err.XXXXXX") || return 1
+  if ! origin=$("$SCRIPT_DIR/fm-decision-hold.sh" binding "$id" 2>"$err"); then
+    [ -s "$err" ] && cat -- "$err" >&2
+    rm -f -- "$err"
+    return 1
+  fi
+  rm -f -- "$err"
   [ -n "$origin" ] || return 1
   seq=$(fm_procevent_result_sequence "$result") || return 1
   "$script" answers "$result" 2>/dev/null \

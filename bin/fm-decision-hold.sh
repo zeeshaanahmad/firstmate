@@ -784,7 +784,7 @@ command_answers() {
     hold="$origin-decision-$key"
     keyed_decision_text "$source" "$key" "$answer" "$label" > "$tmp" \
       || fail "cannot stage the captain decision for $hold"
-    if "$0" answer "$origin" "$key" --decision-file "$tmp" >/dev/null 2>"$err"; then
+    if "$0" answer "$origin" "$key" --decision-file "$tmp" < /dev/null >/dev/null 2>"$err"; then
       printf 'closed: %s\n' "$hold"
       closed=$((closed + 1))
     else
