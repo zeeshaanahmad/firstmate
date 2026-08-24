@@ -215,7 +215,14 @@ test_daemon_refuses_to_start_with_no_identifiable_pane() {
   [ ! -f "$state/.supervise-daemon.pid" ] || fail "a refusing daemon left a pid file behind"
   grep -F 'not running inside a tmux or herdr pane' "$state/err" >/dev/null || fail \
     "the refusal did not plainly say firstmate is not in a supported pane: $(cat "$state/err")"
-  pass "the daemon refuses to start when no supervisor pane can be identified"
+  # Away mode can already be armed when this refusal happens (the harness-hosted
+  # entry arms it first), so the refusal must leave a durable trace rather than
+  # dying into an unwatched background job's stderr.
+  [ -s "$state/.subsuper-inject-wedged" ] || fail \
+    "the startup refusal left no durable undelivered-escalation marker"
+  grep -F 'REFUSED TO START' "$state/.subsuper-inject-wedged" >/dev/null || fail \
+    "the durable marker does not say the daemon refused to start: $(cat "$state/.subsuper-inject-wedged")"
+  pass "the daemon refuses to start when no supervisor pane can be identified, and says so durably"
 }
 
 test_daemon_refuses_to_start_against_a_shell_pane() {

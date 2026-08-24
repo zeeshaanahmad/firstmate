@@ -1531,8 +1531,13 @@ fm_super_main() {
     fi
   fi
   if ! discovered=$(discover_supervisor_target) || [ -z "$discovered" ]; then
-    echo "error: away mode cannot start here: firstmate is not running inside a tmux or herdr pane, so there is no pane to deliver escalations to (no FM_SUPERVISOR_TARGET, TMUX_PANE, or HERDR_ENV/HERDR_PANE_ID). Run firstmate inside tmux or herdr, or set FM_SUPERVISOR_TARGET (and FM_SUPERVISOR_BACKEND) to firstmate's own pane. Refusing to start rather than guessing a pane." >&2
+    local NO_TARGET_REFUSAL="away mode cannot start here: firstmate is not running inside a tmux or herdr pane, so there is no pane to deliver escalations to (no FM_SUPERVISOR_TARGET, TMUX_PANE, or HERDR_ENV/HERDR_PANE_ID). Run firstmate inside tmux or herdr, or set FM_SUPERVISOR_TARGET (and FM_SUPERVISOR_BACKEND) to firstmate's own pane. Refusing to start rather than guessing a pane."
+    echo "error: $NO_TARGET_REFUSAL" >&2
     log "startup failed: no supervisor pane could be identified (backend=$BACKEND, backend_source=$backend_source)"
+    # Same durability guarantee as the live-agent-pane refusal below: away mode
+    # may already be armed and the harness-hosted daemon's stderr is unwatched,
+    # so this refusal must not be able to die quietly either.
+    startup_refusal_alarm "$STATE" "$NO_TARGET_REFUSAL"
     fm_lock_release "$LOCK" 2>/dev/null || true
     rm -f "$PIDFILE" 2>/dev/null || true
     exit 1
