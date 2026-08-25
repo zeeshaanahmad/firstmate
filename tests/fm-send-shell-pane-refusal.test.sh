@@ -36,6 +36,12 @@
 #      composer verdict alone is asserted to still say `empty` at that moment.
 set -u
 
+# This suite does not source tests/lib.sh, so exempt its real fm-send.sh
+# subprocess from the gate-lifecycle refusal (bin/fm-gate-refuse-lib.sh) the way
+# lib.sh does for the rest of the suite: the no-mistakes gate runs this suite
+# from a gate worktree, which the guard would otherwise refuse.
+export FM_GATE_REFUSE_BYPASS=1
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SEND="$ROOT/bin/fm-send.sh"
 
