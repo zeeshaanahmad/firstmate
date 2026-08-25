@@ -15,6 +15,12 @@
 # submit or reports an inconclusive send. If a swallowed Enter is positively
 # confirmed, fm-send exits NON-ZERO so the caller knows the steer did not land
 # instead of silently leaving an unsubmitted instruction.
+# A confirmed submit is also a confirmation that an AGENT received it: a
+# crewmate whose agent has exited leaves a shell in its pane, and a shell
+# prompt renders as a cleared composer, so the backend corroborates its own
+# submit verdict with the pane's foreground-process facts (bin/backends/tmux.sh
+# owns that rule for tmux) and reports no-agent or agent-lost instead of a
+# delivery. Both are hard failures here, because neither reached an agent.
 # Exit status contract: 0 = submit confirmed (or, for a remote secondmate
 # target, delivered with confirmation pending - see the remote paragraph);
 # 3 = the text was typed into the live endpoint and Enter was sent, but the
@@ -632,6 +638,26 @@ else
       fi
       echo "fm-send: text delivered to $T but submission is unconfirmed (verdict=pending; tried $RESOLUTION_TRIED); do not retype or blindly resend - verify with fm-peek.sh, then re-send '--key Enter' only if the composer still holds the text" >&2
       exit 3
+      ;;
+    no-agent)
+      # Nothing was typed: the endpoint's terminal is held by a shell, so the
+      # steer would have been executed as a shell command rather than read by
+      # anyone.
+      if [ "$PENDING_REPLY_CREATED" = 1 ] && [ -n "$PENDING_REPLY_CORR" ]; then
+        fm_pending_reply_discard_undelivered "$STATE" "$PENDING_REPLY_CORR" || true
+      fi
+      echo "error: nothing was sent to $T: its terminal is held by a shell, not a live agent, so the worker's agent has exited (verdict=no-agent; tried $RESOLUTION_TRIED). The text was NOT typed. Recover the worker before resending." >&2
+      exit 1
+      ;;
+    agent-lost)
+      # The text was typed and Enter sent, but the pane held a shell by the
+      # time the submission was read back, so the cleared composer that would
+      # otherwise confirm delivery is a shell prompt.
+      if [ "$PENDING_REPLY_CREATED" = 1 ] && [ -n "$PENDING_REPLY_CORR" ]; then
+        fm_pending_reply_discard_undelivered "$STATE" "$PENDING_REPLY_CORR" || true
+      fi
+      echo "error: text was typed into $T but its agent exited to a shell before the submission could be confirmed (verdict=agent-lost; tried $RESOLUTION_TRIED); no agent received it. Verify the pane with fm-peek.sh and recover the worker before resending." >&2
+      exit 1
       ;;
     *)
       if [ "$PENDING_REPLY_CREATED" = 1 ] && [ -n "$PENDING_REPLY_CORR" ]; then

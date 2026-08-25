@@ -52,10 +52,53 @@ fm_backend_tmux_send_key() {  # <target> <key>
 
 # fm_backend_tmux_send_text_submit: type <text> into <target> once, then
 # submit with Enter, retried (Enter only, never retyped) until the composer
-# clears. Re-exports fm_tmux_submit_core (bin/fm-tmux-lib.sh) verbatim; see
-# that file for the composer-verification contract and echoed verdicts.
+# clears. The submission itself is fm_tmux_submit_core (bin/fm-tmux-lib.sh),
+# used verbatim; see that file for the composer-verification contract and
+# echoed verdicts.
+#
+# This adapter is where tmux ACTS on that verdict - it types into a pane and
+# then reports a submit as confirmed - so it owes the corroboration
+# bin/fm-composer-lib.sh describes: rendered shape cannot establish who owns a
+# pane, and a bare shell prompt reaches the classifier's strongest positive
+# verdict (starship's default prompt character is byte-identical to claude's
+# empty-composer glyph). A crewmate whose agent had exited to a shell therefore
+# answered a steer with a redrawn shell prompt, which read as a cleared
+# composer, and the steer was reported delivered after being typed into that
+# shell and executed there as a command (2026-08-25;
+# docs/verification/runtime-backends.md "Shell panes under an acting caller").
+#
+# The second, non-rendered signal is the pane's own foreground-process facts,
+# whose single owner is fm_backend_tmux_pane_agent_state. It is read twice,
+# because the two failures are different: before typing, so a steer is never
+# executed by a shell, and again before an `empty` verdict is allowed to mean
+# "delivered", which closes the window where an agent exits mid-send.
+#
+# It refuses on `dead` alone - a readable foreground group that is nothing but
+# shells, or an unreadable one whose pane command is a shell - and never on
+# `ambiguous` or `unreadable`. That is deliberately weaker than the away-mode
+# injector's exact-`alive` requirement (bin/fm-supervise-daemon.sh), because the
+# two callers are wrong in opposite directions: the injector types unattended
+# into a pane it discovered, where a wrong keystroke is the whole hazard, while
+# a steer is a caller-resolved endpoint where a wrong refusal loses a real
+# instruction and sends firstmate into recovery on a healthy worker. Only the
+# positive contradiction is worth that.
+#
+# The pane read resolves <target> exactly as the send does, so it always
+# describes the pane that receives the keystrokes, including when tmux answers
+# an absent target from the client's active window.
 fm_backend_tmux_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
-  fm_tmux_submit_core "$@"
+  local target=$1 verdict
+  if [ "$(fm_backend_tmux_pane_agent_state "$target")" = dead ]; then
+    printf 'no-agent'
+    return 0
+  fi
+  verdict=$(fm_tmux_submit_core "$@")
+  if [ "$verdict" = empty ] \
+    && [ "$(fm_backend_tmux_pane_agent_state "$target")" = dead ]; then
+    printf 'agent-lost'
+    return 0
+  fi
+  printf '%s' "$verdict"
 }
 
 # fm_backend_tmux_container_ensure: reuse the current tmux session when

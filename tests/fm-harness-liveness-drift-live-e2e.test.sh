@@ -27,7 +27,8 @@ if [ "${FM_HARNESS_LIVENESS_DRIFT:-0}" != 1 ]; then
   exit 0
 fi
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=tests/lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
@@ -42,6 +43,7 @@ SESSION=drift
 cleanup_all() {
   "$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || true
   [ -n "${LAB:-}" ] && rm -rf "$LAB"
+  fm_test_cleanup
 }
 trap cleanup_all EXIT
 
@@ -63,31 +65,6 @@ fm_backend_source tmux || fail "fm_backend_source tmux failed"
 "$REAL_TMUX" -L "$SOCKET" new-session -d -s "$SESSION" -n control -c "$LAB/wt" \
   || fail "could not start the private tmux server"
 
-# Kimi is not required to be on PATH; mirror bin/fm-spawn.sh's own resolution
-# order so this guard covers the same binary firstmate would actually launch.
-resolve_harness_binary() {  # <harness>
-  local harness=$1 candidate
-  candidate=$(command -v "$harness" 2>/dev/null || true)
-  if [ -n "$candidate" ] && [ -x "$candidate" ]; then
-    printf '%s\n' "$candidate"
-    return 0
-  fi
-  if [ "$harness" = kimi ] && [ -n "${HOME:-}" ] && [ -x "$HOME/.kimi-code/bin/kimi" ]; then
-    printf '%s\n' "$HOME/.kimi-code/bin/kimi"
-    return 0
-  fi
-  # cursor is never on PATH under the name `cursor`: it installs as
-  # `cursor-agent` plus the legacy alias `agent`, and its user-local install is
-  # routinely absent from a non-interactive PATH. Resolve it through the same
-  # verified owner fm-spawn uses, so an unrelated executable named `agent` is
-  # rejected here exactly as it would be at launch.
-  if [ "$harness" = cursor ]; then
-    fm_cursor_resolve_binary 2>/dev/null && return 0
-    return 1
-  fi
-  return 1
-}
-
 CHECKED=0
 SKIPPED=
 
@@ -101,7 +78,7 @@ SKIPPED=
 # runs as a bundled node script, so its pane title is a bare `node` that no name
 # pattern can own, and identity has to come from its install path or argv[0].
 for harness in claude codex opencode pi pi-signed grok kimi cursor muse; do
-  if ! bin_path=$(resolve_harness_binary "$harness"); then
+  if ! bin_path=$(fm_test_resolve_harness_binary "$harness"); then
     SKIPPED="$SKIPPED $harness"
     note "skip: $harness is not installed on this machine, so its classification is unverified here"
     continue

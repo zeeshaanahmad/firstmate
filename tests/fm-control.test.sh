@@ -857,6 +857,10 @@ test_fm_send_still_marks_the_same_secondmate_task() {
   local dir log out rc
   dir=$(new_case sm-send)
   add_task "$dir" domain claude secondmate
+  # A fresh fixture pane reports a bare shell, which the submit path refuses to
+  # type a steer into (bin/backends/tmux.sh), so this marker case has to hold a
+  # live agent the way the endpoint it stands for does.
+  alive_as "$dir" claude
   log="$dir/fake/sendlog"
   : > "$log"
   out=$(env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
