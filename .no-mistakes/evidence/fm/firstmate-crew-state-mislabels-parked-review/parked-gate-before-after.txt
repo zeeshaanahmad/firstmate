@@ -1,0 +1,47 @@
+bin/fm-crew-state.sh parked-gate regression: before/after transcript
+======================================================================
+
+Reproduces the two observed 2026-08-25 misreports (a run parked at a
+no-mistakes review gate, with its head unresolvable in the crew worktree
+because the pipeline has not pushed yet) end to end against the real
+bin/fm-crew-state.sh, bin/fm-nm-run-lib.sh, and bin/fm-busy-event.sh, using
+the same fixtures as tests/fm-crew-state.test.sh
+(test_parked_on_pipeline_head_beats_a_busy_pane and
+test_parked_on_pipeline_head_beats_an_exhausted_fallback).
+
+--- BEFORE (base commit 3e5c89f31559d4ab78df5a181736380f331bd114) ---
+
+=== SYMPTOM A: parked gate + busy pane ===
+FIXED behavior:  state: working · source: pane · harness busy (claude-hook)
+
+=== SYMPTOM B: parked gate + idle pane, no-state last log line ===
+FIXED behavior:  state: unknown · source: none · no current-state source available
+
+--- AFTER (target commit 12f73fe3c339f9350f939ff3a2115511e0543328) ---
+
+=== SYMPTOM A: parked gate + busy pane ===
+FIXED behavior:  state: parked · source: run-step · parked at review: 2 finding(s) (ask-user: authority decision)
+
+=== SYMPTOM B: parked gate + idle pane, no-state last log line ===
+FIXED behavior:  state: parked · source: run-step · parked at review: 2 finding(s) (ask-user: authority decision)
+
+======================================================================
+Both "before" lines match the two originally reported strings exactly:
+  "state: working - source: pane - harness busy (claude-hook)"
+  "state: unknown - source: none - no current-state source available"
+(dot separators here render as middle-dot; the source strings match byte
+for byte otherwise.) Both are one cause: fm_nm_head_matches_worktree
+demanded the run head resolve locally even for an in-flight run, so the
+run parked at the gate was rejected and attribution fell back to the pane.
+
+The "after" transcript shows the fix: fm_nm_head_binds_run allows an
+in-flight run's unresolvable head, so the run object (the only source with
+gate detail) is consulted, and the crew now reports parked with the gate
+name, finding count, and which side must act (firstmate, via the ask-user
+marker in this fixture).
+
+Reproduction method: bin/fm-crew-state.sh and bin/fm-nm-run-lib.sh were
+checked out at the base commit, the same fixture helpers from
+tests/fm-crew-state.test.sh were driven directly (not mocked further),
+and the files were restored to the target commit afterward. Working tree
+was clean before and after; no source files were left modified.
