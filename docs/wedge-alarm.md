@@ -2,8 +2,9 @@
 
 The away-mode sub-supervisor (`bin/fm-supervise-daemon.sh`) buffers escalations and injects them into Firstmate's own pane.
 When injection cannot confirm a submit past `FM_MAX_DEFER_SECS`, `inject_wedge_alarm` raises a loud, rate-limited alarm so the stall never stays invisible.
+The daemon raises the same active alert, not rate-limited, when it refuses to start at all because no supervisor pane could be identified or proven to hold a live agent (`startup_refusal_alarm`); away mode may already be armed by the time that happens, so a startup refusal must not be able to die quietly either.
 The active alert is pane-independent because a tmux status-line flash has no cross-backend equivalent and cannot reach an unattended captain reliably.
-The durable marker and tmux flash remain as additional signals.
+The durable marker and tmux flash remain as additional signals for a delivery wedge; a startup refusal only ever gets the durable marker and the active alert, since there is no confirmed pane to flash a status line on.
 
 ## Channels
 
@@ -19,7 +20,7 @@ It lists channel directives, one per non-empty, non-comment line, and every list
 - `command:<cmd>` runs `<cmd>` through `sh -c` with the alarm summary as `$1` and on stdin, allowing delivery to a phone or pager service.
 
 An absent `config/wedge-alarm` behaves as `auto`, which is default-on on macOS.
-This is deliberate because the alarm fires only after a genuine max-defer wedge and is rate-limited to at most once per max-defer window.
+This is deliberate: the max-defer alarm fires only after a genuine wedge and is rate-limited to at most once per max-defer window, and the startup-refusal alarm fires only on an actual refusal to start, which is itself a rare, blocking event rather than routine noise.
 
 Each channel is best-effort.
 A missing binary or non-zero exit logs a warning and continues to the next channel without crashing the daemon loop.
@@ -36,4 +37,5 @@ When the daemon is sourced as a library, that seam defaults to `discard`, so a t
 Production leaves the seam unset and uses the configured real channels.
 
 `tests/fm-daemon.test.sh` covers directive parsing, rate limiting, timeout and process-group cleanup, argv-safe dispatch, channel fallback, and safe `command:` summary delivery.
+`tests/fm-afk-shell-pane-refusal.test.sh` covers the startup-refusal marker: that a daemon which cannot identify or prove a supervisor pane still writes the durable `state/.subsuper-inject-wedged` marker before exiting; it runs with `FM_WEDGE_ALARM_EXEC=discard`, so it does not assert that an active-alert channel actually fires.
 [`verification/supervision.md`](verification/supervision.md#wedge-alarm-channels) records the bounded manual macOS and Herdr channel proof.

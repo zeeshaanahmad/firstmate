@@ -67,10 +67,13 @@
 #          FM_SUPERVISOR_TARGET     supervisor pane target (override; otherwise
 #                                   auto-discovered per backend - $TMUX_PANE
 #                                   under tmux, "<session>:<pane-id>" from
-#                                   $HERDR_PANE_ID under herdr - then
-#                                   firstmate:0 fallback). Accepts either a
-#                                   tmux target or a herdr "<session>:<pane-id>"
-#                                   target; which one it's read as is decided by
+#                                   $HERDR_PANE_ID under herdr). There is NO
+#                                   fallback: with none of those present the
+#                                   daemon REFUSES TO START rather than guessing
+#                                   a pane (see POSITIVE TARGET IDENTIFICATION
+#                                   below). Accepts either a tmux target or a
+#                                   herdr "<session>:<pane-id>" target; which one
+#                                   it's read as is decided by
 #                                   FM_SUPERVISOR_BACKEND (below), independently.
 #          FM_SUPERVISOR_BACKEND    supervisor pane BACKEND (tmux|herdr;
 #                                   override; otherwise auto-discovered the same
@@ -168,10 +171,10 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$FM_DAEMON_DIR/fm-classify-lib.sh"
 
-# Supervisor-pane discovery (FM_SUPERVISOR_TARGET_DEFAULT,
-# FM_SUPERVISOR_BACKEND_DEFAULT, discover_supervisor_target,
-# discover_supervisor_backend). Shared with the script-owned away launcher
-# (bin/fm-afk-launch.sh) so the captain-pane resolution has exactly one owner.
+# Supervisor-pane discovery (FM_SUPERVISOR_BACKEND_DEFAULT,
+# discover_supervisor_target, discover_supervisor_backend). Shared with the
+# script-owned away launcher (bin/fm-afk-launch.sh) so the captain-pane
+# resolution has exactly one owner.
 # shellcheck source=bin/fm-supervisor-target-lib.sh
 . "$FM_DAEMON_DIR/fm-supervisor-target-lib.sh"
 
@@ -926,13 +929,13 @@ inject_wedge_alarm() {  # <state> <age-seconds>
     printf 'The supervisor pane could not accept an escalation. Buffered items:\n'
     cat "$state/.subsuper-escalations" 2>/dev/null
   } 2>/dev/null > "$marker" || true
-  target="${FM_SUPERVISOR_TARGET:-$FM_SUPERVISOR_TARGET_DEFAULT}"
+  target="${FM_SUPERVISOR_TARGET:-}"
   backend="${FM_SUPERVISOR_BACKEND:-$FM_SUPERVISOR_BACKEND_DEFAULT}"
   # Best-effort status-line flash. tmux's display-message is a client-side OSD
   # with no herdr equivalent; the log line + durable marker above are already
   # the primary, backend-independent signal, so a non-tmux backend just skips
   # this cosmetic extra rather than attempting an unsupported call.
-  if [ "$backend" = tmux ]; then
+  if [ "$backend" = tmux ] && [ -n "$target" ]; then
     tmux display-message -t "$target" "fm: away-mode escalations WEDGED ${age}s — see $marker" 2>/dev/null || true
   fi
   # Backend-independent active alert. Unlike the tmux flash above (skipped on
@@ -943,6 +946,25 @@ inject_wedge_alarm() {  # <state> <age-seconds>
   if [ "$notify" -eq 1 ]; then
     wedge_alarm_notify "away-mode escalations WEDGED ${age}s undelivered - see $marker" "$marker"
   fi
+}
+
+# Away mode can already be ARMED when the daemon refuses to start: the /afk
+# skill's harness-native path writes the flag and hosts the daemon as a
+# background job whose stderr nobody reads. A refusal there would otherwise look
+# exactly like healthy supervision. This reuses the delivery-wedge signals -
+# the durable marker recovery surfaces and the configurable active alert - for
+# the one other way escalations can go undelivered indefinitely.
+startup_refusal_alarm() {  # <state> <reason>
+  local state=$1 reason=$2 marker
+  marker="$state/.subsuper-inject-wedged"
+  mkdir -p "$state" 2>/dev/null || true
+  {
+    printf 'fm away-mode daemon REFUSED TO START at %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')"
+    printf '%s\n' "$reason"
+    printf 'No escalation can be delivered until this is fixed. Buffered items:\n'
+    cat "$state/.subsuper-escalations" 2>/dev/null
+  } 2>/dev/null > "$marker" || true
+  wedge_alarm_notify "away-mode daemon refused to start - see $marker" "$marker"
 }
 
 _oldest_line_age() {  # <buf> -> seconds since the oldest buffered item first arrived (sidecar epoch)
@@ -1137,8 +1159,13 @@ window_for_task() {  # <task-key> [state]
 #     after dim/faint ghost text and borders are ignored (a human's half-typed
 #     line, or a previous injection's unsent text), defer entirely - injecting
 #     would merge with the human's text.
+#   - AGENT-PROOF GUARD before typing: the target pane must ALSO be proven to be
+#     running a live verified harness, from the kernel's own foreground-process
+#     facts (bin/fm-backend.sh's fm_backend_pane_agent_state). See POSITIVE
+#     TARGET IDENTIFICATION below for why the rendered composer verdict is not
+#     sufficient on its own.
 inject_msg() {  # <message> [state]
-  local msg=$1 state target backend retries sleep_s verdict composer encoded
+  local msg=$1 state target backend retries sleep_s verdict composer encoded agent_state
   state="${2:-$(_state_root)}"
   # (1) Presence-gate: inject ONLY when afk is active. When afk is off, the
   # daemon self-handles and stays quiet; firstmate drives the normal always-on
@@ -1151,7 +1178,8 @@ inject_msg() {  # <message> [state]
   msg=$(_collapse_newlines "$msg")
   fm_operational_input_encode away-supervisor "$msg" encoded || return 1
   msg=$encoded
-  target="${FM_SUPERVISOR_TARGET:-$FM_SUPERVISOR_TARGET_DEFAULT}"
+  target="${FM_SUPERVISOR_TARGET:-}"
+  [ -n "$target" ] || { log "inject deferred: no supervisor pane identified (FM_SUPERVISOR_TARGET unset)"; return 1; }
   # BACKEND-AWARE (previously a raw `tmux display-message` pane-exists probe):
   # dispatches through bin/fm-backend.sh so a herdr supervisor pane is checked
   # via the herdr adapter instead of always assuming tmux. Falls back to tmux
@@ -1162,6 +1190,23 @@ inject_msg() {  # <message> [state]
   # (3) Busy-guard: never inject into an in-use supervisor pane.
   if pane_is_busy "$target" "$backend"; then
     log "inject deferred: supervisor pane busy (agent mid-turn)"
+    return 1
+  fi
+  #   a2) AGENT-PROOF GUARD. Positive, NON-RENDERED proof that a live verified
+  #      harness owns this pane, before anything is typed into it, and the half
+  #      the composer guard below structurally cannot supply. See POSITIVE
+  #      TARGET IDENTIFICATION at the startup discovery: a rendered read cannot
+  #      tell an agent's composer apart from a shell drawing the same prompt
+  #      character, so it never authorizes a keystroke on its own. Only an exact
+  #      `alive` proceeds; `dead` (the agent exited to a shell, or this was never
+  #      an agent pane), `ambiguous`, `unreadable`, `missing`, and `unverified`
+  #      all defer with the buffer preserved, which the max-defer wedge alarm
+  #      then turns into a visible stall rather than a silent loss. It runs after
+  #      the busy guard so an agent that is merely mid-turn is reported as busy
+  #      rather than as an unproven pane.
+  agent_state=$(fm_backend_pane_agent_state "$backend" "$target" 2>/dev/null)
+  if [ "$agent_state" != alive ]; then
+    log "inject deferred: supervisor pane '$target' is not a proven live agent pane (agent_state=${agent_state:-unreadable})"
     return 1
   fi
   #   b) Composer-guard: inject ONLY into a confirmed-empty GENUINE agent
@@ -1446,12 +1491,36 @@ fm_super_main() {
     exit 1
   fi
 
-  # --- auto-discover the supervisor target (the pane running firstmate) -----
-  # Priority: FM_SUPERVISOR_TARGET override > $TMUX_PANE (tmux; inherited from
-  # the pane that launched the daemon, normally firstmate's own) >
-  # $HERDR_PANE_ID (herdr, composed into "<session>:<pane-id>") > firstmate:0
-  # fallback. Exporting the result into FM_SUPERVISOR_TARGET makes inject_msg
-  # (which reads that env var) use the discovered pane without an extra global.
+  # --- POSITIVE TARGET IDENTIFICATION --------------------------------------
+  # Auto-discover the supervisor target (the pane running firstmate). Priority:
+  # FM_SUPERVISOR_TARGET override > $TMUX_PANE (tmux; inherited from the pane
+  # that launched the daemon, normally firstmate's own) > $HERDR_PANE_ID (herdr,
+  # composed into "<session>:<pane-id>"). Exporting the result into
+  # FM_SUPERVISOR_TARGET makes inject_msg (which reads that env var) use the
+  # discovered pane without an extra global.
+  #
+  # There is NO fallback and no warn-and-continue. The daemon used to guess the
+  # tmux name "firstmate:0" and print a warning; on 2026-08-24 that guess landed
+  # on window 0 of a tmux session named `firstmate` that held an ORDINARY
+  # INTERACTIVE SHELL, because firstmate itself was running outside tmux while
+  # the crew windows were inside it. Two away-mode digests carrying real `done:`
+  # completions were typed into that shell, executed as commands, and counted as
+  # delivered. A warning that scrolls past is not a safeguard, so an
+  # unidentifiable pane is now a refusal to start.
+  #
+  # The second half of the identification is the one the composer classifier
+  # cannot supply. That classifier reads the RENDERED pane, and a bare agent
+  # prompt glyph is its own container proof there - but `❯` is also the default
+  # prompt character of starship (and of pure, spaceship, and others), so the
+  # shell in that pane rendered byte-for-byte like an idle claude composer and
+  # classified `empty`. Shape alone can never separate an agent's composer from a
+  # shell drawing the same character, and teaching the classifier one more prompt
+  # shape would leave the next unrecognized one equally dangerous. So the daemon
+  # requires a second, INDEPENDENT and non-rendered signal: the kernel's own
+  # foreground-process facts for that pane, through fm_backend_pane_agent_state
+  # (bin/fm-backend.sh), whose harness-name vocabulary already has one verified
+  # owner. Only an exact `alive` is positive identification; a bare shell reads
+  # `dead`, which is exactly the incident pane.
   local discovered target_source
   target_source="FM_SUPERVISOR_TARGET"
   if [ -z "${FM_SUPERVISOR_TARGET:-}" ]; then
@@ -1459,14 +1528,19 @@ fm_super_main() {
       target_source="TMUX_PANE"
     elif [ "${HERDR_ENV:-}" = "1" ] && [ -n "${HERDR_PANE_ID:-}" ]; then
       target_source="HERDR_ENV(HERDR_PANE_ID)"
-    else
-      target_source="FALLBACK(firstmate:0)"
     fi
   fi
-  if discovered=$(discover_supervisor_target); then
-    : # resolved cleanly
-  else
-    echo "warn: could not auto-discover supervisor pane (no FM_SUPERVISOR_TARGET, TMUX_PANE, or HERDR_ENV/HERDR_PANE_ID); falling back to '$discovered' — verify this is firstmate's pane" >&2
+  if ! discovered=$(discover_supervisor_target) || [ -z "$discovered" ]; then
+    local NO_TARGET_REFUSAL="away mode cannot start here: firstmate is not running inside a tmux or herdr pane, so there is no pane to deliver escalations to (no FM_SUPERVISOR_TARGET, TMUX_PANE, or HERDR_ENV/HERDR_PANE_ID). Run firstmate inside tmux or herdr, or set FM_SUPERVISOR_TARGET (and FM_SUPERVISOR_BACKEND) to firstmate's own pane. Refusing to start rather than guessing a pane."
+    echo "error: $NO_TARGET_REFUSAL" >&2
+    log "startup failed: no supervisor pane could be identified (backend=$BACKEND, backend_source=$backend_source)"
+    # Same durability guarantee as the live-agent-pane refusal below: away mode
+    # may already be armed and the harness-hosted daemon's stderr is unwatched,
+    # so this refusal must not be able to die quietly either.
+    startup_refusal_alarm "$STATE" "$NO_TARGET_REFUSAL"
+    fm_lock_release "$LOCK" 2>/dev/null || true
+    rm -f "$PIDFILE" 2>/dev/null || true
+    exit 1
   fi
   FM_SUPERVISOR_TARGET="$discovered"
   local TARGET="$FM_SUPERVISOR_TARGET"
@@ -1479,6 +1553,28 @@ fm_super_main() {
   if ! fm_backend_target_exists "$BACKEND" "$TARGET"; then
     echo "error: supervisor target '$TARGET' does not resolve to a $BACKEND pane; set FM_SUPERVISOR_TARGET" >&2
     log "startup failed: target '$TARGET' not found (backend=$BACKEND)"
+    fm_lock_release "$LOCK" 2>/dev/null || true
+    rm -f "$PIDFILE" 2>/dev/null || true
+    exit 1
+  fi
+
+  # --- and prove a live agent actually owns it, before away mode is armed ---
+  # Same guard inject_msg applies per digest, hoisted to startup so the captain
+  # learns at /afk time instead of discovering it after escalations were lost.
+  local START_AGENT_STATE START_REFUSAL
+  START_AGENT_STATE=$(fm_backend_pane_agent_state "$BACKEND" "$TARGET" 2>/dev/null)
+  if [ "$START_AGENT_STATE" != alive ]; then
+    START_REFUSAL="supervisor target '$TARGET' is not a pane running firstmate: no live agent process owns it (agent_state=${START_AGENT_STATE:-unreadable}; 'dead' means an ordinary shell is sitting there). Away-mode escalations would be typed into it and lost, so refusing to start. Point FM_SUPERVISOR_TARGET at firstmate's own pane."
+    echo "error: $START_REFUSAL" >&2
+    log "startup failed: target '$TARGET' is not a live agent pane (agent_state=${START_AGENT_STATE:-unreadable}, backend=$BACKEND, target_source=$target_source)"
+    # A refusal must not be able to die quietly. The harness-hosted away-mode
+    # entry (the /afk skill's native path) runs this daemon as a background job
+    # whose stderr nobody is watching, and away mode may already be armed by the
+    # time it refuses - which would leave the captain believing supervision is
+    # running. So the refusal also drops the durable undelivered-escalation
+    # marker recovery already surfaces, and fires the same configurable active
+    # alert a delivery wedge does.
+    startup_refusal_alarm "$STATE" "$START_REFUSAL"
     fm_lock_release "$LOCK" 2>/dev/null || true
     rm -f "$PIDFILE" 2>/dev/null || true
     exit 1
