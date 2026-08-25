@@ -101,9 +101,13 @@ pass "the reported run head is a commit token attribution can bind on"
 # quietly read as alive. The cost of that choice is that a newly invented ACTIVE
 # value goes silent instead, which is safe but reopens exactly the gap this guard
 # exists for. Catch either one here rather than in production.
+#
+# awaiting_approval and fix_review are accepted here as recognized GATE states so
+# this guard can continue past a run genuinely parked at a gate, not as evidence
+# of liveness; bin/fm-liveness-lib.sh must still never read a parked run as alive.
 
 case "$run_status" in
-  running|fixing|pending|completed|failed|cancelled|aborted) ;;
+  running|fixing|pending|awaiting_approval|fix_review|completed|failed|cancelled|aborted) ;;
   *) drift "unknown run status '$run_status'; classify it in bin/fm-liveness-lib.sh before it is read as alive or silently ignored" ;;
 esac
 pass "the reported run status is a value firstmate classifies"

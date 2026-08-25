@@ -573,7 +573,7 @@ That the run head advances before any push is directly readable from the daemon'
 sqlite3 ~/.no-mistakes/state.sqlite \
   "select id,substr(head_sha,1,8),substr(submitted_head_sha,1,8),ifnull(last_pushed_sha,'NULL'),status
      from runs where submitted_head_sha is not null and head_sha<>submitted_head_sha
-       and last_pushed_sha is null order by created_at desc limit 3;"
+       and last_pushed_sha is null order by created_at desc limit 4;"
 ```
 
 Run on 2026-08-25 against `no-mistakes version v1.48.0 (2ac3769) 2026-08-08T06:39:10Z`:
@@ -582,6 +582,7 @@ Run on 2026-08-25 against `no-mistakes version v1.48.0 (2ac3769) 2026-08-08T06:3
 01M0D0RWKG0GBP8B6X132T7YC1|791e0c3c|7fea6e2a|NULL|cancelled
 01M0C25YDCY3BJZHDNQ2XRPD32|2cd22995|6cc6fea6|NULL|failed
 01M08WSDJHH5YWE7DQ33S7XSAF|83d456d3|a0ee303e|NULL|cancelled
+01M08EF6P61R2HYM0R06637ABN|bf0aec4c|1a4d051e|NULL|cancelled
 ```
 
 Every row is a run whose head moved past what the crew submitted while nothing had been pushed, so those heads existed only in the gate repository.
@@ -600,9 +601,9 @@ Run on 2026-08-25 against `no-mistakes version v1.48.0 (2ac3769) 2026-08-08T06:3
 ok - axi status prints a run object whose branch, status, and head read at the anchored depth
 ok - the reported run head is a commit token attribution can bind on
 ok - the reported run status is a value firstmate classifies
-# no run is executing here, so active-step statuses were not observed; re-run this guard during a run to cover them
-# axi status answered for branch 'fm/afk-digests-are-typed-into-a-shell-when-firstmate-is-not-in-tmux' rather than this worktree's own, so the binding assertion needs a run started here
+ok - every active-step status firstmate saw is a value it classifies
+ok - the run reported for this worktree's own branch binds under the real attribution rule
 ok - axi status answers only for the repository it is invoked in
 ```
 
-The binding assertion needs a run on the invoking worktree's own branch, so the guard reports that gap explicitly rather than passing over it, and this record is refreshed from a worktree with an active run to cover it.
+The binding assertion was exercised against an active run on this worktree's own branch, so this record is refreshed from a worktree with a run in flight.
