@@ -1894,6 +1894,207 @@ test_missing_run_head_falls_back_to_current_state() {
   pass "missing run head falls back instead of matching by branch"
 }
 
+# --- parked at a gate on an unpushed pipeline head -------------------------
+#
+# THE REGRESSION THIS TASK EXISTS FOR. no-mistakes runs the pipeline in its own
+# gate repository and does not push until the push step, so from the first
+# auto-fix round until then `axi status` reports a head this worktree has never
+# seen. Attribution demanded that head resolve locally, so it rejected the run
+# for the whole review..lint window - which is exactly where a run parks at
+# awaiting_approval or fix_review. The run object is the only source carrying
+# gate detail, so a rejected run does not degrade to a coarser verdict, it
+# degrades to the pane. Two lanes were observed parked at a gate on 2026-08-25
+# and read as `working - source: pane` and `unknown - source: none`; both are
+# reproduced below, and both are one cause.
+
+# A real commit in a DIFFERENT repository, guaranteed absent from the crew
+# worktree's object store - what an in-flight run's head actually is.
+make_unpushed_pipeline_head() {  # <gate-dir> <seed-repo> -> echoes short sha
+  local gate=$1 seed=$2
+  git clone -q "$seed" "$gate"
+  git -C "$gate" commit -q --allow-empty -m 'no-mistakes(review): apply fixes'
+  git -C "$gate" rev-parse --short=8 HEAD
+}
+
+# Arms the case both symptoms share: a crew parked at a review gate whose run
+# head is an unpushed pipeline commit. Echoes that head.
+arm_parked_on_pipeline_head() {  # <case-dir> <id> <branch> -> echoes gate head
+  local d=$1 branch=$3 gate_head
+  gate_head=$(make_unpushed_pipeline_head "$d/gate" "$d/wt")
+  git -C "$d/wt" rev-parse --verify --quiet "${gate_head}^{commit}" >/dev/null 2>&1 \
+    && fail "the fixture's pipeline head resolves in the crew worktree, so it proves nothing"
+  FM_FAKE_RUN_HEAD="$gate_head"
+  FM_FAKE_AXI_STATUS="$(run_parked "$branch")"
+  # The coarse listing carries the same unresolvable head, so it cannot rescue
+  # this case either - the run object is the only way through.
+  FM_FAKE_RUNS_LIST="  running    $branch ${gate_head}  2026-08-25 10:00"
+  printf '%s' "$gate_head"
+}
+
+# Symptom A: the crew's pane is busy (its agent is mid-turn answering the gate),
+# so the fallback published `working` and the watcher absorbed the wake.
+test_parked_on_pipeline_head_beats_a_busy_pane() {
+  reset_fakes
+  local d out fallback
+  d=$(new_case parked-pipeline-head-busy)
+  make_repo_on_branch "$d/wt" fm/feat-parked-busy
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/parked-busy.meta" "window=fm:fm-parked-busy" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: started validation\n' > "$d/state/parked-busy.status"
+  arm_parked_on_pipeline_head "$d" parked-busy fm/feat-parked-busy >/dev/null
+  FM_FAKE_BUSY=1
+  local gen; gen=$("$ROOT/bin/fm-busy-event.sh" arm "$d/state" parked-busy)
+  "$ROOT/bin/fm-busy-event.sh" apply "$d/state" parked-busy busy --gen "$gen" \
+    --source claude-hook --event user-prompt-submit
+  out=$(run_crew_state "$d" parked-busy)
+  assert_contains "$out" "state: parked" "a parked run on an unpushed pipeline head reports parked"
+  assert_contains "$out" "source: run-step" "the run object, not the pane, is the source"
+  assert_contains "$out" "parked at review" "the gate is named"
+
+  # Drive the signals apart: with the run lookup dark and nothing else changed,
+  # the pane really does say busy. Without this the case could pass vacuously on
+  # a fixture whose pane was never busy in the first place.
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  fallback=$(run_crew_state "$d" parked-busy)
+  assert_contains "$fallback" "state: working" "the pane signal really is busy in this fixture"
+  assert_contains "$fallback" "source: pane" "the busy verdict really does come from the pane"
+  pass "a parked gate outranks a busy pane instead of being masked by it"
+}
+
+# Symptom B: the crew's pane is idle and its last status line is a `resolved:`
+# decision close, which is not a state - so the fallback ran out of sources and
+# published `unknown - source: none` for a run parked at a gate.
+test_parked_on_pipeline_head_beats_an_exhausted_fallback() {
+  reset_fakes
+  local d out fallback
+  d=$(new_case parked-pipeline-head-idle)
+  make_repo_on_branch "$d/wt" fm/feat-parked-idle
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/parked-idle.meta" "window=fm:fm-parked-idle" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'needs-decision: gate finding [key=f1]\nresolved: firstmate answered [key=f1]\n' \
+    > "$d/state/parked-idle.status"
+  arm_parked_on_pipeline_head "$d" parked-idle fm/feat-parked-idle >/dev/null
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" parked-idle
+  out=$(run_crew_state "$d" parked-idle)
+  assert_contains "$out" "state: parked" "a parked run still reports parked when the pane is idle"
+  assert_contains "$out" "source: run-step" "the run object answers where the fallback had nothing"
+
+  # The other half of the divergence: this fixture's fallback really is empty.
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  fallback=$(run_crew_state "$d" parked-idle)
+  assert_contains "$fallback" "state: unknown" "the fallback really is exhausted in this fixture"
+  assert_contains "$fallback" "source: none" "the exhausted fallback really does report no source"
+  pass "a parked gate is reported where the fallback had no source at all"
+}
+
+# The supervisory consequence, over the real predicate the watcher uses: a lane
+# parked at a gate must SURFACE. Reported as `working - source: pane` it was
+# absorbed as provably working, which is how both stalls stayed invisible.
+test_parked_on_pipeline_head_is_not_absorbed_as_working() {
+  reset_fakes
+  local d
+  d=$(new_case parked-pipeline-head-absorb)
+  make_repo_on_branch "$d/wt" fm/feat-parked-absorb
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/parked-absorb.meta" "window=fm:fm-parked-absorb" "worktree=$d/wt" "kind=ship" "harness=claude"
+  arm_parked_on_pipeline_head "$d" parked-absorb fm/feat-parked-absorb >/dev/null
+  FM_FAKE_BUSY=1
+  local gen; gen=$("$ROOT/bin/fm-busy-event.sh" arm "$d/state" parked-absorb)
+  "$ROOT/bin/fm-busy-event.sh" apply "$d/state" parked-absorb busy --gen "$gen" \
+    --source claude-hook --event user-prompt-submit
+  PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" crew_is_provably_working parked-absorb \
+    && fail "a crew parked at a gate was absorbed as provably working"
+  pass "a crew parked at a gate surfaces instead of being absorbed as provably working"
+}
+
+# Both kinds of park are `parked`, and the supervisory actions are opposite, so
+# the verdict must name which side owns the next move without a second tool.
+test_parked_verdict_names_which_side_must_act() {
+  reset_fakes
+  local d out
+  d=$(new_case parked-owner)
+  make_repo_on_branch "$d/wt" fm/feat-parked-owner
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/owner.meta" "window=fm:fm-owner" "worktree=$d/wt" "kind=ship" "harness=claude"
+  arm_idle_record "$d/state" owner
+
+  # run_parked carries an ask-user finding: firstmate's decision.
+  FM_FAKE_AXI_STATUS="$(run_parked fm/feat-parked-owner)"
+  out=$(run_crew_state "$d" owner)
+  assert_contains "$out" "state: parked" "ask-user gate is parked"
+  assert_contains "$out" "ask-user: authority decision" "an ask-user gate names firstmate's decision"
+  assert_not_contains "$out" "worker must respond" "an ask-user gate is not the worker's to answer"
+
+  # The same gate with no ask-user finding: the worker drives it.
+  FM_FAKE_AXI_STATUS="$(run_parked fm/feat-parked-owner | sed 's/ask-user/auto-fix/')"
+  out=$(run_crew_state "$d" owner)
+  assert_contains "$out" "state: parked" "a fix-review gate is parked"
+  assert_contains "$out" "worker must respond" "a non-ask-user gate names the worker as the responder"
+  assert_not_contains "$out" "authority decision" "a non-ask-user gate is not escalated as a decision"
+  pass "the parked verdict names whether firstmate decides or the worker responds"
+}
+
+# The loosening is bounded to IN-FLIGHT runs. A terminal run's fixes were pushed
+# at the push step, so a head this worktree cannot resolve means the run is not
+# this crew's work - and a terminal verdict is exactly the evidence that would
+# justify tearing the crew down. Terminal keeps the strict proof.
+test_terminal_run_on_unresolvable_head_is_not_attributed() {
+  reset_fakes
+  local d gate_head out
+  d=$(new_case terminal-unresolvable-head)
+  make_repo_on_branch "$d/wt" fm/feat-terminal-head
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/term.meta" "window=fm:fm-term" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: implementation committed, ready for validation\n' > "$d/state/term.status"
+  gate_head=$(make_unpushed_pipeline_head "$d/gate" "$d/wt")
+  FM_FAKE_RUN_HEAD="$gate_head"
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" term
+  for fixture in run_passed run_failed run_cancelled; do
+    FM_FAKE_AXI_STATUS="$($fixture fm/feat-terminal-head)"
+    out=$(run_crew_state "$d" term)
+    assert_not_contains "$out" "source: run-step" \
+      "$fixture on an unresolvable head must not be attributed"
+    assert_not_contains "$out" "state: done" "$fixture on an unresolvable head must not claim done"
+    assert_not_contains "$out" "state: failed" "$fixture on an unresolvable head must not claim failed"
+  done
+  pass "a terminal run whose head this worktree cannot resolve is still rejected"
+}
+
+# The in-flight allowance must not swallow the strict rule where the head IS
+# resolvable: a parked run validating rewritten or superseded code is still not
+# this crew's current work.
+test_inflight_allowance_still_rejects_a_resolvable_diverged_head() {
+  reset_fakes
+  local d diverged out
+  d=$(new_case inflight-diverged-head)
+  make_repo_on_branch "$d/wt" fm/feat-diverged
+  git -C "$d/wt" checkout -q -b tmp-diverge
+  git -C "$d/wt" commit -q --allow-empty -m 'abandoned line of history'
+  diverged=$(git -C "$d/wt" rev-parse HEAD)
+  git -C "$d/wt" checkout -q fm/feat-diverged
+  git -C "$d/wt" commit -q --allow-empty -m 'current work'
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/div.meta" "window=fm:fm-div" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: current stage in progress\n' > "$d/state/div.status"
+  git -C "$d/wt" rev-parse --verify --quiet "${diverged}^{commit}" >/dev/null 2>&1 \
+    || fail "the fixture's diverged head does not resolve, so it tests the wrong rule"
+  FM_FAKE_RUN_HEAD="$diverged"
+  FM_FAKE_AXI_STATUS="$(run_parked fm/feat-diverged)"
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" div
+  out=$(run_crew_state "$d" div)
+  assert_not_contains "$out" "source: run-step" "a resolvable diverged head is still rejected"
+  assert_not_contains "$out" "state: parked" "a diverged parked run must not mask current state"
+  assert_contains "$out" "state: working" "the crew's own current state stands"
+  pass "the in-flight allowance still rejects a resolvable head that diverged"
+}
+
 test_active_run_is_authoritative
 test_stale_needs_decision_superseded
 test_stale_blocked_superseded
@@ -1963,5 +2164,11 @@ test_historical_same_branch_rewritten_head_not_current
 test_active_run_descendant_fix_head_remains_current
 test_local_advanced_past_run_head_invalidates
 test_missing_run_head_falls_back_to_current_state
+test_parked_on_pipeline_head_beats_a_busy_pane
+test_parked_on_pipeline_head_beats_an_exhausted_fallback
+test_parked_on_pipeline_head_is_not_absorbed_as_working
+test_parked_verdict_names_which_side_must_act
+test_terminal_run_on_unresolvable_head_is_not_attributed
+test_inflight_allowance_still_rejects_a_resolvable_diverged_head
 
 echo "all fm-crew-state tests passed"

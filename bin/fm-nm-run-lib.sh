@@ -148,3 +148,38 @@ fm_nm_head_allows_inflight() {  # <worktree> <run_head>
   fi
   return 0
 }
+
+# 0 if run head $2 binds a run in state $3 with outcome $4 to worktree $1.
+#
+# The two rules above answer different questions, and picking between them is
+# itself part of attribution, so the choice lives here rather than at each call
+# site. A TERMINAL run must prove its head: its fixes were pushed at the push
+# step, so an unresolvable head means the run is not this worktree's work, and a
+# terminal verdict is exactly the evidence that would justify tearing down or
+# restarting. An IN-FLIGHT run must not be required to, for the reason
+# fm_nm_head_allows_inflight documents: from the first auto-fix round until the
+# push step the reported head exists only in no-mistakes' own gate repository,
+# so demanding resolution rejects every run between those two points.
+#
+# That window is not an edge case. It spans the review, test, document, and lint
+# steps, which is where a run parks at awaiting_approval or fix_review, so a
+# strict-only reader loses attribution for precisely the state supervision must
+# surface and falls back to the pane - reporting a crew waiting at a gate as
+# working, or as unknown when its pane is quiet.
+#
+# In-flight is an ALLOW-LIST of the run states no-mistakes actually reports for a
+# live run, so the loosening can never widen on its own: a state this list does
+# not name (including an empty one, and any terminal or gate value invented
+# later) keeps the strict proof. tests/fm-nm-status-shape-live-e2e.test.sh is the
+# drift guard that fails when the installed binary reports a state absent here.
+fm_nm_head_binds_run() {  # <worktree> <run_head> <run_status> <run_outcome>
+  local wt=$1 run_head=$2 run_status=$3 run_outcome=${4:-}
+  if [ -z "$run_outcome" ]; then
+    case "$run_status" in
+      running|fixing|pending|awaiting_approval|fix_review)
+        fm_nm_head_allows_inflight "$wt" "$run_head"
+        return ;;
+    esac
+  fi
+  fm_nm_head_matches_worktree "$wt" "$run_head"
+}
