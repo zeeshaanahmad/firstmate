@@ -100,12 +100,19 @@ foreground_pgid() {  # <target>
 # still running but no longer owns the terminal" (a real misclassification that
 # would refuse every steer to it).
 harness_still_on_tty() {  # <target> <bin-path>
-  local target=$1 base tty
+  local target=$1 base tty ps_out pid comm args
   base=$(basename -- "$2")
   tty=$(tmux display-message -p -t "$target" '#{pane_tty}' 2>/dev/null) || return 1
   case "$tty" in /dev/*) ;; *) return 1 ;; esac
-  LC_ALL=C ps -t "${tty#/dev/}" -o pid=,comm=,args= 2>/dev/null \
-    | grep -F -- "$base" >/dev/null
+  ps_out=$(LC_ALL=C ps -t "${tty#/dev/}" -o pid=,comm=,args= 2>/dev/null)
+  while IFS= read -r pid comm args; do
+    [ -n "$pid" ] || continue
+    case "$comm" in *"$base"*) return 0 ;; esac
+    case "$args" in *"$base"*) return 0 ;; esac
+  done <<EOF
+$ps_out
+EOF
+  return 1
 }
 
 wait_for_composer() {  # <target> <wanted> <polls>
