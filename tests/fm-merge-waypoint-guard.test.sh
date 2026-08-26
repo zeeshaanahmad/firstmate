@@ -29,6 +29,9 @@
 #   (g) a project with no upstream remote is not checked at all and stays silent
 #   (h) a configured upstream that was never fetched here is loudly unguarded
 #       rather than wedging the merge
+#   (i) upstream history IS present locally, but the base branch or PR head
+#       cannot be resolved - this REFUSES, unlike (h), because history that
+#       cannot be measured is not history that was found clear
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -276,6 +279,33 @@ test_unfetched_upstream_is_loudly_unguarded() {
   pass "an upstream remote that was never fetched here is loudly unguarded, not a wedge"
 }
 
+test_unresolvable_history_refuses_when_upstream_present() {
+  local case_dir rc
+  case_dir=$(make_case unresolvable-history-refuses sync)
+  # The forge is gone: the guard's shared ref resolution cannot fetch the
+  # current base tip or the PR head, even though upstream history IS present
+  # locally via refs/remotes/upstream/main. Contrast with (h): there, no local
+  # upstream refs exist at all, so the guard has nothing to measure against and
+  # merges loudly; here, upstream history exists but the specific comparison it
+  # needs cannot be run, so it refuses instead.
+  mv "$case_dir/origin.git" "$case_dir/origin-moved.git"
+
+  set +e
+  run_pr_merge "$case_dir" task-w1 https://github.com/example/repo/pull/7 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "unresolvable-history-refuses: an unmeasured base/head must refuse, not merge"
+  assert_grep 'merge refused' "$case_dir/stderr" \
+    "unresolvable-history-refuses: refusal did not say the merge was refused"
+  assert_grep 'an unmeasured history check is not a clear one' "$case_dir/stderr" \
+    "unresolvable-history-refuses: refusal did not name the unmeasured-check doctrine"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "unresolvable-history-refuses: the PR was merged despite an unmeasured comparison"
+  pass "upstream history present but unresolvable base/head refuses, unlike an unfetched upstream which merges loudly"
+}
+
 test_squash_default_refused_for_upstream_history
 test_ordinary_pr_still_squashes
 test_merge_method_is_allowed_and_forwarded
@@ -284,3 +314,4 @@ test_explicit_squash_method_refused
 test_static_guard_off_does_not_disable_this_guard
 test_project_without_upstream_is_not_checked
 test_unfetched_upstream_is_loudly_unguarded
+test_unresolvable_history_refuses_when_upstream_present
