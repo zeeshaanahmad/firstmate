@@ -259,7 +259,7 @@ Batch spawns satisfy the same requirement with a shared `--harness`, `--model`, 
 A `--relaunch` is exempt from all three: it reuses the task's own recorded prior values instead of demanding them again on the command line.
 Secondmate spawns are exempt and still resolve through `config/secondmate-harness` and its optional model and effort tokens.
 This section is the single owner of the canonical schema and its per-field semantics.
-`AGENTS.md` section 4 owns the always-loaded dispatch intake boundary, and `quota-array-dispatch` owns the completion-aware profile-array selection procedure.
+`AGENTS.md` section 4 owns the always-loaded dispatch intake boundary, and `quota-array-dispatch` owns the TOON-first spendPriority profile-array selection procedure.
 
 ```json
 {
