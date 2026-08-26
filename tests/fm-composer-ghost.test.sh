@@ -19,7 +19,7 @@
 set -u
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 
 LIB="$ROOT/bin/fm-tmux-lib.sh"
 PEEK="$ROOT/bin/fm-peek.sh"

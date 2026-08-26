@@ -5,7 +5,7 @@
 set -u
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 
 TMP_ROOT=$(fm_test_tmproot fm-herdr-session-cleanup)
 FM_TEST_CLEANUP_DIRS+=("$TMP_ROOT")

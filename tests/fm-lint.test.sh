@@ -15,7 +15,7 @@
 set -u
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 
 LINT="$ROOT/bin/fm-lint.sh"
 INSTALLER="$ROOT/bin/fm-install-shellcheck.sh"
@@ -793,11 +793,11 @@ test_seeded_module_boundary_parity() {
     return
   fi
   local tmp rel adapter dispatcher dep owner test_root out rc
-  tmp=$(mktemp -d "$ROOT/.fm-lint-parity.XXXXXX")
-  if [ "${#FM_TEST_CLEANUP_DIRS[@]}" -eq 0 ]; then
-    trap fm_test_cleanup EXIT
-  fi
-  FM_TEST_CLEANUP_DIRS+=("$tmp")
+  # This fixture must live under $ROOT, not the temp root: the parity check below
+  # feeds fm-lint.sh a REPO-RELATIVE source path ($rel). Declaring it hands the
+  # root to the library's guarded teardown (tests/lib.sh, fm_test_own_fixture).
+  tmp=$(mktemp -d "$ROOT/.fm-lint-parity.XXXXXX") || fail "could not create the lint parity fixture root"
+  fm_test_own_fixture "$tmp" || fail "could not declare the lint parity fixture root"
   rel=${tmp#"$ROOT/"}
   adapter="$tmp/adapter.sh"
   dispatcher="$tmp/dispatcher.sh"

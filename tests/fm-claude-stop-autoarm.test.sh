@@ -12,7 +12,7 @@
 set -u
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 
 TMP_ROOT=$(fm_test_tmproot fm-claude-stop-autoarm)
 fm_git_identity fmtest fmtest@example.invalid

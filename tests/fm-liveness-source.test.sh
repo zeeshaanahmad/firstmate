@@ -21,7 +21,7 @@
 set -u
 
 # shellcheck source=tests/wake-helpers.sh
-. "$(dirname "${BASH_SOURCE[0]}")/wake-helpers.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/wake-helpers.sh" || exit 1
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-pr-lib.sh"
 # shellcheck source=/dev/null

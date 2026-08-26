@@ -4,7 +4,7 @@
 set -u
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 
 CHECK="$ROOT/bin/fm-subagent-pretool-check.sh"
 TMP_ROOT=$(fm_test_tmproot fm-subagent-pretool-tests)

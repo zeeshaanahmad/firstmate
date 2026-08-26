@@ -9,7 +9,7 @@
 # uses, so each side is green alone and only the combination is red.
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 
 fm_sg_git() {  # <repo> <git args...>
   git -C "$1" -c user.name=fmtest -c user.email=fmtest@example.invalid "${@:2}"

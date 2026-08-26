@@ -28,9 +28,9 @@
 set -u
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 # shellcheck source=tests/remote-herdr-fixture.sh
-. "$(dirname "${BASH_SOURCE[0]}")/remote-herdr-fixture.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/remote-herdr-fixture.sh" || exit 1
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 
@@ -62,7 +62,7 @@ cleanup() {
     worker_pid=$(cat "$TMP_ROOT/remote-jobs/worker.pid")
     kill "$worker_pid" 2>/dev/null || true
   fi
-  rm -rf -- "$TMP_ROOT"
+  fm_test_rmtree "$TMP_ROOT"
 }
 trap cleanup EXIT
 

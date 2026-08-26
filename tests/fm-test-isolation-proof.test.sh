@@ -3,7 +3,7 @@
 set -u
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 
 PROOF="$ROOT/bin/fm-test-isolation-proof.sh"
 RUNNER="$ROOT/bin/fm-test-run.sh"

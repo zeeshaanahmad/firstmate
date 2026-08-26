@@ -20,7 +20,7 @@
 set -u
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-control-lib.sh"
 # shellcheck source=/dev/null
@@ -33,7 +33,7 @@ SEND="$ROOT/bin/fm-send.sh"
 TMP_ROOT=$(fm_test_tmproot fm-control)
 mkdir -p "$TMP_ROOT"
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd)
-trap 'rm -rf "$TMP_ROOT"' EXIT
+trap 'fm_test_rmtree "$TMP_ROOT"' EXIT
 
 VERIFIED_HARNESSES="claude codex opencode pi pi-signed grok kimi cursor muse"
 

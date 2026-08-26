@@ -3,7 +3,7 @@
 set -u
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 
 CHECKPOINT="$ROOT/bin/fm-watch-checkpoint.sh"
 TMP_ROOT=$(fm_test_tmproot fm-watch-checkpoint)

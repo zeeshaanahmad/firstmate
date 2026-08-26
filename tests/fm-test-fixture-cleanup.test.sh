@@ -10,10 +10,20 @@
 # terminating signal - plus that a stale marked fixture from a killed prior
 # run gets reaped on the next source. Nothing here inspects tests/lib.sh's
 # source text; it only observes filesystem state around the real helper.
+#
+# It also pins the two guards that keep that teardown from removing the working
+# directory. A test file copied out of tests/ cannot resolve `. lib.sh`, and bash
+# treats that failed source as an ordinary non-zero return: the file used to keep
+# running with fm_test_tmproot undefined, so `TMP_ROOT=$(fm_test_tmproot pfx)`
+# became the empty string and the widespread `TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)`
+# idiom then turned it into $PWD, which the file's own EXIT trap `rm -rf`d. That
+# really happened, to a live task worktree. Both halves are covered because they
+# fail independently: fm_test_rmtree refuses any path outside the fixture temp
+# root (empty or not), and every lib-dependent file aborts at its source line.
 set -u
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 
 LIB="$ROOT/tests/lib.sh"
 
@@ -144,8 +154,221 @@ test_orphan_sweep_respects_fixture_ownership() {
   pass "the orphan sweep reaps only old fixtures without a live owner"
 }
 
+test_rmtree_refuses_an_empty_fixture_path() {
+  local harness victim out
+  harness=$(fm_test_tmproot fm-test-rmtree-empty)
+  victim="$harness/victim"
+  mkdir -p "$victim"
+  printf 'precious\n' > "$victim/canary"
+
+  # Run from inside the victim, so an empty path that degrades to the working
+  # directory would take the canary with it.
+  if out=$(cd "$victim" && bash -c '
+    . "$1" || exit 1
+    UNSET_ROOT=
+    fm_test_rmtree "$UNSET_ROOT"
+  ' _ "$LIB" 2>&1); then
+    fail "fm_test_rmtree accepted an empty fixture path"$'\n'"--- output ---"$'\n'"$out"
+  fi
+  assert_contains "$out" "refused an empty fixture path" \
+    "fm_test_rmtree refused an empty path without saying so"
+  assert_present "$victim/canary" \
+    "an empty fixture path reached rm -rf and removed the working directory"
+  pass "fm_test_rmtree refuses an empty fixture path"
+}
+
+test_rmtree_refuses_a_path_outside_the_fixture_temp_root() {
+  local harness fixture_tmp victim out
+  harness=$(fm_test_tmproot fm-test-rmtree-outside)
+  fixture_tmp="$harness/tmp"
+  victim="$harness/victim"
+  mkdir -p "$fixture_tmp" "$victim"
+  printf 'precious\n' > "$victim/canary"
+
+  # The child allocates fixtures under $fixture_tmp, so $victim is a perfectly
+  # ordinary non-empty absolute path that is nonetheless outside the temp root
+  # this suite owns. Non-empty is not the same as safe.
+  if out=$(TMPDIR="$fixture_tmp" bash -c '
+    . "$1" || exit 1
+    fm_test_rmtree "$2"
+  ' _ "$LIB" "$victim" 2>&1); then
+    fail "fm_test_rmtree accepted a path outside the fixture temp root"$'\n'"--- output ---"$'\n'"$out"
+  fi
+  assert_contains "$out" "outside the fixture temp root" \
+    "fm_test_rmtree refused an out-of-root path without saying so"
+  assert_present "$victim/canary" \
+    "a non-empty path outside the fixture temp root still reached rm -rf"
+  pass "fm_test_rmtree refuses a non-empty path outside the fixture temp root"
+}
+
+test_rmtree_refuses_the_working_directory_an_unset_root_resolves_to() {
+  local harness fixture_tmp workdir workdir_phys out
+  harness=$(fm_test_tmproot fm-test-rmtree-pwd)
+  fixture_tmp="$harness/tmp"
+  workdir="$harness/work"
+  mkdir -p "$fixture_tmp" "$workdir"
+  printf 'precious\n' > "$workdir/canary"
+  workdir_phys=$(cd "$workdir" && pwd -P)
+
+  # The incident's exact value chain, driven through the real helper: `cd ""`
+  # succeeds as a no-op, so an unset TMP_ROOT resolves to the working directory.
+  if out=$(cd "$workdir" && TMPDIR="$fixture_tmp" bash -c '
+    . "$1" || exit 1
+    TMP_ROOT=
+    TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
+    printf "resolved:%s\n" "$TMP_ROOT"
+    fm_test_rmtree "$TMP_ROOT"
+  ' _ "$LIB" 2>&1); then
+    fail "fm_test_rmtree accepted the working directory an unset root resolved to"$'\n'"--- output ---"$'\n'"$out"
+  fi
+  # Assert the divergence itself, so this case cannot go quietly vacuous if the
+  # idiom ever stops producing the working directory.
+  assert_contains "$out" "resolved:$workdir_phys" \
+    "an unset TMP_ROOT no longer resolves to the working directory, so this case proves nothing"
+  assert_present "$workdir/canary" \
+    "the working directory an unset TMP_ROOT resolved to was removed"
+  pass "fm_test_rmtree refuses the working directory an unset TMP_ROOT resolves to"
+}
+
+test_own_fixture_permits_a_declared_root_outside_the_temp_root() {
+  local harness fixture_tmp declared out
+  harness=$(fm_test_tmproot fm-test-own-fixture)
+  fixture_tmp="$harness/tmp"
+  declared="$harness/declared"
+  mkdir -p "$fixture_tmp" "$declared"
+  printf 'fixture\n' > "$declared/content"
+
+  # tests/fm-lint.test.sh's real shape: a fixture root that cannot live under the
+  # temp root. Declared, so teardown is permitted; the child reports what survived.
+  out=$(TMPDIR="$fixture_tmp" bash -c '
+    . "$1" || exit 1
+    fm_test_own_fixture "$2" || exit 1
+    fm_test_rmtree "$2" || exit 1
+    [ -e "$2" ] && printf "still-present\n" || printf "removed\n"
+  ' _ "$LIB" "$declared" 2>&1) \
+    || fail "fm_test_rmtree refused a declared fixture root"$'\n'"--- output ---"$'\n'"$out"
+  assert_contains "$out" "removed" "a declared fixture root was not actually removed"
+  assert_absent "$declared" "a declared fixture root survived its guarded teardown"
+  pass "fm_test_own_fixture permits teardown of a declared root outside the temp root"
+}
+
+test_own_fixture_refuses_the_working_directory_and_the_repo_root() {
+  local harness fixture_tmp workdir out
+  harness=$(fm_test_tmproot fm-test-own-fixture-refuse)
+  fixture_tmp="$harness/tmp"
+  workdir="$harness/work"
+  mkdir -p "$fixture_tmp" "$workdir/inner"
+  printf 'precious\n' > "$workdir/canary"
+
+  # The declaration path must not be usable to authorize the very deletion the
+  # guard exists to prevent, so it refuses the working directory, an ancestor of
+  # it, and the repo root.
+  if out=$(cd "$workdir/inner" && TMPDIR="$fixture_tmp" bash -c '
+    . "$1" || exit 1
+    fm_test_own_fixture "$2"
+  ' _ "$LIB" "$workdir" 2>&1); then
+    fail "fm_test_own_fixture accepted an ancestor of the working directory"$'\n'"--- output ---"$'\n'"$out"
+  fi
+  assert_contains "$out" "working directory or an ancestor" \
+    "fm_test_own_fixture refused a cwd ancestor without saying why"
+  assert_present "$workdir/canary" "declaring a cwd ancestor removed the working directory"
+
+  # Run from outside the repo, so the repo-root branch is the one exercised
+  # rather than the cwd-ancestor branch that would otherwise catch it first.
+  if out=$(cd "$harness" && TMPDIR="$fixture_tmp" bash -c '
+    . "$1" || exit 1
+    fm_test_own_fixture "$ROOT"
+  ' _ "$LIB" 2>&1); then
+    fail "fm_test_own_fixture accepted the repo root"$'\n'"--- output ---"$'\n'"$out"
+  fi
+  assert_contains "$out" "that is the repo root" \
+    "fm_test_own_fixture refused the repo root without saying why"
+  pass "fm_test_own_fixture refuses the working directory, its ancestors, and the repo root"
+}
+
+test_own_fixture_permits_a_tmp_rooted_fixture_while_tmpdir_is_elsewhere() {
+  local harness fixture_tmp undeclared declared out
+
+  # tests/fm-session-start.test.sh's real shape: firstmate's own per-task temp root
+  # convention is the literal path /tmp/fm-<id>, so a fixture mirroring the code
+  # under test lives outside $TMPDIR by necessity. The containment rule alone would
+  # refuse it, and widening that rule to trust /tmp wholesale is NOT the fix - the
+  # working directory can itself be under /tmp, which is how the original incident
+  # reproduced. Declaring keeps the cwd guard while permitting the teardown.
+  harness=$(fm_test_tmproot fm-test-own-fixture-tmp)
+  fixture_tmp="$harness/tmp"
+  undeclared="$harness/undeclared-root"
+  declared="$harness/declared-root"
+  mkdir -p "$fixture_tmp" "$undeclared" "$declared"
+
+  # Separate children: the refusal below deliberately trips the teardown's
+  # refused-removal flag, which would otherwise fail the successful case too.
+  if out=$(TMPDIR="$fixture_tmp" bash -c '
+    . "$1" || exit 1
+    fm_test_rmtree "$2"
+  ' _ "$LIB" "$undeclared" 2>&1); then
+    fail "an undeclared fixture outside the temp root was removed"$'\n'"--- output ---"$'\n'"$out"
+  fi
+  assert_present "$undeclared" "an undeclared fixture outside the temp root was removed"
+
+  out=$(TMPDIR="$fixture_tmp" bash -c '
+    . "$1" || exit 1
+    fm_test_own_fixture "$2" || exit 1
+    fm_test_rmtree "$2" || exit 1
+    [ -e "$2" ] && printf "still-present\n" || printf "removed\n"
+  ' _ "$LIB" "$declared" 2>&1) \
+    || fail "declaring a fixture outside the temp root did not permit its teardown"$'\n'"--- output ---"$'\n'"$out"
+  assert_contains "$out" "removed" "a declared fixture outside the temp root was not removed"
+  assert_absent "$declared" "the declared fixture survived its guarded teardown"
+  pass "a fixture rooted outside \$TMPDIR is removable only once declared"
+}
+
+test_lib_dependent_files_refuse_to_run_outside_tests() {
+  local harness file base sandbox before after out checked=0
+  harness=$(fm_test_tmproot fm-test-outside-tests)
+
+  # Discovery, not assertion: select every file in tests/ that DECLARES a
+  # dependency on a tests/-local helper, guarded or not, so the sweep cannot
+  # grade its own fix by only selecting files that already carry the guard.
+  # Every assertion below is filesystem state and process output.
+  while IFS= read -r file; do
+    base=$(basename "$file")
+    sandbox="$harness/out/$base"
+    mkdir -p "$sandbox"
+    printf 'precious uncommitted work\n' > "$sandbox/canary.txt"
+    cp "$file" "$sandbox/copy.test.sh"
+    before=$(find "$sandbox" -mindepth 1 -maxdepth 1 | sort)
+    out=$(cd "$sandbox" && bash ./copy.test.sh 2>&1)
+    assert_present "$sandbox/canary.txt" \
+      "$base removed its working directory when run from outside tests/"
+    # Refusing means stopping at the unresolvable source line, not carrying on
+    # with undefined helpers - so the working directory must be untouched in
+    # both directions. A file that kept going scatters its fixture tree here.
+    after=$(find "$sandbox" -mindepth 1 -maxdepth 1 2>/dev/null | sort)
+    [ "$after" = "$before" ] || fail \
+      "$base kept running outside tests/ and changed its working directory"$'\n'"--- before ---"$'\n'"$before"$'\n'"--- after ---"$'\n'"$after"
+    # A file that actually ran would report at least one passing check. Refusing
+    # covers both shapes this takes: aborting at the unresolvable source line,
+    # and an opt-in guard declining to run at all.
+    assert_not_contains "$out" 'ok - ' \
+      "$base ran real checks from outside tests/ instead of refusing"
+    checked=$((checked + 1))
+  done < <(grep -lE '^\. "\$\(dirname "\$\{BASH_SOURCE\[0\]\}"\)/[a-z-]+\.sh"' "$ROOT"/tests/*.sh)
+
+  [ "$checked" -ge 100 ] || fail \
+    "the outside-tests sweep only found $checked dependent files; its discovery step went vacuous"
+  pass "every tests/lib.sh-dependent file refuses to run outside tests/ ($checked files)"
+}
+
 test_fixture_root_gone_after_normal_exit
 test_fixture_root_gone_after_sigterm
 test_cleanup_registry_resists_precreation
 test_fixture_registration_failure_rolls_back_root
 test_orphan_sweep_respects_fixture_ownership
+test_rmtree_refuses_an_empty_fixture_path
+test_rmtree_refuses_a_path_outside_the_fixture_temp_root
+test_rmtree_refuses_the_working_directory_an_unset_root_resolves_to
+test_lib_dependent_files_refuse_to_run_outside_tests
+test_own_fixture_permits_a_declared_root_outside_the_temp_root
+test_own_fixture_refuses_the_working_directory_and_the_repo_root
+test_own_fixture_permits_a_tmp_rooted_fixture_while_tmpdir_is_elsewhere

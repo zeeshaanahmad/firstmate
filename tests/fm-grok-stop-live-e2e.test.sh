@@ -13,7 +13,7 @@ if [ "${FM_GROK_STOP_LIVE_E2E:-0}" != 1 ]; then
 fi
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 
 NATIVE_BIN=${FM_GROK_NATIVE_BIN:-}
 LEGACY_BIN=${FM_GROK_LEGACY_BIN:-}

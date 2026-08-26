@@ -7,7 +7,7 @@
 set -u
 
 # shellcheck source=tests/secondmate-helpers.sh disable=SC1091
-. "$(dirname "${BASH_SOURCE[0]}")/secondmate-helpers.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/secondmate-helpers.sh" || exit 1
 
 # The move is delegated to `tasks-axi mv`, so this suite exercises the real
 # binary. Skip cleanly when it is absent (matching the backend smoke suites).

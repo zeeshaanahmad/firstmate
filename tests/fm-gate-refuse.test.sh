@@ -28,7 +28,7 @@
 set -u
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 
 GATE_LIB="$ROOT/bin/fm-gate-refuse-lib.sh"
 SPAWN="$ROOT/bin/fm-spawn.sh"

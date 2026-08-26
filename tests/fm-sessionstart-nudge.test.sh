@@ -24,7 +24,7 @@ if [ "${FM_SESSIONSTART_TEST_HARNESS:-0}" != 1 ]; then
 fi
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 
 unset NO_MISTAKES_GATE
 

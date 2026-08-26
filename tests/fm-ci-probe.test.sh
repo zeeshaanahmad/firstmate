@@ -19,7 +19,7 @@
 set -u
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 
 PROBE="$ROOT/bin/fm-ci-probe.sh"
 TMP_ROOT=$(fm_test_tmproot fm-ci-probe)

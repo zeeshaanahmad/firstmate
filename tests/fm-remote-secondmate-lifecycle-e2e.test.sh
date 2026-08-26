@@ -3,9 +3,9 @@
 set -u
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 # shellcheck source=tests/remote-herdr-fixture.sh
-. "$(dirname "${BASH_SOURCE[0]}")/remote-herdr-fixture.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/remote-herdr-fixture.sh" || exit 1
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
@@ -39,7 +39,7 @@ cleanup() {
       sleep 0.05
     done
   fi
-  rm -rf -- "$TMP_ROOT"
+  fm_test_rmtree "$TMP_ROOT"
 }
 trap cleanup EXIT
 

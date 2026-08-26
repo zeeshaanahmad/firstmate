@@ -14,7 +14,7 @@
 set -u
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-supervise-daemon.sh"
 # shellcheck source=/dev/null
@@ -56,7 +56,7 @@ cleanup() {
   if ! "$LAB_HELPER" teardown "$SESSION"; then
     rc=1
   fi
-  rm -rf "$TMP_ROOT"
+  fm_test_rmtree "$TMP_ROOT"
   exit "$rc"
 }
 trap cleanup EXIT
