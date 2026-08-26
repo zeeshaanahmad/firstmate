@@ -101,9 +101,13 @@ pass "the reported run head is a commit token attribution can bind on"
 # quietly read as alive. The cost of that choice is that a newly invented ACTIVE
 # value goes silent instead, which is safe but reopens exactly the gap this guard
 # exists for. Catch either one here rather than in production.
+#
+# awaiting_approval and fix_review are accepted here as recognized GATE states so
+# this guard can continue past a run genuinely parked at a gate, not as evidence
+# of liveness; bin/fm-liveness-lib.sh must still never read a parked run as alive.
 
 case "$run_status" in
-  running|fixing|pending|completed|failed|cancelled|aborted) ;;
+  running|fixing|pending|awaiting_approval|fix_review|completed|failed|cancelled|aborted) ;;
   *) drift "unknown run status '$run_status'; classify it in bin/fm-liveness-lib.sh before it is read as alive or silently ignored" ;;
 esac
 pass "the reported run status is a value firstmate classifies"
@@ -134,6 +138,39 @@ else
 $ACTIVE_STATUSES
 EOF
   pass "every active-step status firstmate saw is a value it classifies"
+fi
+
+# --- the binding rule actually binds the run the real binary reports ---------
+#
+# fm_nm_head_binds_run picks between a strict head proof and the in-flight
+# allowance from the run's own state, so a state it does not classify silently
+# falls back to strict - which is how a parked gate came to be reported as a busy
+# pane. A fake `no-mistakes` can only confirm the states already transcribed into
+# it, so the real binary's own answer is driven through the real rule here.
+
+run_outcome=$(fm_nm_strip_quotes "$(fm_nm_field "$STATUS_OUT" outcome)")
+case "$run_outcome" in
+  ''|passed|checks-passed|failed|cancelled) ;;
+  *) drift "unknown run outcome '$run_outcome'; classify it in bin/fm-nm-run-lib.sh and bin/fm-crew-state.sh before it decides an attribution" ;;
+esac
+
+if [ -z "$run_outcome" ]; then
+  case "$run_status" in
+    running|fixing|pending|awaiting_approval|fix_review) ;;
+    *) drift "run status '$run_status' carries no outcome yet is not one fm_nm_head_binds_run treats as in-flight; an in-flight run in this state would lose attribution for its whole gate window" ;;
+  esac
+fi
+
+# The end-to-end claim, and the only one a stub cannot make: for a run on the
+# invoking worktree's own branch, the rule binds it. This is the assertion that
+# fails if the vendor changes what `head` means, or which heads it publishes.
+GUARD_BRANCH=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+if [ -n "$GUARD_BRANCH" ] && [ "$GUARD_BRANCH" = "$run_branch" ]; then
+  fm_nm_head_binds_run "$PWD" "$run_head" "$run_status" "$run_outcome" \
+    || drift "the run the daemon reports for this worktree's own branch '$run_branch' (status '$run_status', head '$run_head') does not bind to it, so its gate state cannot be read"
+  pass "the run reported for this worktree's own branch binds under the real attribution rule"
+else
+  note "axi status answered for branch '$run_branch' rather than this worktree's own, so the binding assertion needs a run started here"
 fi
 
 # --- axi status is scoped to the invoking repository ------------------------

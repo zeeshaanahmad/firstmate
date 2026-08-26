@@ -30,14 +30,20 @@
 #   2. Matching no-mistakes run for this crew's branch AND current code identity,
 #      active or terminal (from `axi status`, or the coarse `no-mistakes runs`
 #      fallback)? Branch name alone is not enough: a historical run on a reused
-#      branch whose head was rewritten or diverged must not be attributed.
-#      A run matches when its head equals the worktree HEAD, or the worktree HEAD
-#      is an ancestor of the run head (pipeline fix commits advanced the run on
-#      the same line of history). Local work that advanced past the run head, or
-#      diverged from it, invalidates attribution.
+#      branch whose head was rewritten or diverged must not be attributed, so
+#      fm_nm_head_binds_run (bin/fm-nm-run-lib.sh, the ONE owner) decides. Note
+#      that an IN-FLIGHT run's head is routinely unresolvable in this worktree -
+#      the pipeline commits its fixes in its own gate repository and does not
+#      push them until the push step - and that owner explains why demanding
+#      otherwise loses the run for the whole review..lint window, which is
+#      exactly where it parks at a gate.
 #      The run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
-#      awaiting_approval/fix_review -> parked (with gate findings), terminal
-#      checks-passed -> done, failed -> failed. EXCEPT: while the active step
+#      awaiting_approval/fix_review -> parked (with the gate and its findings),
+#      terminal checks-passed -> done, failed -> failed. A parked detail also
+#      names WHICH SIDE MUST ACT, because the two kinds of park want opposite
+#      handling: an ask-user finding is firstmate's decision under the authority
+#      contract, and any other gate is the worker's to drive and wants a nudge
+#      rather than a recovery. EXCEPT: while the active step
 #      is ci, `axi status` alone cannot tell "still waiting on checks" from
 #      "checks green, waiting on merge" (see nm_ci_checks_state) - a ci-step
 #      log-tail check overrides working -> done once checks read green, so a
@@ -536,18 +542,35 @@ nm_runs_status_for_branch() {  # <branch>
 # scratch worktree); with no branch there is no run to attribute to this crew.
 CREW_BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
 
-# 0 if the active axi-status run's head field matches this worktree's code
-# identity. Branch match is a precondition (caller). Rule owned by
-# fm_nm_head_matches_worktree in bin/fm-nm-run-lib.sh.
-nm_run_head_matches_worktree() {
-  local run_head
-  run_head=$(strip_quotes "$(nm_field head)")
-  fm_nm_head_matches_worktree "$WT" "$run_head"
+# 0 if the active axi-status run binds to this worktree's code identity. Branch
+# match is a precondition (caller). Rule owned by fm_nm_head_binds_run in
+# bin/fm-nm-run-lib.sh, which reads the run's own state to decide whether an
+# unresolvable head is a pipeline commit not yet pushed (in-flight) or evidence
+# that this is not our run (terminal).
+#
+# Getting this wrong is what produced the parked-gate misreport this path exists
+# to prevent: the run object is the ONLY source with gate detail, so a rejected
+# in-flight run does not degrade to a coarser verdict, it degrades to the pane -
+# where a crew waiting at a gate looks busy, or looks like nothing at all.
+nm_run_binds_worktree() {
+  fm_nm_head_binds_run "$WT" \
+    "$(strip_quotes "$(nm_field head)")" \
+    "$(strip_quotes "$(nm_field status)")" \
+    "$(strip_quotes "$(nm_field outcome)")"
 }
 
 # Coarse runs-list rows are "<status> <branch> <short-sha> ...". 0 if the short
-# sha for this branch row matches the worktree head under the same rules as
-# nm_run_head_matches_worktree (equal, or local is ancestor of run tip).
+# sha for this branch row matches the worktree head under the STRICT rule
+# (equal, or local is ancestor of run tip).
+#
+# Deliberately strict where nm_run_binds_worktree is not. A coarse row carries no
+# step or gate detail at all, so attributing an in-flight run from one could only
+# ever publish a bare "validating" - asserting the very working/parked confusion
+# the run-object path exists to resolve, on a row that cannot tell them apart. A
+# crew that owns an active run is answered by that path anyway: `axi status`
+# resolves the run from the invoking directory and returns the worktree's own
+# active run when it has one. So this row is consulted only for a branch with no
+# active run, where the strict proof is both affordable and correct.
 nm_coarse_head_matches_worktree() {  # <short-sha>
   fm_nm_head_matches_worktree "$WT" "$1"
 }
@@ -567,7 +590,7 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
   fi
   if [ -n "$RUN_OUT" ]; then
     run_branch=$(strip_quotes "$(nm_field branch)")
-    if [ -n "$run_branch" ] && [ "$run_branch" = "$CREW_BRANCH" ] && nm_run_head_matches_worktree; then
+    if [ -n "$run_branch" ] && [ "$run_branch" = "$CREW_BRANCH" ] && nm_run_binds_worktree; then
       HAVE_RUN=1
     else
       # The active-or-most-recent run is for another branch, or same branch with
@@ -640,8 +663,16 @@ if [ "$HAVE_RUN" = 1 ]; then
       RUN_DETAIL="parked at $gate"
       fcount=$(nm_gate_findings_count)
       [ -n "$fcount" ] && RUN_DETAIL="$RUN_DETAIL: $fcount finding(s)"
+      # Both kinds of park are `parked`, and the supervisory action is opposite:
+      # an ask-user finding is firstmate's to decide under the authority
+      # contract, while every other gate is the WORKER's to drive and wants a
+      # nudge, not a recovery. Naming the owner is the whole point of the state -
+      # a supervisor that has to open the pipeline to learn which one it is has
+      # gained nothing over reading the pipeline in the first place.
       if printf '%s\n' "$RUN_OUT" | grep -q 'ask-user'; then
         RUN_DETAIL="$RUN_DETAIL (ask-user: authority decision)"
+      else
+        RUN_DETAIL="$RUN_DETAIL (worker must respond to the gate)"
       fi
     else
       case "$status" in

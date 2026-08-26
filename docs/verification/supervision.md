@@ -558,3 +558,52 @@ ok - axi status answers only for the repository it is invoked in
 
 The active-step status vocabulary is load-bearing, because the executing-step allow-list is the whole liveness claim: an unclassified value goes silent, and a gate state that ever read as executing would suppress a run waiting on firstmate.
 Those statuses are only observable while a run is executing, so the guard reports that gap explicitly rather than passing over it, and this record is refreshed during a run to cover them.
+
+## Current-state attribution at a parked gate
+
+This record supports the guarantee that `bin/fm-crew-state.sh` reports a crew waiting at a `no-mistakes` approval or fix-review gate as `parked`, which `AGENTS.md` section 7 requires the current-state read to distinguish from working.
+
+The head-advance fact recorded above is what makes this a live concern rather than a corner case.
+The gate window spans the review, test, document, and lint steps, so from the first auto-fix round until push the reported head is unresolvable in the crew worktree, and the run object is the only source that carries gate detail at all.
+Two lanes were read that way on 2026-08-25 and reported from the pane instead, one as working and one as unknown; the portable regression in `tests/fm-crew-state.test.sh` pins both readings and their divergence.
+
+That the run head advances before any push is directly readable from the daemon's own records, independently of any one run:
+
+```sh
+sqlite3 ~/.no-mistakes/state.sqlite \
+  "select id,substr(head_sha,1,8),substr(submitted_head_sha,1,8),ifnull(last_pushed_sha,'NULL'),status
+     from runs where submitted_head_sha is not null and head_sha<>submitted_head_sha
+       and last_pushed_sha is null order by created_at desc limit 4;"
+```
+
+Run on 2026-08-25 against `no-mistakes version v1.48.0 (2ac3769) 2026-08-08T06:39:10Z`:
+
+```
+01M0D0RWKG0GBP8B6X132T7YC1|791e0c3c|7fea6e2a|NULL|cancelled
+01M0C25YDCY3BJZHDNQ2XRPD32|2cd22995|6cc6fea6|NULL|failed
+01M08WSDJHH5YWE7DQ33S7XSAF|83d456d3|a0ee303e|NULL|cancelled
+01M08EF6P61R2HYM0R06637ABN|bf0aec4c|1a4d051e|NULL|cancelled
+```
+
+Every row is a run whose head moved past what the crew submitted while nothing had been pushed, so those heads existed only in the gate repository.
+`2cd22995`, `83d456d3`, and `bf0aec4c` from the same query were each confirmed unresolvable in that project's clone with `git rev-parse --verify`.
+This is also why the loosening stops at in-flight runs: a terminal run's fixes were pushed at the push step, and a terminal verdict is the evidence that would justify tearing a crew down.
+
+The same guard refreshes the vendor half of this record, and now also checks the run outcome vocabulary and drives the real binary's own answer through the real binding rule:
+
+```sh
+FM_NM_STATUS_SHAPE_DRIFT=1 bash tests/fm-nm-status-shape-live-e2e.test.sh
+```
+
+Run on 2026-08-25 against `no-mistakes version v1.48.0 (2ac3769) 2026-08-08T06:39:10Z`:
+
+```
+ok - axi status prints a run object whose branch, status, and head read at the anchored depth
+ok - the reported run head is a commit token attribution can bind on
+ok - the reported run status is a value firstmate classifies
+ok - every active-step status firstmate saw is a value it classifies
+ok - the run reported for this worktree's own branch binds under the real attribution rule
+ok - axi status answers only for the repository it is invoked in
+```
+
+The binding assertion was exercised against an active run on this worktree's own branch, so this record is refreshed from a worktree with a run in flight.
