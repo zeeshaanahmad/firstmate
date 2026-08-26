@@ -62,6 +62,40 @@
 # Merge method defaults to --squash when the caller passes none of --squash,
 # --merge, --rebase, or --method after the optional -- separator. Extra args
 # must not include --repo or -R because the repository comes only from the URL.
+#
+# UPSTREAM-HISTORY GUARD. That squash default is right for a lane's own work and
+# wrong for a fork-sync PR, where the history IS the deliverable. Squashing one
+# flattens its merge and drops the upstream commits it brought in out of the
+# base branch's ancestry, so the next sync computes its merge base against a
+# waypoint that is no longer reachable and replays commits the base already
+# carries. On 2026-08-25 that erased upstream 7f5255a from this repo's main.
+# Before any method that rewrites history - squash, rebase, or the squash
+# default - this checks whether the PR head carries commits that are reachable
+# from an upstream remote and not already reachable from the PR's base branch.
+# When it does, the merge is REFUSED and the commits that would be erased are
+# named. The remedy is --merge, the only method that keeps them reachable.
+# There is deliberately no override flag: a flag the caller must remember is
+# exactly what failed, and --merge is the correct method for such a PR rather
+# than a way around a check.
+#
+# WHICH REMOTES COUNT AS UPSTREAM. Any remote of the local copy whose fetch URL
+# names a hosted repository OTHER than the one this PR is on. That reads the
+# fork-source relationship out of long-lived repository configuration instead of
+# a per-task branch name a brief could misspell. A remote whose URL is a local
+# path is excluded: those are another tool's private mirror of this same
+# repository, and counting one would make every ordinary PR look like shared
+# history.
+#
+# WHAT THIS GUARD DOES NOT CATCH. A project with no upstream remote has no
+# shared history to preserve and is never checked. A configured upstream remote
+# that was never fetched here leaves nothing local to compare against; that says
+# so out loud and merges, because refusing would wedge every merge in a fresh
+# clone. Where an upstream remote HAS been fetched, a base or head that could
+# not be resolved REFUSES, on the same ground as the static guard's timeout: an
+# unmeasured check is not a clear one.
+#
+# FM_MERGE_GUARD does not reach this guard. It selects the static check's
+# posture only, and `off` turns that check off, never this one.
 # Usage: fm-pr-merge.sh <task-id> <pr-url> [-- <extra gh-axi pr merge args>]
 set -eu
 
@@ -207,6 +241,66 @@ merge_guard_base_branch() {  # <source-repo> <remote-url>
   printf '%s\n' "$FM_STATIC_GUARD_BRANCH"
 }
 
+# The PR's base branch tip as the forge has it right now, and the PR head, both
+# resolved into a private object store that borrows the local copy's objects.
+# Both merge guards read the same pair, so neither can judge a different merge
+# than the other. Resolved at most once per run; a failure records the reason
+# and each guard decides for itself what an unresolved pair means.
+MERGE_REFS_BRANCH=
+MERGE_REFS_BASE=
+MERGE_REFS_HEAD=
+MERGE_REFS_REASON=
+MERGE_REFS_ATTEMPTED=
+MERGE_REFS_OK=
+merge_refs_resolve() {
+  local src url branch base head recorded_head
+  MERGE_REFS_BRANCH=
+  MERGE_REFS_BASE=
+  MERGE_REFS_HEAD=
+  MERGE_REFS_REASON=
+  command -v git >/dev/null 2>&1 || { MERGE_REFS_REASON='git is unavailable'; return 1; }
+  src=$(merge_guard_source_repo) || { MERGE_REFS_REASON='no local copy of this project to read objects from'; return 1; }
+  fm_static_guard_remote_pick "$src" "$PR_OWNER/$PR_REPO" \
+    || { MERGE_REFS_REASON='no usable remote for this project'; return 1; }
+  url=$FM_STATIC_GUARD_REMOTE
+  branch=$(merge_guard_base_branch "$src" "$url") \
+    || { MERGE_REFS_REASON='the base branch of this PR could not be resolved'; return 1; }
+  MERGE_REFS_BRANCH=$branch
+  fm_static_guard_scratch_new || { MERGE_REFS_REASON='no scratch directory'; return 1; }
+  fm_static_guard_repo_prepare "$src" \
+    || { MERGE_REFS_REASON='a private object store could not be prepared'; return 1; }
+  recorded_head=$(meta_field pr_head)
+  if fm_static_guard_fetch "$FM_STATIC_GUARD_GITDIR" "$url" \
+    "+refs/heads/$branch:$FM_STATIC_GUARD_BASE_REF" \
+    "+refs/pull/$PR_NUMBER/head:$FM_STATIC_GUARD_HEAD_REF"; then
+    head=$(git --git-dir="$FM_STATIC_GUARD_GITDIR" rev-parse --verify --quiet "$FM_STATIC_GUARD_HEAD_REF" 2>/dev/null) || head=
+  elif fm_static_guard_fetch "$FM_STATIC_GUARD_GITDIR" "$url" \
+    "+refs/heads/$branch:$FM_STATIC_GUARD_BASE_REF"; then
+    # A forge that does not serve refs/pull/<n>/head still leaves the head that
+    # bin/fm-pr-check.sh recorded, which the borrowed object store already has.
+    head=$(fm_static_guard_sha_valid "$recorded_head" \
+      && git --git-dir="$FM_STATIC_GUARD_GITDIR" rev-parse --verify --quiet "$recorded_head^{commit}" 2>/dev/null) || head=
+  else
+    MERGE_REFS_REASON="the current tip of $branch could not be fetched"
+    return 1
+  fi
+  base=$(git --git-dir="$FM_STATIC_GUARD_GITDIR" rev-parse --verify --quiet "$FM_STATIC_GUARD_BASE_REF" 2>/dev/null) || base=
+  [ -n "$base" ] || { MERGE_REFS_REASON="the current tip of $branch could not be read"; return 1; }
+  [ -n "$head" ] || { MERGE_REFS_REASON='the PR head commit could not be read'; return 1; }
+  MERGE_REFS_BASE=$base
+  MERGE_REFS_HEAD=$head
+}
+
+# Resolve the pair on first use and reuse that outcome afterwards, so two guards
+# never fetch twice or disagree about what the fetch found.
+merge_refs_ensure() {
+  if [ -z "$MERGE_REFS_ATTEMPTED" ]; then
+    MERGE_REFS_ATTEMPTED=1
+    if merge_refs_resolve; then MERGE_REFS_OK=1; else MERGE_REFS_OK=; fi
+  fi
+  [ -n "$MERGE_REFS_OK" ]
+}
+
 # Sets MERGE_GUARD_VERDICT to green, red, or "unguarded: <reason>", and
 # MERGE_GUARD_NOTE to the human-readable line printed for it. Never exits.
 MERGE_GUARD_VERDICT=
@@ -220,39 +314,14 @@ merge_guard_unguarded() {  # <reason>
   MERGE_GUARD_NOTE="$reason"
 }
 merge_guard_evaluate() {
-  local src url branch base head recorded_head rc=0
+  local branch base rc=0
   MERGE_GUARD_VERDICT=
   MERGE_GUARD_NOTE=
-  command -v git >/dev/null 2>&1 || { merge_guard_unguarded 'git is unavailable'; return 0; }
-  src=$(merge_guard_source_repo) || { merge_guard_unguarded 'no local copy of this project to read objects from'; return 0; }
-  fm_static_guard_remote_pick "$src" "$PR_OWNER/$PR_REPO" \
-    || { merge_guard_unguarded 'no usable remote for this project'; return 0; }
-  url=$FM_STATIC_GUARD_REMOTE
-  branch=$(merge_guard_base_branch "$src" "$url") \
-    || { merge_guard_unguarded 'the base branch of this PR could not be resolved'; return 0; }
-  fm_static_guard_scratch_new || { merge_guard_unguarded 'no scratch directory'; return 0; }
-  fm_static_guard_repo_prepare "$src" \
-    || { merge_guard_unguarded 'a private object store could not be prepared'; return 0; }
-  recorded_head=$(meta_field pr_head)
-  if fm_static_guard_fetch "$FM_STATIC_GUARD_GITDIR" "$url" \
-    "+refs/heads/$branch:$FM_STATIC_GUARD_BASE_REF" \
-    "+refs/pull/$PR_NUMBER/head:$FM_STATIC_GUARD_HEAD_REF"; then
-    head=$(git --git-dir="$FM_STATIC_GUARD_GITDIR" rev-parse --verify --quiet "$FM_STATIC_GUARD_HEAD_REF" 2>/dev/null) || head=
-  elif fm_static_guard_fetch "$FM_STATIC_GUARD_GITDIR" "$url" \
-    "+refs/heads/$branch:$FM_STATIC_GUARD_BASE_REF"; then
-    # A forge that does not serve refs/pull/<n>/head still leaves the head that
-    # bin/fm-pr-check.sh recorded, which the borrowed object store already has.
-    head=$(fm_static_guard_sha_valid "$recorded_head" \
-      && git --git-dir="$FM_STATIC_GUARD_GITDIR" rev-parse --verify --quiet "$recorded_head^{commit}" 2>/dev/null) || head=
-  else
-    merge_guard_unguarded "the current tip of $branch could not be fetched"
-    return 0
-  fi
-  base=$(git --git-dir="$FM_STATIC_GUARD_GITDIR" rev-parse --verify --quiet "$FM_STATIC_GUARD_BASE_REF" 2>/dev/null) || base=
-  [ -n "$base" ] || { merge_guard_unguarded "the current tip of $branch could not be read"; return 0; }
-  [ -n "$head" ] || { merge_guard_unguarded 'the PR head commit could not be read'; return 0; }
+  merge_refs_ensure || { merge_guard_unguarded "$MERGE_REFS_REASON"; return 0; }
+  branch=$MERGE_REFS_BRANCH
+  base=$MERGE_REFS_BASE
   rc=0
-  fm_static_guard_merge_tree "$FM_STATIC_GUARD_GITDIR" "$base" "$head" || rc=$?
+  fm_static_guard_merge_tree "$FM_STATIC_GUARD_GITDIR" "$base" "$MERGE_REFS_HEAD" || rc=$?
   if [ "$rc" -eq 2 ]; then
     MERGE_GUARD_VERDICT=red
     MERGE_GUARD_NOTE="the PR conflicts with the current tip of $branch"
@@ -282,11 +351,234 @@ merge_guard_evaluate() {
   esac
 }
 
+# The merge method this invocation will actually use: the caller's explicit
+# choice, or the squash default when it passes none. A --method with no value,
+# or one naming something this script does not recognise, reads as empty, which
+# the upstream-history guard treats as rewriting - so a malformed method can
+# never slip past it as though it were --merge.
+resolved_merge_method() {
+  local arg method=squash want_value=
+  for arg in "$@"; do
+    if [ -n "$want_value" ]; then
+      method=$arg
+      want_value=
+      continue
+    fi
+    case "$arg" in
+      --squash) method=squash ;;
+      --merge) method=merge ;;
+      --rebase) method=rebase ;;
+      --method=*) method=${arg#--method=} ;;
+      --method) method=; want_value=1 ;;
+    esac
+  done
+  printf '%s\n' "$method"
+}
+
+# <owner>/<repo> for a remote URL that names a host, and nothing for one that
+# does not. A local path is deliberately not a slug: another tool's private
+# mirror of this same repository must never read as a separate upstream.
+upstream_remote_slug() {  # <url>
+  local url=${1-} path owner repo
+  url=${url%/}
+  url=${url%.git}
+  case "$url" in
+    /*|file://*) return 1 ;;
+    *://*)
+      # scheme://[user@]host[:port]/<path>
+      path=${url#*://}
+      path=${path#*@}
+      case "$path" in
+        */*) path=${path#*/} ;;
+        *) return 1 ;;
+      esac
+      ;;
+    *:*) path=${url#*:} ;;
+    *) return 1 ;;
+  esac
+  case "$path" in
+    */*) ;;
+    *) return 1 ;;
+  esac
+  repo=${path##*/}
+  owner=${path%/*}
+  owner=${owner##*/}
+  [ -n "$owner" ] && [ -n "$repo" ] || return 1
+  # Lowercased because a forge that treats <owner>/<repo> case-insensitively
+  # would otherwise let a differently-cased origin URL read as a second,
+  # foreign repository and make every ordinary PR look like shared history.
+  printf '%s/%s\n' "$owner" "$repo" | tr '[:upper:]' '[:lower:]'
+}
+
+# Remotes of the local copy that serve a hosted repository other than the one
+# this PR is on. That is the fork-source relationship, read from configuration
+# the repository already keeps for its own reasons.
+upstream_remote_names() {  # <source-repo>
+  local src=$1 name url slug self
+  self=$(printf '%s/%s' "$PR_OWNER" "$PR_REPO" | tr '[:upper:]' '[:lower:]')
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    url=$(git -C "$src" remote get-url "$name" 2>/dev/null) || continue
+    fm_project_origin_safe "$url" || continue
+    slug=$(upstream_remote_slug "$url") || continue
+    [ "$slug" != "$self" ] || continue
+    printf '%s\n' "$name"
+  done < <(git -C "$src" remote 2>/dev/null)
+}
+
+# Every commit the local copy has as a tip of those remotes. Reachability from
+# any one of them is what makes a commit shared history rather than this lane's
+# own work.
+upstream_tip_commits() {  # <source-repo> <remote-name>...
+  local src=$1 name
+  shift
+  for name in "$@"; do
+    git -C "$src" for-each-ref --format='%(objectname)' "refs/remotes/$name/" 2>/dev/null
+  done | LC_ALL=C sort -u
+}
+
+# Sets UPSTREAM_GUARD_VERDICT to one of:
+#   none        this project tracks no upstream, so there is nothing to preserve
+#   clear       the PR adds no commit that upstream also has
+#   blocked     it does, and rewriting would erase them; UPSTREAM_GUARD_ERASED
+#               holds those commits, newest first
+#   unguarded   nothing local to compare against; the reason is in the note
+#   unmeasured  upstream history exists here but the comparison could not be run
+# Never exits, so the caller owns the refusal path.
+UPSTREAM_GUARD_VERDICT=
+UPSTREAM_GUARD_NOTE=
+UPSTREAM_GUARD_ERASED=
+upstream_guard_evaluate() {
+  local src names tips added kept erased kept_file count name_line
+  local -a tip_args=()
+  UPSTREAM_GUARD_VERDICT=
+  UPSTREAM_GUARD_NOTE=
+  UPSTREAM_GUARD_ERASED=
+  command -v git >/dev/null 2>&1 || {
+    UPSTREAM_GUARD_VERDICT=unguarded
+    UPSTREAM_GUARD_NOTE='git is unavailable'
+    return 0
+  }
+  src=$(merge_guard_source_repo) || {
+    UPSTREAM_GUARD_VERDICT=unguarded
+    UPSTREAM_GUARD_NOTE='no local copy of this project to read its remotes from'
+    return 0
+  }
+  names=$(upstream_remote_names "$src") || names=
+  if [ -z "$names" ]; then
+    UPSTREAM_GUARD_VERDICT=none
+    return 0
+  fi
+  while IFS= read -r name_line; do
+    [ -n "$name_line" ] || continue
+    tip_args+=("$name_line")
+  done <<UPSTREAM_NAMES
+$names
+UPSTREAM_NAMES
+  tips=$(upstream_tip_commits "$src" "${tip_args[@]+"${tip_args[@]}"}") || tips=
+  if [ -z "$tips" ]; then
+    UPSTREAM_GUARD_VERDICT=unguarded
+    UPSTREAM_GUARD_NOTE='this project tracks an upstream repository that has never been fetched into this copy, so there is no upstream history here to compare against'
+    return 0
+  fi
+  tip_args=()
+  while IFS= read -r name_line; do
+    [ -n "$name_line" ] || continue
+    tip_args+=("$name_line")
+  done <<UPSTREAM_TIPS
+$tips
+UPSTREAM_TIPS
+  merge_refs_ensure || {
+    UPSTREAM_GUARD_VERDICT=unmeasured
+    UPSTREAM_GUARD_NOTE=$MERGE_REFS_REASON
+    return 0
+  }
+  added=$(git --git-dir="$FM_STATIC_GUARD_GITDIR" rev-list \
+    "$MERGE_REFS_BASE..$MERGE_REFS_HEAD" 2>/dev/null) || {
+    UPSTREAM_GUARD_VERDICT=unmeasured
+    UPSTREAM_GUARD_NOTE="the commits this PR adds to $MERGE_REFS_BRANCH could not be listed"
+    return 0
+  }
+  if [ -z "$added" ]; then
+    UPSTREAM_GUARD_VERDICT=clear
+    return 0
+  fi
+  # The same range with everything upstream can reach excluded. Whatever the
+  # exclusion removes is the shared history a rewrite would take with it.
+  kept=$(git --git-dir="$FM_STATIC_GUARD_GITDIR" rev-list --ignore-missing \
+    "$MERGE_REFS_BASE..$MERGE_REFS_HEAD" --not "${tip_args[@]+"${tip_args[@]}"}" 2>/dev/null) || {
+    UPSTREAM_GUARD_VERDICT=unmeasured
+    UPSTREAM_GUARD_NOTE='this PR could not be compared against the upstream history this copy holds'
+    return 0
+  }
+  kept_file="$FM_STATIC_GUARD_SCRATCH/upstream-kept"
+  printf '%s\n' "$kept" > "$kept_file" || {
+    UPSTREAM_GUARD_VERDICT=unmeasured
+    UPSTREAM_GUARD_NOTE='the upstream comparison could not be written to scratch'
+    return 0
+  }
+  erased=$(printf '%s\n' "$added" | grep -vxF -f "$kept_file") || erased=
+  fm_static_guard_scratch_file_remove "$kept_file" || true
+  if [ -z "$erased" ]; then
+    UPSTREAM_GUARD_VERDICT=clear
+    return 0
+  fi
+  count=$(printf '%s\n' "$erased" | grep -c . || true)
+  UPSTREAM_GUARD_VERDICT=blocked
+  UPSTREAM_GUARD_ERASED=$erased
+  UPSTREAM_GUARD_NOTE="this PR carries $count commit(s) that the upstream repository also has and $MERGE_REFS_BRANCH does not"
+}
+
+# The commits a rewrite would erase, newest first, bounded so a large sync batch
+# still prints a refusal a reader can take in.
+upstream_guard_print_erased() {
+  local sha shown=0 total
+  total=$(printf '%s\n' "$UPSTREAM_GUARD_ERASED" | grep -c . || true)
+  while IFS= read -r sha; do
+    [ -n "$sha" ] || continue
+    shown=$((shown + 1))
+    [ "$shown" -le 3 ] || continue
+    git --git-dir="$FM_STATIC_GUARD_GITDIR" log -1 --format='  %h %s' "$sha" 2>/dev/null \
+      || printf '  %s\n' "$sha"
+  done <<UPSTREAM_ERASED
+$UPSTREAM_GUARD_ERASED
+UPSTREAM_ERASED
+  [ "$total" -le 3 ] || printf '  ... and %s more\n' "$((total - 3))"
+}
+
+trap 'fm_static_guard_cleanup' EXIT
+
+# The upstream-history guard runs before the static one: it is the cheaper of
+# the two on a project with no upstream, and a sync batch it refuses should not
+# first pay for a check of a merge that is not going to happen.
+MERGE_METHOD=$(resolved_merge_method "$@")
+if [ "$MERGE_METHOD" != merge ]; then
+  upstream_guard_evaluate
+  case "$UPSTREAM_GUARD_VERDICT" in
+    none|clear) ;;
+    unguarded)
+      echo "upstream-history: UNGUARDED - $UPSTREAM_GUARD_NOTE; merging without checking whether this method erases shared history" >&2
+      ;;
+    unmeasured)
+      echo "error: merge refused - $UPSTREAM_GUARD_NOTE" >&2
+      echo "this project tracks an upstream repository, so squash and rebase can erase shared history here, and that was not measured" >&2
+      echo "an unmeasured history check is not a clear one; re-run once the base branch and PR head can be read, or merge with --merge" >&2
+      exit 1
+      ;;
+    *)
+      echo "error: merge refused - $UPSTREAM_GUARD_NOTE" >&2
+      upstream_guard_print_erased >&2
+      echo "squash and rebase both rewrite those commits out of ${MERGE_REFS_BRANCH}'s ancestry, so the next sync computes its merge base against a waypoint that is gone and replays history ${MERGE_REFS_BRANCH} already carries" >&2
+      echo "merge this PR with --merge, the only method that keeps them reachable" >&2
+      exit 1
+      ;;
+  esac
+fi
+
 if [ "$MERGE_GUARD_MODE" = off ]; then
   echo "merge-guard: OFF by FM_MERGE_GUARD=off - merging without a static check of the merge result" >&2
   merge_guard_record off || { echo "error: guard outcome could not be recorded" >&2; exit 1; }
 else
-  trap 'fm_static_guard_cleanup' EXIT
   merge_guard_evaluate
   case "$MERGE_GUARD_VERDICT" in
     green)
