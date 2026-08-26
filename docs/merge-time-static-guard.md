@@ -54,6 +54,7 @@ The first budget was sized against a fast linter and was marginal for a project 
 
 **There are two deliberate switches, and they answer different questions.**
 `FM_MERGE_GUARD=off` skips the merge-time guard entirely and records that it was skipped, for the one case refusing cannot fix: a default branch already red for reasons this PR did not cause, where every merge would otherwise be blocked behind it.
+It selects this static check's posture only: `bin/fm-pr-merge.sh` carries a separate guard that refuses a merge method which would erase upstream history, and `off` does not reach it.
 `FM_MERGE_GUARD=allow-timeout` is narrower: it runs the guard, still refuses a red result and a conflict, and merges only past a check that could not finish.
 Either is a decision to merge less than fully checked, recorded as such in the task's own record, and neither is a way past an inconvenient red.
 Any other value is refused rather than silently ignored, so a misspelled override never becomes a posture nobody chose.
