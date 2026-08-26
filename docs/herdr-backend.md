@@ -242,9 +242,9 @@ ANSI capture preserves de-emphasized placeholder style.
 `bin/fm-composer-lib.sh` is the fleet-wide owner that strips dim or faint runs and dark truecolor placeholders while retaining bright typed input.
 If the ANSI capture ever fails, the plain fallback declares itself unstyled and the classifier degrades a glyph row carrying trailing text to `unknown` instead of misreading ghost suggestions as typed input, which safely defers injection and eventually raises the wedge alarm.
 
-A bare shell prompt is never an empty agent composer.
-Away-mode injection proceeds only on an affirmative `empty` result, never on unknown.
-This prevents a dead agent pane from receiving and possibly executing an escalation as shell input.
+A bare shell prompt is not thereby safe: the classifier reads rendered shape only, and a shell prompt drawn with the same glyph a harness uses for its own empty composer reaches the same affirmative `empty` verdict (`bin/fm-composer-lib.sh` "THE LIMIT OF THAT RULE").
+Away-mode injection proceeds only when that verdict is corroborated by the pane's own foreground-process identity proving a live verified harness, both at startup and before every digest (`.agents/skills/afk/SKILL.md` "Positively identified supervisor pane").
+That corroboration, not the composer verdict alone, is what prevents a dead agent pane from receiving and possibly executing an escalation as shell input.
 
 The current operational envelope starts with U+2063 and `FIRSTMATE_OP: `.
 The separate routed-request carrier uses `[fm-from-firstmate]` plus U+2063.

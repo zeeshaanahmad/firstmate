@@ -575,7 +575,10 @@ mark_escalated_seen() {  # <kind> <arg> <state>
 # by bin/fm-composer-lib.sh), and future verdicts. The detector drops
 # dim/faint ghost text and strips the harness's composer box borders, so an
 # aligned ghost-only or idle bordered claude composer ("│ > … │") is correctly
-# proven empty while a modal dialog or dead shell never is.
+# proven empty while a modal dialog never is. A dead shell drawing the same
+# empty-composer glyph also reads proven-empty here; inject_msg's separate
+# agent-proof guard (a2 below), not this reader, is what rules that out
+# (`docs/herdr-backend.md` "Composer and injection safety").
 # pane_is_busy / pane_input_pending: BACKEND-AWARE (dispatch goes through
 # bin/fm-backend.sh's generic per-backend primitives rather than a hand-rolled
 # case statement here). <backend> defaults to tmux when omitted, so every
