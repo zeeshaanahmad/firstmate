@@ -230,6 +230,62 @@ test_rmtree_refuses_the_working_directory_an_unset_root_resolves_to() {
   pass "fm_test_rmtree refuses the working directory an unset TMP_ROOT resolves to"
 }
 
+test_own_fixture_permits_a_declared_root_outside_the_temp_root() {
+  local harness fixture_tmp declared out
+  harness=$(fm_test_tmproot fm-test-own-fixture)
+  fixture_tmp="$harness/tmp"
+  declared="$harness/declared"
+  mkdir -p "$fixture_tmp" "$declared"
+  printf 'fixture\n' > "$declared/content"
+
+  # tests/fm-lint.test.sh's real shape: a fixture root that cannot live under the
+  # temp root. Declared, so teardown is permitted; the child reports what survived.
+  out=$(TMPDIR="$fixture_tmp" bash -c '
+    . "$1" || exit 1
+    fm_test_own_fixture "$2" || exit 1
+    fm_test_rmtree "$2" || exit 1
+    [ -e "$2" ] && printf "still-present\n" || printf "removed\n"
+  ' _ "$LIB" "$declared" 2>&1) \
+    || fail "fm_test_rmtree refused a declared fixture root"$'\n'"--- output ---"$'\n'"$out"
+  assert_contains "$out" "removed" "a declared fixture root was not actually removed"
+  assert_absent "$declared" "a declared fixture root survived its guarded teardown"
+  pass "fm_test_own_fixture permits teardown of a declared root outside the temp root"
+}
+
+test_own_fixture_refuses_the_working_directory_and_the_repo_root() {
+  local harness fixture_tmp workdir out
+  harness=$(fm_test_tmproot fm-test-own-fixture-refuse)
+  fixture_tmp="$harness/tmp"
+  workdir="$harness/work"
+  mkdir -p "$fixture_tmp" "$workdir/inner"
+  printf 'precious\n' > "$workdir/canary"
+
+  # The declaration path must not be usable to authorize the very deletion the
+  # guard exists to prevent, so it refuses the working directory, an ancestor of
+  # it, and the repo root.
+  if out=$(cd "$workdir/inner" && TMPDIR="$fixture_tmp" bash -c '
+    . "$1" || exit 1
+    fm_test_own_fixture "$2"
+  ' _ "$LIB" "$workdir" 2>&1); then
+    fail "fm_test_own_fixture accepted an ancestor of the working directory"$'\n'"--- output ---"$'\n'"$out"
+  fi
+  assert_contains "$out" "working directory or an ancestor" \
+    "fm_test_own_fixture refused a cwd ancestor without saying why"
+  assert_present "$workdir/canary" "declaring a cwd ancestor removed the working directory"
+
+  # Run from outside the repo, so the repo-root branch is the one exercised
+  # rather than the cwd-ancestor branch that would otherwise catch it first.
+  if out=$(cd "$harness" && TMPDIR="$fixture_tmp" bash -c '
+    . "$1" || exit 1
+    fm_test_own_fixture "$ROOT"
+  ' _ "$LIB" 2>&1); then
+    fail "fm_test_own_fixture accepted the repo root"$'\n'"--- output ---"$'\n'"$out"
+  fi
+  assert_contains "$out" "that is the repo root" \
+    "fm_test_own_fixture refused the repo root without saying why"
+  pass "fm_test_own_fixture refuses the working directory, its ancestors, and the repo root"
+}
+
 test_lib_dependent_files_refuse_to_run_outside_tests() {
   local harness file base sandbox before after out checked=0
   harness=$(fm_test_tmproot fm-test-outside-tests)
@@ -276,3 +332,5 @@ test_rmtree_refuses_an_empty_fixture_path
 test_rmtree_refuses_a_path_outside_the_fixture_temp_root
 test_rmtree_refuses_the_working_directory_an_unset_root_resolves_to
 test_lib_dependent_files_refuse_to_run_outside_tests
+test_own_fixture_permits_a_declared_root_outside_the_temp_root
+test_own_fixture_refuses_the_working_directory_and_the_repo_root

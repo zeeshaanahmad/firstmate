@@ -98,11 +98,19 @@ FM_TEST_OWNER_IDENTITY=$(fm_test_pid_identity "$$") || {
 # written once here instead of at the 112 call sites that own a fixture root.
 #
 # It refuses, loudly and without removing anything, unless <path> resolves
-# strictly inside the temp root fm_test_tmproot allocates from. Emptiness and
-# containment are checked separately because they fail independently: an unset
-# TMP_ROOT is empty, but `TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)` - a real idiom in
-# this suite - turns that empty value into $PWD, since `cd ""` succeeds as a
-# no-op. A non-empty path is not a safe one.
+# strictly inside the temp root fm_test_tmproot allocates from, or was declared
+# through fm_test_own_fixture. Emptiness and containment are checked separately
+# because they fail independently: an unset TMP_ROOT is empty, but
+# `TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)` - a real idiom in this suite - turns that
+# empty value into $PWD, since `cd ""` succeeds as a no-op. A non-empty path is
+# not a safe one.
+#
+# A fixture cannot always live under the temp root: tests/fm-lint.test.sh's
+# source-boundary parity case needs a path REPO-RELATIVE to $ROOT, so it creates
+# one there. fm_test_own_fixture is how such a root is declared, and it is guarded
+# itself - it refuses the repo root, the working directory, and any ancestor of
+# it, which are exactly the shapes the silent degradation above produces. So the
+# escape hatch cannot become the incident.
 
 # Physical form of the temp root in force when this library loaded. Captured
 # here as well as re-read per call so a fixture rooted under the original TMPDIR
@@ -147,6 +155,48 @@ fm_test_removal_allowed() {
   return 1
 }
 
+# fm_test_owned_fixture <resolved-path>: true when this shell's fixture registry
+# records the path, which is the record of what this library was given to own.
+fm_test_owned_fixture() {
+  local resolved=$1 recorded line
+  [ -f "$FM_TEST_CLEANUP_REGISTRY" ] || return 1
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    recorded=$(fm_test_removal_path "$line") || continue
+    [ "$recorded" = "$resolved" ] && return 0
+  done < "$FM_TEST_CLEANUP_REGISTRY"
+  return 1
+}
+
+# fm_test_own_fixture <dir>: declare a fixture root this suite created outside the
+# temp root, so its teardown is permitted. Refuses the shapes a degraded TMP_ROOT
+# takes - empty, the repo root, the working directory, or an ancestor of it - so
+# declaring can never authorize the deletion this guard exists to prevent.
+fm_test_own_fixture() {
+  local dir=${1-} resolved root_resolved cwd
+  if [ -z "$dir" ]; then
+    printf 'not ok - fm_test_own_fixture refused an empty fixture path\n' >&2
+    return 1
+  fi
+  if ! resolved=$(fm_test_removal_path "$dir"); then
+    printf 'not ok - fm_test_own_fixture could not resolve fixture path %s\n' "$dir" >&2
+    return 1
+  fi
+  root_resolved=$(cd "$ROOT" 2>/dev/null && pwd -P) || root_resolved=
+  cwd=$(pwd -P)
+  case "$cwd/" in
+    "$resolved"/*)
+      printf 'not ok - fm_test_own_fixture refused %s: it is the working directory or an ancestor of it\n' "$resolved" >&2
+      return 1
+      ;;
+  esac
+  if [ -n "$root_resolved" ] && [ "$resolved" = "$root_resolved" ]; then
+    printf 'not ok - fm_test_own_fixture refused %s: that is the repo root\n' "$resolved" >&2
+    return 1
+  fi
+  printf '%s\n' "$dir" >> "$FM_TEST_CLEANUP_REGISTRY" || return 1
+}
+
 fm_test_rmtree() {  # <path>...
   local path resolved rc=0
   if [ "$#" -eq 0 ]; then
@@ -167,9 +217,9 @@ fm_test_rmtree() {  # <path>...
       rc=1
       continue
     fi
-    if ! fm_test_removal_allowed "$resolved"; then
+    if ! fm_test_removal_allowed "$resolved" && ! fm_test_owned_fixture "$resolved"; then
       FM_TEST_RMTREE_REFUSED=1
-      printf 'not ok - fm_test_rmtree refused %s: outside the fixture temp root; nothing removed\n' "$resolved" >&2
+      printf 'not ok - fm_test_rmtree refused %s: outside the fixture temp root and not a declared fixture; nothing removed\n' "$resolved" >&2
       rc=1
       continue
     fi
