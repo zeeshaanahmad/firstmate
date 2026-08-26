@@ -115,6 +115,7 @@ Run `bin/fm-doc-audience-check.sh`; it enforces classification, README setup rou
 
 - Put one full sentence per line in tracked Markdown.
 - Never wrap multiple sentences onto one physical line.
+- A file carried verbatim from upstream is exempt from those two rules for as long as we hold it byte-identical, because reformatting it trades a permanent conflict on every future sync of that file for cosmetics.
 - Plain dash `-`, never an em dash.
 - Never add an agent name as a commit co-author.
 - `bin/*.sh` and `bin/backends/*.sh` must pass `shellcheck`.
