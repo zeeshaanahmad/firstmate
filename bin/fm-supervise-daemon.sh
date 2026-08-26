@@ -1213,14 +1213,15 @@ inject_msg() {  # <message> [state]
   #      composer. The shared classifier (fm_backend_composer_state ->
   #      fm_composer_classify_content, bin/fm-composer-lib.sh) reports 'pending'
   #      for real unsubmitted text (a human's half-typed line, or a swallowed
-  #      prior injection) and 'unknown' for a bare dead-shell prompt (the agent
-  #      exited to its login shell) or an unreadable pane. Neither is a safe
-  #      target - typing the escalation into a shell could execute it - so defer
-  #      on anything that is not affirmatively 'empty'. A deferred escalation
-  #      stays buffered for the next cycle or the catch-up flush.
+  #      prior injection) and 'unknown' for an unreadable or unidentified pane.
+  #      Neither is a safe target, so defer on anything that is not
+  #      affirmatively 'empty'. A dead shell is NOT one of the shapes this
+  #      guard catches - it can render as a proven-empty composer, which is
+  #      exactly why (a) above runs first and owns that half. A deferred
+  #      escalation stays buffered for the next cycle or the catch-up flush.
   composer=$(fm_backend_composer_state "$backend" "$target" 2>/dev/null)
   if [ "$composer" != empty ]; then
-    log "inject deferred: supervisor composer not confirmed-empty (state=${composer:-unknown}: pending input, dead-shell prompt, or unreadable pane)"
+    log "inject deferred: supervisor composer not confirmed-empty (state=${composer:-unknown}: pending input or unreadable pane)"
     return 1
   fi
   # (4) Type the digest ONCE, then submit with Enter (retry Enter only, never
@@ -1228,8 +1229,12 @@ inject_msg() {  # <message> [state]
   # submit. An unconfirmed/unknown pane does NOT count as delivered, so the
   # buffer is preserved (strict) rather than cleared.
   # Dispatches through fm_backend_send_text_submit (bin/fm-backend.sh): for
-  # backend=tmux this calls fm_backend_tmux_send_text_submit, a verbatim
-  # re-export of fm_tmux_submit_core - byte-identical to calling it directly.
+  # backend=tmux this calls fm_backend_tmux_send_text_submit, which runs the
+  # shared fm_tmux_submit_core and additionally refuses to call a cleared
+  # composer a delivery once the pane's own process facts prove it agent-free.
+  # That is the same corroboration step (3) above already made for this pane,
+  # re-made around the keystrokes themselves, so it only ever catches an agent
+  # that exits mid-inject.
   retries=${FM_INJECT_CONFIRM_RETRIES:-$INJECT_CONFIRM_RETRIES_DEFAULT}
   sleep_s=${FM_INJECT_CONFIRM_SLEEP:-$INJECT_CONFIRM_SLEEP_DEFAULT}
   verdict=$(fm_backend_send_text_submit "$backend" "$target" "$msg" "$retries" "$sleep_s" "$sleep_s")

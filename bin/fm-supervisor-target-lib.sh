@@ -21,8 +21,8 @@
 # named `firstmate`, the guess resolved to window 0 of that session - an
 # ordinary interactive shell. Every away-mode escalation was then typed into
 # that shell and executed as a command, and the daemon counted it as delivered
-# (2026-08-24; docs/verification/runtime-backends.md "Away-mode supervisor pane
-# identification"). A guessed injection target cannot be made safe by a warning,
+# (2026-08-24; docs/verification/runtime-backends.md "Shell panes under an
+# acting caller"). A guessed injection target cannot be made safe by a warning,
 # so discovery now fails instead of guessing and the daemon refuses to start.
 #
 # The BACKEND default survives, because unlike the removed target guess it

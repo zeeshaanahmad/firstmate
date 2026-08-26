@@ -205,10 +205,10 @@ Cursor is deliberately outside this cursor-anchored empty-composer matrix becaus
 
 `zellij action dump-screen --pane-id <id> --ansi` was verified at zellij 0.44.0 to preserve ANSI styling (real Claude Code rendered inside a zellij pane dumped `ESC[m` `❯` U+00A0 for its idle composer row), which is the capability the zellij composer classifier reads.
 
-### Away-mode supervisor pane identification
+### Shell panes under an acting caller
 
-Rendered shape alone cannot establish that a pane belongs to an agent, so away-mode injection requires a second, non-rendered proof.
-The measurement below is the active evidence for that boundary: it shows a real interactive shell reaching the classifier's strongest positive verdict.
+Rendered shape alone cannot establish that a pane belongs to an agent, so every caller that acts on an `empty` composer verdict by sending keystrokes requires a second, non-rendered proof.
+The two measurements below are the active evidence for that boundary: each shows a real interactive shell reaching the classifier's strongest positive verdict, once for the away-mode supervisor pane and once for a crewmate endpoint being steered.
 
 Verified 2026-08-24 on tmux 3.6b, macOS 26.5.2 arm64, on a private socket, against `zsh -f -i` running starship 1.24.0 with the captain's own configuration, whose `success_symbol` is starship's shipped default: the `❯` character rendered in purple.
 
@@ -239,6 +239,44 @@ fm_backend_pane_agent_state tmux "$pane": dead
 `bin/fm-supervise-daemon.sh` therefore requires both an `empty` composer verdict and an exact `alive` from that probe before it types, and requires the `alive` again at startup.
 `tests/fm-afk-shell-pane-refusal.test.sh` is the portable regression that keeps both halves honest: it constructs the shell pane with real processes, asserts the two signals still diverge, and asserts that an otherwise identical pane with a harness-named foreground process is still delivered to.
 Refresh this record by rerunning that regression after any change to the classifier or to the liveness name sources.
+
+#### A steered crewmate whose agent has exited
+
+The tmux submit path is the second caller that acts on the same verdict: it types a steer, sends Enter, and reads the composer back, so a crewmate pane whose agent has exited answers with a redrawn shell prompt that reads as a cleared composer.
+
+Verified 2026-08-25 on tmux 3.6b, macOS 26.5.1 arm64 (Darwin 25.5.0), on a private socket, against `bash --norc -i` whose prompt is starship's shipped default prompt character.
+
+```sh
+tmux -L "$socket" new-window -d -t ev: -n mate -e 'PS1=❯ ' -- bash --norc -i
+. bin/fm-backend.sh && fm_backend_source tmux
+fm_backend_send_text_submit tmux ev:mate 'rebase onto main and re-run the gate' 3 0.4 0.3
+```
+
+Observed output, with the submit path from the commit before this boundary existed and with the shipped one:
+
+```text
+plain capture, last row:                   ❯
+fm_backend_composer_state tmux ev:mate:    empty
+fm_backend_pane_agent_state tmux ev:mate:  dead
+fm_backend_send_text_submit (before):      empty      # reported delivered; bin/fm-send.sh exited 0
+fm_backend_send_text_submit (shipped):     no-agent   # nothing typed; bin/fm-send.sh exits 1
+```
+
+The pane after the pre-boundary submit, showing where the steer actually went:
+
+```text
+❯ rebase onto main and re-run the gate
+bash: rebase: command not found
+❯
+```
+
+`fm_backend_tmux_send_text_submit` (`bin/backends/tmux.sh`) reads the same probe twice, before typing and again before an `empty` verdict may mean delivered, and refuses on `dead` alone rather than requiring the injector's exact `alive`: a deferred away-mode digest is simply re-sent, while a wrongly refused steer is a real instruction lost and a healthy worker sent into recovery.
+`tests/fm-send-shell-pane-refusal.test.sh` is the portable regression, built from real processes with no harness: it asserts the divergence, that a steer into the shell pane is refused and never typed, that an identical pane with a harness-named foreground process still receives it, and that an agent exiting between the typing and the read-back is not reported as delivered.
+`tests/fm-send-agent-pane-live-e2e.test.sh` (opt-in, `FM_SEND_AGENT_PANE_LIVE=1`) is the per-harness half, which steers every installed harness for real and then abandons its pane to a shell; run it after any harness upgrade.
+
+Its 2026-08-25 run on the machine above verified claude 2.1.245, codex codex-cli 0.147.0, and opencode 1.18.18.
+cursor was reported unverified rather than passed: the installed cursor-agent 2025.09.12-4852336 rejects the `--trust` flag `bin/fm-spawn.sh` launches it with (`error: unknown option '--trust'`), so it exits before it can be steered at all.
+pi, pi-signed, grok, kimi, and muse are not installed there.
 
 ## Herdr
 

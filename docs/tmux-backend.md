@@ -73,7 +73,8 @@ Real text in an identified shape is pending, while only positively proven emptin
 A blank or otherwise unidentified cursor row is `unknown` and every consumer defers, except that a foreground process proven to be Cursor is re-read cursorlessly because Cursor parks its terminal cursor below its footer.
 That identity-gated exception preserves the strict container-proof rule for every other pane, so a modal dialog, a dead shell between stale rules, or a mid-redraw pane is never an injection target.
 The shared classifier accepts a shell glyph as an empty agent composer only inside a bordered container.
-A bare shell prompt is `unknown`, so away-mode escalation is never injected into a dead shell.
+A bare shell prompt is not thereby safe: a prompt drawn with the same glyph a harness uses for its own empty composer reaches the strongest positive verdict, so rendered shape can never establish who owns a pane.
+Every caller that acts on that verdict by typing into the pane corroborates it with the pane's foreground-process identity first, and [verification/runtime-backends.md](verification/runtime-backends.md#shell-panes-under-an-acting-caller) records the measurement and each caller's threshold.
 
 Busy state is not read from rendered text on this backend.
 A task's busy, idle, unknown, or dead verdict comes from the semantic busy-state contract owned by `bin/fm-busy-lib.sh`; [architecture](architecture.md#busy-state-is-semantic-per-adapter) owns its boundaries.
@@ -85,6 +86,7 @@ The supervisor guard selects only the detected primary harness's signature rathe
 It types a message once and retries Enter only until the composer clears.
 Only a proven empty composer is a positive delivery acknowledgement.
 Text left in established structure remains `pending`, text in ambiguous structure remains unproven, and unreadable or unsafe state remains unknown.
+`fm_backend_tmux_send_text_submit` (`bin/backends/tmux.sh`) owns the acting-caller corroboration above for this path: it refuses to type into a pane already proven agent-free (`no-agent`) and refuses to read a cleared composer as delivery once the pane has become one (`agent-lost`).
 `fm-send.sh` never retypes or assumes a confirmed submit for an unconfirmed verdict; its header owns the distinct delivered-unconfirmed exit status and operator response.
 
 OpenCode 1.18.4 has one busy-queue exception.

@@ -78,8 +78,8 @@
 # exactly once below; every decision reaches them through the declarations.
 #
 # THE LIMIT OF THAT RULE, and what callers owe on top of it (2026-08-24;
-# docs/verification/runtime-backends.md "Away-mode supervisor pane
-# identification"): the shell glyph list above is a list of characters a shell
+# docs/verification/runtime-backends.md "Shell panes under an acting
+# caller"): the shell glyph list above is a list of characters a shell
 # was ASSUMED to draw, and real shells draw whatever their prompt is configured
 # to. starship - the default prompt on many machines - draws `❯`, which is
 # byte-identical to claude's bare agent glyph, so a plain interactive zsh
@@ -91,9 +91,14 @@
 # is fine with shape alone. A caller that ACTS on `empty` by sending keystrokes
 # into the pane must corroborate with a second, independent, non-rendered
 # signal - the kernel's own foreground-process facts for that pane, whose
-# single owner is fm_backend_pane_agent_state (bin/fm-backend.sh). The away-mode
-# injector (bin/fm-supervise-daemon.sh) requires both, and refuses on anything
-# short of an exact `alive`.
+# single owner is fm_backend_pane_agent_state (bin/fm-backend.sh). Both acting
+# callers do, each choosing how much proof its own wrong answer is worth: the
+# away-mode injector (bin/fm-supervise-daemon.sh) types unattended into a pane
+# it discovered, so it requires an exact `alive` and refuses anything less,
+# while the tmux submit path (fm_backend_tmux_send_text_submit,
+# bin/backends/tmux.sh) steers a caller-resolved endpoint, so it refuses only
+# the positive contradiction `dead` - a wrong refusal there loses a real
+# instruction. Neither may ACT on shape alone.
 #
 # GHOST/PLACEHOLDER TEXT (task afk-herdr-false-pending): a harness fills an
 # otherwise-empty composer with de-emphasized ghost text - claude's rotating
