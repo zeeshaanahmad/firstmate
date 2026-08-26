@@ -1,0 +1,40 @@
+### Building sandbox fixture: a fork tracking 'upstream', main lacks upstream's latest two commits ###
+warning: You appear to have cloned an empty repository.
+PR head (branch 'sync'): c1f6b535430773b991efeb64db168a66bb4f8c59
+Upstream tip carried by that PR head: 10dd3f88998df0252f408ce3aa45855acbf7495a
+
+=== 1/3: bin/fm-pr-merge.sh task-w1 <PR#7 url>   (no method flag => squash DEFAULT) ===
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+armed: state/task-w1.check.sh
+error: merge refused - this PR carries 2 commit(s) that the upstream repository also has and main does not
+  10dd3f8 upstream: second waypoint
+  6200074 upstream: first waypoint
+squash and rebase both rewrite those commits out of main's ancestry, so the next sync computes its merge base against a waypoint that is gone and replays history main already carries
+merge this PR with --merge, the only method that keeps them reachable
+exit code: 1
+--- gh-axi calls made so far (should be empty: no merge happened) ---
+
+=== 2/3: bin/fm-pr-merge.sh task-w1 <PR#7 url> -- --rebase ===
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+armed: state/task-w1.check.sh
+error: merge refused - this PR carries 2 commit(s) that the upstream repository also has and main does not
+  10dd3f8 upstream: second waypoint
+  6200074 upstream: first waypoint
+squash and rebase both rewrite those commits out of main's ancestry, so the next sync computes its merge base against a waypoint that is gone and replays history main already carries
+merge this PR with --merge, the only method that keeps them reachable
+exit code: 1
+--- gh-axi calls made so far (should still be empty) ---
+
+=== 3/3: bin/fm-pr-merge.sh task-w1 <PR#7 url> -- --merge  (the remedy) ===
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+armed: state/task-w1.check.sh
+merge-guard: UNGUARDED - no static check discovered; merging without a static check of the merge result
+exit code: 0
+--- gh-axi calls made (should show exactly one --merge call) ---
+pr merge 7 --repo example/repo --merge
