@@ -13,21 +13,46 @@ REMOTE_ROOT="$TMP_ROOT/remote-root"
 REMOTE_HOME="$TMP_ROOT/remote-home"
 ACCOUNT_HOME="$TMP_ROOT/account"
 STATE_ROOT="$TMP_ROOT/remote-jobs"
+RECOVERY_STATE="$TMP_ROOT/recovery-jobs"
 RUNTIME_BIN="$TMP_ROOT/runtime-bin"
 FAKE_PERL_LOG="$TMP_ROOT/perl.log"
 REAL_GIT=$(command -v git)
 OTHER_PID=
 RECOVERY_WORKER_PID=
+QUARANTINED_PROCESS_PID=
 mkdir -p "$REMOTE_ROOT/bin" "$REMOTE_HOME" "$ACCOUNT_HOME" "$RUNTIME_BIN"
 # worker.pid records the serving child, not its restart supervisor, so stopping
 # that pid alone leaves the supervisor to respawn - the leak
 # tests/fm-remote-job-orphan-reap.test.sh pins. Stop the whole worker tree.
+#
+# Both state roots are stopped, not just the one the happy path uses. A worker
+# publishes its pid under whichever state root it was pointed at as soon as it
+# takes ownership, including an invocation this test expected to refuse instead,
+# so worker.pid is the only handle on a worker that started when it should not
+# have. The final case proves this teardown actually leaves nothing running.
+stop_fixture_workers() {
+  local state
+  for state in "$STATE_ROOT" "$RECOVERY_STATE"; do
+    [ -f "$state/worker.pid" ] || continue
+    fm_remote_job_stop_worker_tree "$(cat "$state/worker.pid")" || true
+  done
+}
+
+# Every worker process startable from this fixture, whichever state root it was
+# pointed at: they all run this test's own copy of the worker script.
+fixture_worker_pids() {
+  pgrep -f "$TMP_ROOT/.*fm-remote-job-worker\\.sh" 2>/dev/null || true
+}
+
 cleanup_remote_job_fixture() {
+  local pid
   [ -z "$OTHER_PID" ] || kill "$OTHER_PID" 2>/dev/null || true
   [ -z "$RECOVERY_WORKER_PID" ] || kill "$RECOVERY_WORKER_PID" 2>/dev/null || true
-  if [ -f "$STATE_ROOT/worker.pid" ]; then
-    fm_remote_job_stop_worker_tree "$(cat "$STATE_ROOT/worker.pid")" || true
-  fi
+  [ -z "$QUARANTINED_PROCESS_PID" ] || kill "$QUARANTINED_PROCESS_PID" 2>/dev/null || true
+  stop_fixture_workers
+  for pid in $(fixture_worker_pids); do
+    fm_test_kill_tree "$pid"
+  done
   rm -rf -- "$TMP_ROOT"
 }
 trap cleanup_remote_job_fixture EXIT
@@ -559,11 +584,17 @@ for _ in $(seq 1 100); do
 done
 assert_present "$STATE_ROOT/worker.lock/quarantine" "failed shutdown released worker ownership"
 fm_remote_job_probe "$ACCOUNT_HOME" && fail "quarantined worker ownership still reported ready"
+# Bounded, because the only outcome that returns is the refusal this asserts.
+# A worker that takes ownership instead becomes an ordinary long-lived daemon,
+# and waiting on it unbounded would hang the whole suite with no diagnosis.
+replacement_worker() {
+  HOME="$ACCOUNT_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$STATE_ROOT" \
+    FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" \
+    >> "$TMP_ROOT/worker.out" 2>> "$TMP_ROOT/worker.err"
+}
 set +e
-HOME="$ACCOUNT_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$STATE_ROOT" \
-  FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" \
-  >> "$TMP_ROOT/worker.out" 2>> "$TMP_ROOT/worker.err"
-REPLACEMENT_RC=$?
+fm_test_run_bounded 60 "the replacement worker's refusal of quarantined ownership" replacement_worker
+REPLACEMENT_RC=$FM_TEST_BOUNDED_RC
 set -e
 [ "$REPLACEMENT_RC" -ne 0 ] || fail "a replacement worker ignored quarantined ownership"
 assert_present "$STATE_ROOT/worker.lock/quarantine" "a replacement removed quarantined ownership"
@@ -573,13 +604,19 @@ assert_absent "$QUARANTINE_SIDE_EFFECT" "the quarantined command mutated after e
 pass "failed shutdown quarantines ownership against replacement workers"
 
 RECOVERY_HOME="$TMP_ROOT/recovery-account"
-RECOVERY_STATE="$TMP_ROOT/recovery-jobs"
 RECOVERY_JOB="$RECOVERY_STATE/jobs/job-quarantine"
 mkdir -p "$RECOVERY_HOME" "$RECOVERY_STATE/jobs" "$RECOVERY_STATE/logs" \
   "$RECOVERY_STATE/worker.lock" "$RECOVERY_JOB/.claim"
 chmod 700 "$RECOVERY_HOME" "$RECOVERY_STATE" "$RECOVERY_STATE/jobs" "$RECOVERY_STATE/logs" \
   "$RECOVERY_STATE/worker.lock" "$RECOVERY_JOB" "$RECOVERY_JOB/.claim"
-sleep 20 &
+# This case only means anything while the recorded execution is still running,
+# so the window has to outlast however long this shell is descheduled. A short
+# one made that a race: once it lapsed, the worker below correctly cleared the
+# quarantine, took ownership and served forever instead of refusing, and the
+# unbounded wait on it hung the suite until CI cancelled the job. The liveness
+# assertion and the bound below now turn either lapse into a loud failure; this
+# window is only what keeps them from firing on an ordinary loaded runner.
+sleep 600 &
 QUARANTINED_PROCESS_PID=$!
 sleep 0.01 &
 QUARANTINE_OWNER_PID=$!
@@ -596,20 +633,30 @@ printf '%s\n' "$QUARANTINED_PROCESS_PID" > "$RECOVERY_JOB/.claim/supervisor"
 chmod 600 "$RECOVERY_STATE/worker.lock"/* "$RECOVERY_JOB/state" "$RECOVERY_JOB/.claim"/* \
   "$RECOVERY_JOB/stdout" "$RECOVERY_JOB/stderr"
 touch -t 200001010000 "$RECOVERY_STATE/worker.lock"
+kill -0 "$QUARANTINED_PROCESS_PID" 2>/dev/null ||
+  fail "the recorded execution exited before the refusal ran, so this case could not prove quarantine survives a live process"
+recovery_refusal_worker() {
+  HOME="$RECOVERY_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$RECOVERY_STATE" \
+    FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" \
+    > "$TMP_ROOT/recovery-refused.out" 2> "$TMP_ROOT/recovery-refused.err"
+}
 set +e
-HOME="$RECOVERY_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$RECOVERY_STATE" \
-  FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" \
-  > "$TMP_ROOT/recovery-refused.out" 2> "$TMP_ROOT/recovery-refused.err"
-RECOVERY_REFUSED_RC=$?
+fm_test_run_bounded 60 "the quarantine recovery refusal" recovery_refusal_worker
+RECOVERY_REFUSED_RC=$FM_TEST_BOUNDED_RC
 set -e
 [ "$RECOVERY_REFUSED_RC" -ne 0 ] || fail "quarantine recovery ignored a recorded live process"
 assert_present "$RECOVERY_STATE/worker.lock/quarantine" "a live recorded process lost quarantine protection"
 kill "$QUARANTINED_PROCESS_PID" 2>/dev/null || true
 wait "$QUARANTINED_PROCESS_PID" 2>/dev/null || true
+# Started under job control so the supervisor leads its own process group, the
+# same shape fm_remote_job_start_linux_worker gives a real worker, so stopping it
+# reaches its serving child instead of only the pid recorded here.
+set -m
 HOME="$RECOVERY_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$RECOVERY_STATE" \
   FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" \
   > "$TMP_ROOT/recovery-worker.out" 2> "$TMP_ROOT/recovery-worker.err" &
 RECOVERY_WORKER_PID=$!
+set +m
 for _ in $(seq 1 300); do
   [ -f "$RECOVERY_STATE/worker.ready" ] && break
   sleep 0.05
@@ -617,8 +664,30 @@ done
 assert_present "$RECOVERY_STATE/worker.ready" "a stopped quarantined execution did not permit worker recovery"
 assert_absent "$RECOVERY_STATE/worker.lock/quarantine" "recovered worker retained stale quarantine"
 kill -TERM "$RECOVERY_WORKER_PID"
-wait "$RECOVERY_WORKER_PID" 2>/dev/null || true
+fm_test_wait_pid_bounded "$RECOVERY_WORKER_PID" 60 "the recovered worker's shutdown"
 RECOVERY_WORKER_PID=
 pass "quarantine clears only after recorded execution has stopped"
+
+# A worker that outlives this file is the failure the cases above are bounded
+# against: the runner reaps it as an orphan long after the log stopped saying
+# anything, so nothing here reports which wait leaked it. Running this fixture's
+# own teardown and then proving no worker survives it makes that a test failure
+# instead of a silent job timeout.
+kill "$QUARANTINED_PROCESS_PID" 2>/dev/null || true
+QUARANTINED_PROCESS_PID=
+stop_fixture_workers
+SURVIVING_WORKERS=
+for _ in $(seq 1 100); do
+  SURVIVING_WORKERS=$(fixture_worker_pids)
+  [ -n "$SURVIVING_WORKERS" ] || break
+  sleep 0.1
+done
+if [ -n "$SURVIVING_WORKERS" ]; then
+  for pid in $SURVIVING_WORKERS; do
+    fm_test_kill_tree "$pid"
+  done
+  fail "remote job worker processes outlived the test: $(printf '%s' "$SURVIVING_WORKERS" | tr '\n' ' ')"
+fi
+pass "no remote job worker outlives the test"
 
 echo "ALL TESTS PASSED"

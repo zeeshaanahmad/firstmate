@@ -7,9 +7,9 @@
 #
 # It provides the boilerplate every test file used to re-roll: ok/not-ok
 # reporters, a self-cleaning temp root, fakebin/PATH-shim helpers, deterministic
-# git identity and fixture builders, state/<id>.meta writers, and the common
-# string/exit-code/file assertions. It deliberately does NOT bundle the
-# behavior-specific fake tmux/treehouse/no-mistakes mocks: those encode terminal
+# git identity and fixture builders, state/<id>.meta writers, bounded waits, and
+# the common string/exit-code/file assertions. It deliberately does NOT bundle
+# the behavior-specific fake tmux/treehouse/no-mistakes mocks: those encode terminal
 # and lifecycle assumptions that differ per suite and belong with the tests that
 # own them.
 #
@@ -290,6 +290,75 @@ fm_test_resolve_harness_binary() {  # <harness>
     return 0
   fi
   return 1
+}
+
+# --- bounded waits ----------------------------------------------------------
+#
+# A test that blocks forever on a process it expected to exit reports nothing.
+# CI cancels the whole job at its timeout, the runner reaps the surviving
+# processes as orphans, and the log ends mid-suite with no diagnosis of which
+# wait never returned.
+# Every wait on a process whose exit a test cannot guarantee belongs in one of
+# these, so an unexpected outcome fails that test loudly, names the wait, and
+# stops the process tree instead of leaking it past the test.
+
+# fm_test_pid_exits_within <pid> <seconds>: 0 once <pid> is gone, 1 on expiry.
+fm_test_pid_exits_within() {
+  local pid=$1 deadline
+  deadline=$(( $(date +%s) + $2 ))
+  while kill -0 "$pid" 2>/dev/null; do
+    [ "$(date +%s)" -lt "$deadline" ] || return 1
+    sleep 0.1
+  done
+}
+
+# fm_test_kill_tree <pid>: stop <pid>, and every process in its group when it
+# leads one of its own. A process started under `set -m` leads its own group, so
+# this reaches a supervisor's children too rather than only the pid a test holds.
+fm_test_kill_tree() {
+  local pid=$1 pgid
+  pgid=$(ps -p "$pid" -o pgid= 2>/dev/null | tr -d '[:space:]')
+  if [ -n "$pgid" ] && [ "$pgid" = "$pid" ]; then
+    kill -KILL -- "-$pgid" 2>/dev/null || true
+  fi
+  kill -KILL "$pid" 2>/dev/null || true
+}
+
+# fm_test_wait_pid_bounded <pid> <seconds> <what>: wait for a background pid this
+# test started, failing with <what> once the bound expires. Sets
+# FM_TEST_BOUNDED_RC to the exit status when the process did finish in time.
+# FM_TEST_BOUNDED_RC is read by the sourcing test, not by this library, so it
+# reads as "unused" here.
+# shellcheck disable=SC2034
+fm_test_wait_pid_bounded() {
+  local pid=$1 secs=$2 what=$3
+  if ! fm_test_pid_exits_within "$pid" "$secs"; then
+    fm_test_kill_tree "$pid"
+    wait "$pid" 2>/dev/null || true
+    fail "$what did not finish within ${secs}s; its process tree was stopped"
+  fi
+  # Captured through the || branch so a non-zero status is recorded rather than
+  # aborting a caller that runs under errexit.
+  FM_TEST_BOUNDED_RC=0
+  wait "$pid" 2>/dev/null || FM_TEST_BOUNDED_RC=$?
+  return 0
+}
+
+# fm_test_run_bounded <seconds> <what> <command> [args...]: run <command> in its
+# own process group under the same bound. <command> may be a shell function, so
+# the caller keeps its own redirections and environment assignments.
+fm_test_run_bounded() {
+  local secs=$1 what=$2 pid monitor
+  shift 2
+  # Job control makes the command lead its own process group, so the bound can
+  # stop a whole supervisor tree. Restored rather than cleared, so a caller that
+  # was already running with it keeps it.
+  case "$-" in *m*) monitor=1 ;; *) monitor=0 ;; esac
+  set -m
+  "$@" &
+  pid=$!
+  [ "$monitor" -eq 1 ] || set +m
+  fm_test_wait_pid_bounded "$pid" "$secs" "$what"
 }
 
 # --- common assertions ------------------------------------------------------
