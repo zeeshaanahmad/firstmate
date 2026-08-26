@@ -5,7 +5,7 @@
 set -u
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-transition-lib.sh"

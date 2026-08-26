@@ -40,8 +40,11 @@ cleanup_all() {
 trap cleanup_all EXIT
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
 
-SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/fm-control-herdr.XXXXXX")
-SCRATCH=$(cd "$SCRATCH" && pwd)
+# Checked, because the next line resolves SCRATCH through `cd`, and `cd ""`
+# succeeds as a no-op: an unchecked mktemp failure would turn SCRATCH into the
+# working directory and hand it to cleanup_all's rm.
+SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/fm-control-herdr.XXXXXX") || fail "could not create the scratch fixture root"
+SCRATCH=$(cd "$SCRATCH" && pwd) || fail "could not resolve the scratch fixture root"
 HOME_DIR="$SCRATCH/home"
 mkdir -p "$HOME_DIR/state" "$HOME_DIR/data/hsmoke"
 printf '# brief\n' > "$HOME_DIR/data/hsmoke/brief.md"

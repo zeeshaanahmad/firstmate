@@ -37,7 +37,7 @@
 set -u
 
 # shellcheck source=tests/static-guard-helpers.sh
-. "$(dirname "${BASH_SOURCE[0]}")/static-guard-helpers.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/static-guard-helpers.sh" || exit 1
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-pr-lib.sh"
 fm_git_identity fmtest fmtest@example.invalid

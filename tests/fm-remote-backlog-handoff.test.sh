@@ -3,7 +3,7 @@
 set -u
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 
 command -v tasks-axi >/dev/null 2>&1 || { echo "skip: tasks-axi not found"; exit 0; }
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
@@ -41,11 +41,11 @@ fm_remote_handoff_teardown() {
   wait 2>/dev/null || true
   i=0
   while [ "$i" -lt 50 ]; do
-    rm -rf -- "$TMP_ROOT" 2>/dev/null && return 0
+    fm_test_rmtree "$TMP_ROOT" 2>/dev/null && return 0
     sleep 0.02
     i=$((i + 1))
   done
-  rm -rf -- "$TMP_ROOT" 2>/dev/null || true
+  fm_test_rmtree "$TMP_ROOT" 2>/dev/null || true
 }
 trap fm_remote_handoff_teardown EXIT
 printf 'fixture\n' > "$REMOTE_ROOT/AGENTS.md"

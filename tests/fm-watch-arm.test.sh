@@ -14,7 +14,7 @@
 set -u
 
 # shellcheck source=tests/wake-helpers.sh
-. "$(dirname "${BASH_SOURCE[0]}")/wake-helpers.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/wake-helpers.sh" || exit 1
 
 WATCH="$ROOT/bin/fm-watch.sh"
 WATCH_ARM="$ROOT/bin/fm-watch-arm.sh"

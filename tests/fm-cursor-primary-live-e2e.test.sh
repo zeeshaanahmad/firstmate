@@ -30,7 +30,7 @@ if [ "${FM_CURSOR_PRIMARY_LIVE_E2E:-0}" != 1 ]; then
 fi
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 
 CURSOR_BIN=${FM_CURSOR_BIN:-$(command -v cursor-agent || true)}
 [ -n "$CURSOR_BIN" ] && [ -x "$CURSOR_BIN" ] \

@@ -3,7 +3,7 @@
 set -u
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 TMP_ROOT=$(fm_test_tmproot fm-remote-job)
@@ -53,7 +53,7 @@ cleanup_remote_job_fixture() {
   for pid in $(fixture_worker_pids); do
     fm_test_kill_tree "$pid"
   done
-  rm -rf -- "$TMP_ROOT"
+  fm_test_rmtree "$TMP_ROOT"
 }
 trap cleanup_remote_job_fixture EXIT
 

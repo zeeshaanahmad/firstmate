@@ -3,7 +3,15 @@
 #
 # Source this from a test file:
 #   # shellcheck source=tests/lib.sh
-#   . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+#   . "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
+#
+# The `|| exit 1` is load-bearing, not style. This path only resolves for a file
+# that actually lives in tests/, and bash treats a failed `.` as an ordinary
+# non-zero return rather than a fatal error, so without it a file run from
+# anywhere else keeps executing with every helper below undefined - and
+# `TMP_ROOT=$(fm_test_tmproot prefix)` quietly becomes the empty string.
+# tests/fm-test-fixture-cleanup.test.sh pins that every file in this directory
+# refuses instead of continuing.
 #
 # It provides the boilerplate every test file used to re-roll: ok/not-ok
 # reporters, a self-cleaning temp root, fakebin/PATH-shim helpers, deterministic
@@ -82,16 +90,107 @@ FM_TEST_OWNER_IDENTITY=$(fm_test_pid_identity "$$") || {
   return 1
 }
 
+# --- guarded fixture removal ------------------------------------------------
+#
+# fm_test_rmtree <path>... is the ONE recursive-removal path for a fixture root
+# in this suite. The registry reaper, the orphan sweep, and the teardown trap of
+# every test file that sources this library all go through it, so the guard is
+# written once here instead of at the 112 call sites that own a fixture root.
+#
+# It refuses, loudly and without removing anything, unless <path> resolves
+# strictly inside the temp root fm_test_tmproot allocates from. Emptiness and
+# containment are checked separately because they fail independently: an unset
+# TMP_ROOT is empty, but `TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)` - a real idiom in
+# this suite - turns that empty value into $PWD, since `cd ""` succeeds as a
+# no-op. A non-empty path is not a safe one.
+
+# Physical form of the temp root in force when this library loaded. Captured
+# here as well as re-read per call so a fixture rooted under the original TMPDIR
+# is still removable after a test exports a narrower one.
+FM_TEST_TMP_ROOT_AT_SOURCE=$(cd "${TMPDIR:-/tmp}" 2>/dev/null && pwd -P) || FM_TEST_TMP_ROOT_AT_SOURCE=
+
+# Set when a removal was refused, so the teardown that swallowed the refusal
+# still fails the file rather than passing with a fixture left behind.
+FM_TEST_RMTREE_REFUSED=
+
+# fm_test_removal_path <path>: echo <path> with its PARENT resolved physically
+# and its own last component appended verbatim. Resolving the parent rather than
+# the path itself matches `rm -rf` semantics, which unlink a symlink instead of
+# following it, and works for a path that is a file or does not exist.
+fm_test_removal_path() {
+  local path=$1 parent base
+  parent=$(dirname -- "$path")
+  base=$(basename -- "$path")
+  case "$base" in
+    '' | . | .. | /) return 1 ;;
+  esac
+  parent=$(cd "$parent" 2>/dev/null && pwd -P) || return 1
+  [ "$parent" = / ] && parent=
+  printf '%s/%s\n' "$parent" "$base"
+}
+
+# fm_test_removal_allowed <resolved-path>: true when the path sits strictly
+# below a temp root - never at one, so the root itself can never be the target.
+# The accepted roots are exactly the ones fm_test_tmproot can allocate from: the
+# one in force when this library loaded, and the one in force right now. Nothing
+# wider, so a path that merely looks temporary is still refused.
+fm_test_removal_allowed() {
+  local resolved=$1 candidate root
+  for candidate in "$FM_TEST_TMP_ROOT_AT_SOURCE" "${TMPDIR:-/tmp}"; do
+    [ -n "$candidate" ] || continue
+    root=$(cd "$candidate" 2>/dev/null && pwd -P) || continue
+    [ -n "$root" ] && [ "$root" != / ] || continue
+    case "$resolved" in
+      "$root"/?*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+fm_test_rmtree() {  # <path>...
+  local path resolved rc=0
+  if [ "$#" -eq 0 ]; then
+    FM_TEST_RMTREE_REFUSED=1
+    printf 'not ok - fm_test_rmtree was called with no fixture path; nothing removed\n' >&2
+    return 1
+  fi
+  for path in "$@"; do
+    if [ -z "$path" ]; then
+      FM_TEST_RMTREE_REFUSED=1
+      printf 'not ok - fm_test_rmtree refused an empty fixture path; nothing removed\n' >&2
+      rc=1
+      continue
+    fi
+    if ! resolved=$(fm_test_removal_path "$path"); then
+      FM_TEST_RMTREE_REFUSED=1
+      printf 'not ok - fm_test_rmtree could not resolve fixture path %s; nothing removed\n' "$path" >&2
+      rc=1
+      continue
+    fi
+    if ! fm_test_removal_allowed "$resolved"; then
+      FM_TEST_RMTREE_REFUSED=1
+      printf 'not ok - fm_test_rmtree refused %s: outside the fixture temp root; nothing removed\n' "$resolved" >&2
+      rc=1
+      continue
+    fi
+    rm -rf -- "$path"
+  done
+  return "$rc"
+}
+
 fm_test_cleanup() {
   local d
   for d in "${FM_TEST_CLEANUP_DIRS[@]:-}"; do
-    [ -n "$d" ] && rm -rf "$d"
+    [ -n "$d" ] && fm_test_rmtree "$d"
   done
   if [ -f "$FM_TEST_CLEANUP_REGISTRY" ]; then
     while IFS= read -r d; do
-      [ -n "$d" ] && rm -rf "$d"
+      [ -n "$d" ] && fm_test_rmtree "$d"
     done < "$FM_TEST_CLEANUP_REGISTRY"
     rm -f "$FM_TEST_CLEANUP_REGISTRY"
+  fi
+  if [ -n "$FM_TEST_RMTREE_REFUSED" ]; then
+    exit 1
   fi
 }
 
@@ -138,7 +237,7 @@ fm_test_reap_orphans() {
     mtime=$(stat -c %Y "$marker" 2>/dev/null || stat -f %m "$marker" 2>/dev/null) || continue
     [ $((now - mtime)) -ge "$FM_TEST_ORPHAN_MAX_AGE_SECONDS" ] || continue
     dir=$(dirname "$marker")
-    rm -rf "$dir"
+    fm_test_rmtree "$dir"
   done
 }
 

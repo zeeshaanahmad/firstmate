@@ -23,7 +23,7 @@
 set -u
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 
 # shellcheck source=bin/fm-cursor-lib.sh
 . "$ROOT/bin/fm-cursor-lib.sh"
@@ -32,7 +32,7 @@ set -u
 
 HARNESS="$ROOT/bin/fm-harness.sh"
 TMP_ROOT=$(fm_test_tmproot fm-cursor-harness)
-trap 'rm -rf "$TMP_ROOT"' EXIT
+trap 'fm_test_rmtree "$TMP_ROOT"' EXIT
 
 # A fake cursor install tree with BOTH installed names, shaped exactly like the
 # real one: ~/.local/share/cursor-agent/versions/<version>/cursor-agent with
