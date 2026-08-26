@@ -44,7 +44,15 @@ SESSION_START_SECOND_MATE_ID="fmtest-sm-${TMP_ROOT##*.}"
 SESSION_START_SECOND_MATE_TMP="/tmp/fm-$SESSION_START_SECOND_MATE_ID"
 SESSION_START_HERDR_SECOND_MATE_ID="fmtest-herdr-${TMP_ROOT##*.}"
 SESSION_START_HERDR_SECOND_MATE_TMP="/tmp/fm-$SESSION_START_HERDR_SECOND_MATE_ID"
-FM_TEST_CLEANUP_DIRS+=("$TMP_ROOT" "$SESSION_START_SECOND_MATE_TMP" "$SESSION_START_HERDR_SECOND_MATE_TMP")
+FM_TEST_CLEANUP_DIRS+=("$TMP_ROOT")
+# Those two mirror firstmate's real per-task temp root convention, /tmp/fm-<id>,
+# because that literal path is what the code under test creates - so they sit
+# outside the fixture temp root by necessity, not by accident. Declaring them hands
+# each root to the library's guarded teardown (tests/lib.sh, fm_test_own_fixture).
+fm_test_own_fixture "$SESSION_START_SECOND_MATE_TMP" \
+  || fail "could not declare the secondmate temp root"
+fm_test_own_fixture "$SESSION_START_HERDR_SECOND_MATE_TMP" \
+  || fail "could not declare the herdr secondmate temp root"
 trap fm_test_cleanup EXIT
 fm_git_identity fmtest fmtest@example.invalid
 

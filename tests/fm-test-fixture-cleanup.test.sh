@@ -286,6 +286,43 @@ test_own_fixture_refuses_the_working_directory_and_the_repo_root() {
   pass "fm_test_own_fixture refuses the working directory, its ancestors, and the repo root"
 }
 
+test_own_fixture_permits_a_tmp_rooted_fixture_while_tmpdir_is_elsewhere() {
+  local harness fixture_tmp undeclared declared out
+
+  # tests/fm-session-start.test.sh's real shape: firstmate's own per-task temp root
+  # convention is the literal path /tmp/fm-<id>, so a fixture mirroring the code
+  # under test lives outside $TMPDIR by necessity. The containment rule alone would
+  # refuse it, and widening that rule to trust /tmp wholesale is NOT the fix - the
+  # working directory can itself be under /tmp, which is how the original incident
+  # reproduced. Declaring keeps the cwd guard while permitting the teardown.
+  harness=$(fm_test_tmproot fm-test-own-fixture-tmp)
+  fixture_tmp="$harness/tmp"
+  undeclared="$harness/undeclared-root"
+  declared="$harness/declared-root"
+  mkdir -p "$fixture_tmp" "$undeclared" "$declared"
+
+  # Separate children: the refusal below deliberately trips the teardown's
+  # refused-removal flag, which would otherwise fail the successful case too.
+  if out=$(TMPDIR="$fixture_tmp" bash -c '
+    . "$1" || exit 1
+    fm_test_rmtree "$2"
+  ' _ "$LIB" "$undeclared" 2>&1); then
+    fail "an undeclared fixture outside the temp root was removed"$'\n'"--- output ---"$'\n'"$out"
+  fi
+  assert_present "$undeclared" "an undeclared fixture outside the temp root was removed"
+
+  out=$(TMPDIR="$fixture_tmp" bash -c '
+    . "$1" || exit 1
+    fm_test_own_fixture "$2" || exit 1
+    fm_test_rmtree "$2" || exit 1
+    [ -e "$2" ] && printf "still-present\n" || printf "removed\n"
+  ' _ "$LIB" "$declared" 2>&1) \
+    || fail "declaring a fixture outside the temp root did not permit its teardown"$'\n'"--- output ---"$'\n'"$out"
+  assert_contains "$out" "removed" "a declared fixture outside the temp root was not removed"
+  assert_absent "$declared" "the declared fixture survived its guarded teardown"
+  pass "a fixture rooted outside \$TMPDIR is removable only once declared"
+}
+
 test_lib_dependent_files_refuse_to_run_outside_tests() {
   local harness file base sandbox before after out checked=0
   harness=$(fm_test_tmproot fm-test-outside-tests)
@@ -334,3 +371,4 @@ test_rmtree_refuses_the_working_directory_an_unset_root_resolves_to
 test_lib_dependent_files_refuse_to_run_outside_tests
 test_own_fixture_permits_a_declared_root_outside_the_temp_root
 test_own_fixture_refuses_the_working_directory_and_the_repo_root
+test_own_fixture_permits_a_tmp_rooted_fixture_while_tmpdir_is_elsewhere
