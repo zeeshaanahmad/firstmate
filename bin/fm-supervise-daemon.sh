@@ -104,6 +104,11 @@
 #                                   for delivery guards and Grok's fallback
 #          FM_COMPOSER_IDLE_RE      optional shared classifier override; see
 #                                   docs/configuration.md for its safety gates
+#          FM_INJECT_MAX_BYTES      max encoded bytes the daemon will type into
+#                                   the supervisor pane in one send; a larger
+#                                   digest is refused, buffered, and surfaced by
+#                                   the wedge alarm rather than delivered as a
+#                                   fragment (default 800)
 #          FM_MAX_DEFER_SECS        max seconds a buffered escalation may sit
 #                                   undelivered before one normal flush attempt;
 #                                   if that cannot confirm a submit, a wedge
@@ -163,6 +168,12 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # Canonical construction and parsing for every Firstmate operational input.
 # shellcheck source=bin/fm-operational-input.sh
 . "$FM_DAEMON_DIR/fm-operational-input.sh"
+
+# Shared per-line cut and its truncation marker, the same owner the wake and
+# session-start digests use, so an agent reading any firstmate digest recognizes
+# one truncation marker.
+# shellcheck source=bin/fm-line-cap-lib.sh
+. "$FM_DAEMON_DIR/fm-line-cap-lib.sh"
 
 # Shared wake classifier (last_status_line, status_is_captain_relevant,
 # window_to_task, scan_captain_relevant_statuses). The SAME library backs the
@@ -225,6 +236,23 @@ WEDGE_ALARM_NOTIFIER_PID=
 INJECT_FAIL_SLEEP_DEFAULT=30
 INJECT_CONFIRM_RETRIES_DEFAULT=3
 INJECT_CONFIRM_SLEEP_DEFAULT=0.5
+# Largest escalation, envelope included, this daemon will type into a pane in
+# ONE literal send. Above it, delivery stops being a guarantee: a terminal
+# receiver reads its pty in bounded chunks, and a harness that keeps only the
+# final chunk of a fast multi-chunk send drops everything before it. That cut
+# takes the FRONT of the message. Measured on 2026-08-31 (macOS 26.5.1,
+# tmux 3.6b, claude 2.1.251, 200x50 pane): sends of 400 and 800 bytes arrived
+# whole in every trial, while 1024, 1104 (twice) and 2048 byte sends each lost
+# everything before the pty's 1024-byte input-queue boundary and one 1536-byte
+# send arrived whole - so past 1024 bytes delivery is a race, not a bound.
+# tmux itself never truncates: it delivers byte-exactly below its own limit and
+# refuses "command too long" above roughly 16,341 characters.
+# docs/verification/supervision.md "Away-mode delivery bound" owns the evidence.
+# The default is the largest measured-whole size, and the guard in inject_msg
+# refuses rather than hands a pane a message it cannot promise to deliver.
+INJECT_MAX_BYTES_DEFAULT=800
+# Appended after a bounded cut so the delivered digest names where the rest is.
+ESCALATE_OVERFLOW_POINTER=' full digest in '
 CRASH_THRESHOLD_DEFAULT=10
 CRASH_WINDOW_DEFAULT=60
 CRASH_BACKOFF_DEFAULT=60
@@ -296,17 +324,24 @@ should_exit_afk() {  # <state> <message-text>
   return 0
 }
 
-# message_is_injection: 0 if the given message text starts with the sentinel
-# marker (a daemon escalation), 1 otherwise (a real user message). Firstmate's
-# afk-exit contract uses this: marker present -> stay afk; absent -> captain is
+# message_is_injection: 0 if the given message text is machine-generated
+# operational input, 1 if it is a real user message. Firstmate's afk-exit
+# contract uses this: operational input -> stay afk; anything else -> captain is
 # back. Bias ambiguous cases toward exit (a false exit is self-correcting).
+#
+# A LEADING marker alone is not enough. A delivery cut from the front loses the
+# header, and reading the surviving fragment as human speech exits away mode,
+# stops this daemon, and discards the escalation the message was carrying - the
+# one direction in which a delivery defect turns into a wrong safety verdict.
+# The envelope's trailing terminator (bin/fm-operational-input.sh) survives that
+# cut, so a fragment still answers this question correctly.
 message_is_injection() {  # <message-text>
-  local msg=$1
+  local msg=$1 kind
   [ -n "$msg" ] || return 1
   case "$msg" in
     "$FM_INJECT_MARK"*) return 0 ;;
   esac
-  return 1
+  fm_operational_input_kind "$msg" kind
 }
 
 # strip_injection_marker: remove a current typed away envelope, the landed
@@ -657,19 +692,77 @@ escalate_add() {  # <state> <distilled-item>
   printf '%s\n' "$item" >> "$buf"
 }
 
+# Byte length of a string, independent of the shell's character locale. The
+# delivery bound is a wire size, and the envelope's U+2063 markers cost three
+# bytes each while ${#var} counts them as one.
+_byte_len() {  # <text>
+  printf '%s' "${1-}" | wc -c | tr -d ' '
+}
+
+# Bytes inject_msg would actually type for <plain-message>. The envelope is part
+# of the delivery, so the bound has to be measured on the encoded form, not on
+# the digest text alone.
+_inject_wire_bytes() {  # <plain-message>
+  local encoded
+  fm_operational_input_encode away-supervisor "$(_collapse_newlines "${1-}")" encoded \
+    || { _byte_len "${1-}"; return 0; }
+  _byte_len "$encoded"
+}
+
+# Compose the batched digest line for <n> events out of <items>. Kept separate
+# from escalate_flush so the bounded rebuild below uses the identical framing.
+_escalate_digest() {  # <n> <items>
+  printf 'Supervisor escalate (%s event(s)): %s (pre-read; re-arm not needed - watcher daemon-managed)' "$1" "$2"
+}
+
 # Flush the escalation buffer as ONE batched, single-line digest to the
 # supervisor pane. Returns 0 on successful inject (or empty buffer), non-zero on
 # inject failure (buffer preserved for retry / catch-up).
+#
+# BOUNDED BY CONSTRUCTION. inject_msg refuses anything over the single-send
+# delivery bound, because past it a pane can drop the front of the message and
+# leave a fragment that reads like the captain talking. A busy fleet reaches
+# that size easily, so rather than let a real escalation die at that guard, the
+# digest is cut to fit HERE, from the tail, with the shared truncation marker
+# and a pointer to the durable record. Firstmate then sees a marked, obviously
+# partial digest and knows where the rest is - the opposite of a silent front
+# cut. The full text is logged before the cut, so nothing is lost either way.
 escalate_flush() {  # <state>
-  local state=$1 buf item n msg
+  local state=$1 buf n msg items max_bytes budget budget_lo budget_hi pointer
   buf="$state/.subsuper-escalations"
   [ -s "$buf" ] || return 0
-  n=$(wc -l < "$buf" 2>/dev/null || echo 0)
+  n=$(wc -l < "$buf" 2>/dev/null | tr -d ' ' || echo 0)
   # Join buffered items with the literal " | " separator into one digest line.
-  msg=$(awk 'NR>1{printf " | "} {printf "%s",$0} END{print ""}' "$buf" 2>/dev/null)
+  items=$(awk 'NR>1{printf " | "} {printf "%s",$0} END{print ""}' "$buf" 2>/dev/null)
   # Single-line wrapper: no embedded newlines (inject_msg also collapses as a
   # safety net, but keeping the source single-line makes the intent explicit).
-  msg=$(printf 'Supervisor escalate (%s event(s)): %s (pre-read; re-arm not needed — watcher daemon-managed)' "$n" "$msg")
+  msg=$(_escalate_digest "$n" "$items")
+  max_bytes=${FM_INJECT_MAX_BYTES:-$INJECT_MAX_BYTES_DEFAULT}
+  if [ "$(_inject_wire_bytes "$msg")" -gt "$max_bytes" ]; then
+    pointer="$ESCALATE_OVERFLOW_POINTER$state/.supervise-daemon.log"
+    log "escalate digest over the ${max_bytes}-byte delivery bound; delivering it cut, full text: $msg"
+    # Search for the LARGEST item budget whose composed digest still fits, so
+    # the captain loses as little of the escalation as the bound allows. The fit
+    # is measured, not derived: the envelope, this digest's framing, the pointer
+    # and the multibyte marker bytes all sit between an item budget and the
+    # delivered size, and a budget computed from their lengths would have to be
+    # re-derived every time any one of them changes. The floor keeps the search
+    # from squeezing out the pointer itself; if even the floor does not fit, the
+    # oversized digest reaches inject_msg, which refuses it into the wedge alarm.
+    budget_lo=40
+    budget_hi=${#items}
+    while [ $(( budget_hi - budget_lo )) -gt 8 ]; do
+      budget=$(( (budget_lo + budget_hi) / 2 ))
+      fm_cap_line_var "$items" "$budget"
+      if [ "$(_inject_wire_bytes "$(_escalate_digest "$n" "${FM_LINE_CAP_LINE}${pointer}")")" -le "$max_bytes" ]; then
+        budget_lo=$budget
+      else
+        budget_hi=$budget
+      fi
+    done
+    fm_cap_line_var "$items" "$budget_lo"
+    msg=$(_escalate_digest "$n" "${FM_LINE_CAP_LINE}${pointer}")
+  fi
   if inject_msg "$msg" "$state"; then : > "$buf"; rm -f "${buf}.since" "$state/.subsuper-inject-wedged"; return 0; fi
   return 1
 }
@@ -1169,6 +1262,7 @@ window_for_task() {  # <task-key> [state]
 #     sufficient on its own.
 inject_msg() {  # <message> [state]
   local msg=$1 state target backend retries sleep_s verdict composer encoded agent_state
+  local max_bytes msg_bytes
   state="${2:-$(_state_root)}"
   # (1) Presence-gate: inject ONLY when afk is active. When afk is off, the
   # daemon self-handles and stays quiet; firstmate drives the normal always-on
@@ -1181,6 +1275,20 @@ inject_msg() {  # <message> [state]
   msg=$(_collapse_newlines "$msg")
   fm_operational_input_encode away-supervisor "$msg" encoded || return 1
   msg=$encoded
+  # (2a) DELIVERY BOUND. Past INJECT_MAX_BYTES_DEFAULT a single literal send is
+  # no longer guaranteed to arrive whole (see that constant for the measurement),
+  # and the way it fails is a FRONT cut that strips the leading header. Rather
+  # than hand the pane a message it may deliver as a headless fragment, refuse
+  # here and leave the buffer intact: the max-defer escape then turns this into
+  # the same visible stall every other undeliverable escalation produces. This
+  # is the fail-closed backstop - escalate_flush composes within the bound, so a
+  # refusal here means some other caller built an oversized message.
+  max_bytes=${FM_INJECT_MAX_BYTES:-$INJECT_MAX_BYTES_DEFAULT}
+  msg_bytes=$(_byte_len "$msg")
+  if [ "$msg_bytes" -gt "$max_bytes" ]; then
+    log "ERROR: away-mode escalation refused undelivered: encoded digest is ${msg_bytes} bytes, over the ${max_bytes}-byte single-send delivery bound. Buffer preserved; full text: $msg"
+    return 1
+  fi
   target="${FM_SUPERVISOR_TARGET:-}"
   [ -n "$target" ] || { log "inject deferred: no supervisor pane identified (FM_SUPERVISOR_TARGET unset)"; return 1; }
   # BACKEND-AWARE (previously a raw `tmux display-message` pane-exists probe):

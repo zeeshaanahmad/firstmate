@@ -427,6 +427,7 @@ Invoke the `/afk` skill when the captain says `/afk`, says they are going afk, `
 The skill owns the daemon procedure; these safety facts remain inline:
 
 - Every current daemon injection uses the `away-supervisor` kind from `bin/fm-operational-input.sh` after `FM_OPERATIONAL_PREFIX` (U+2063 INVISIBLE SEPARATOR followed by `FIRSTMATE_OP: `), while the `/afk` skill owns legacy bare-marker compatibility.
+- That envelope is marked at both ends, so a message that begins mid-sentence and ends with the U+2063 `FIRSTMATE_OP_END:` terminator is a daemon escalation whose front was cut in delivery, never the captain talking; stay away and recover the full text from the daemon log the digest points at.
 - While `state/.afk` exists, the daemon owns supervision; do not arm a separate watcher.
 - A marked message while away mode is active is internal escalation and does not exit away mode.
 - A message beginning `/afk` refreshes away mode.

@@ -196,6 +196,7 @@ family_for_basename() {
     fm-opencode-primary-live-e2e.test.sh|fm-pi-primary-live-e2e.test.sh|\
     fm-sessionstart-hook-live-e2e.test.sh|fm-sessionstart-instruction-refresh-live-e2e.test.sh|\
     fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh|\
+    fm-away-delivery-bound-live-e2e.test.sh|\
     fm-send-agent-pane-live-e2e.test.sh)
       printf '%s\n' live-harness-optin
       ;;
@@ -899,6 +900,13 @@ families_for_changed_path() {
       printf '%s\n' afk
       printf '%s\n' real-herdr-gated
       ;;
+    bin/fm-supervise-daemon.sh)
+      # The away daemon owns the measured single-send delivery bound, so a change
+      # to it re-selects the live guard that re-measures that bound.
+      printf '%s\n' afk
+      printf '%s\n' watcher-wake-lock
+      printf '%s\n' live-harness-optin
+      ;;
     bin/fm-supervisor-target-lib.sh)
       printf '%s\n' watcher-wake-lock
       printf '%s\n' real-herdr-gated
@@ -972,6 +980,13 @@ families_for_changed_path() {
       printf '%s\n' backend-dispatch
       printf '%s\n' pure-contract-unit
       ;;
+    bin/fm-operational-input.sh)
+      # The envelope every operational input carries, including the terminator a
+      # front-cut delivery is recognized by, so the away families re-run too.
+      printf '%s\n' pure-contract-unit
+      printf '%s\n' afk
+      printf '%s\n' live-harness-optin
+      ;;
     bin/fm-bearings-snapshot.sh|bin/fm-fleet-snapshot.sh|bin/fm-fleet-view.sh)
       printf '%s\n' snapshot-bearings
       ;;
@@ -985,7 +1000,7 @@ families_for_changed_path() {
     bin/fm-install-actionlint.sh|\
     bin/fm-brief.sh|bin/fm-ensure-agents-md.sh|bin/fm-crew-state.sh|\
     bin/fm-decision-hold.sh|bin/fm-supervision*|bin/fm-transition-lib.sh|\
-    bin/fm-tmux-lib.sh|bin/fm-marker-lib.sh|bin/fm-operational-input.sh|bin/fm-tasks-axi-lib.sh|\
+    bin/fm-tmux-lib.sh|bin/fm-marker-lib.sh|bin/fm-tasks-axi-lib.sh|\
     bin/fm-vendor-auth-probe.sh|\
     bin/fm-primary-scope-lib.sh|bin/fm-project-mode.sh|bin/fm-promote.sh|\
     bin/fm-ff-lib.sh|bin/fm-gotmp*|bin/*pretool*)
