@@ -1,0 +1,23 @@
+$ bin/fm-operational-input.sh encode away-supervisor <<< "settled. (pre-read; re-arm not needed - watcher daemon-managed)"
+⁣FIRSTMATE_OP: v1 away-supervisor: settled. (pre-read; re-arm not needed - watcher daemon-managed)⁣FIRSTMATE_OP_END: v1 away-supervisor
+
+# Simulate the measured delivery failure: harness keeps only the LAST 45 bytes of the send (front-cut).
+$ CUT="${FULL: -45}"   # what actually lands in the pane after front-truncation
+managed)⁣FIRSTMATE_OP_END: v1 away-supervisor
+
+$ printf %s "$CUT" | bin/fm-operational-input.sh classify
+away-supervisor
+exit code: 0
+
+$ printf %s "$CUT" | bin/fm-operational-input.sh truncated; echo exit=$?
+exit=0
+
+$ printf %s "$CUT" | bin/fm-operational-input.sh kind
+away-supervisor
+
+$ printf %s "$CUT" | bin/fm-operational-input.sh body   # surviving tail, terminator stripped
+managed)
+# Contrast: the SAME cut prose with no terminator (legacy/pre-fix shape) reads as captain speech:
+; re-arm not needed - watcher daemon-managed)
+$ printf %s "$LEGACY_CUT" | bin/fm-operational-input.sh classify
+exit code: 1
