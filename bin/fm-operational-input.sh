@@ -6,7 +6,17 @@
 # construction, current parsing, and narrow pre-protocol transcript parsing.
 #
 # Current generic wire form:
-#   U+2063 FIRSTMATE_OP: v1 <kind>: <body>
+#   U+2063 FIRSTMATE_OP: v1 <kind>: <body>U+2063 FIRSTMATE_OP_END: v1 <kind>
+#
+# The envelope is marked at BOTH ends because a delivery can be cut from either
+# one. A pane that drops the head of a typed message removes the leading header,
+# and a receiver that only looks for a leading marker then reads the surviving
+# fragment as ordinary human input - which, under the away-mode exit contract,
+# means "the captain returned" and silently discards the escalation the message
+# was carrying. Repeating the mark and the kind at the end keeps one identifying
+# copy through either cut, so a fragment stays classifiable operational input.
+# The terminator is additive: an envelope from an older producer that carries
+# only the leading header still parses.
 #
 # The landed U+2063 + "FIRSTMATE_OP: " prefix is permanent compatibility.
 # The version and kind header make current inputs structurally typed without
@@ -19,6 +29,7 @@
 #   fm-operational-input.sh kind           # current input on stdin, kind stdout
 #   fm-operational-input.sh classify       # current or legacy input on stdin
 #   fm-operational-input.sh body           # current generic input on stdin
+#   fm-operational-input.sh truncated      # exit 0 if input on stdin is a cut fragment
 #   fm-operational-input.sh --help
 #
 # All successful data commands print exactly one value and no diagnostics.
@@ -28,6 +39,7 @@ FM_OPERATIONAL_MARK=$'\xE2\x81\xA3'
 FM_OPERATIONAL_PREFIX="${FM_OPERATIONAL_MARK}FIRSTMATE_OP: "
 FM_OPERATIONAL_VERSION=v1
 FM_OPERATIONAL_HEADER_PREFIX="${FM_OPERATIONAL_PREFIX}${FM_OPERATIONAL_VERSION} "
+FM_OPERATIONAL_TERMINATOR_PREFIX="${FM_OPERATIONAL_MARK}FIRSTMATE_OP_END: ${FM_OPERATIONAL_VERSION} "
 FM_OPERATIONAL_KINDS='session-start watcher turn-end-guard away-supervisor launch-brief'
 
 # Compatibility name retained for the away-mode owner and its tests.
@@ -52,7 +64,9 @@ fm_operational_input_encode() {  # <generic-kind> <body> <result-var>
   [ -n "$result_var" ] || return 2
   fm_operational_kind_is_current "$kind" || return 2
   [ -n "$body" ] || return 2
-  printf -v "$result_var" '%s%s: %s' "$FM_OPERATIONAL_HEADER_PREFIX" "$kind" "$body"
+  printf -v "$result_var" '%s%s: %s%s%s' \
+    "$FM_OPERATIONAL_HEADER_PREFIX" "$kind" "$body" \
+    "$FM_OPERATIONAL_TERMINATOR_PREFIX" "$kind"
 }
 
 fm_operational_input_construct() {  # <kind> <body> <result-var>
@@ -65,8 +79,23 @@ fm_operational_input_construct() {  # <kind> <body> <result-var>
   fm_operational_input_encode "$kind" "$body" "$result_var"
 }
 
+# fm_operational_terminator_kind: the kind named by a trailing terminator, on
+# any message that ends with one. It says nothing about whether the head of the
+# message survived; fm_operational_generic_kind answers that.
+fm_operational_terminator_kind() {  # <message> <result-var>
+  local message=${1-} result_var=${2-} parsed_kind
+  [ -n "$result_var" ] || return 2
+  case "$message" in
+    *"$FM_OPERATIONAL_TERMINATOR_PREFIX"?*) ;;
+    *) return 1 ;;
+  esac
+  parsed_kind=${message##*"$FM_OPERATIONAL_TERMINATOR_PREFIX"}
+  fm_operational_kind_is_current "$parsed_kind" || return 1
+  printf -v "$result_var" '%s' "$parsed_kind"
+}
+
 fm_operational_generic_kind() {  # <message> <result-var>
-  local message=${1-} result_var=${2-} remainder parsed_kind body
+  local message=${1-} result_var=${2-} remainder parsed_kind body terminator_kind
   [ -n "$result_var" ] || return 2
   case "$message" in
     "$FM_OPERATIONAL_HEADER_PREFIX"*': '?*) ;;
@@ -76,8 +105,27 @@ fm_operational_generic_kind() {  # <message> <result-var>
   parsed_kind=${remainder%%': '*}
   fm_operational_kind_is_current "$parsed_kind" || return 1
   body=${remainder#"${parsed_kind}: "}
-  [ "$body" != "$remainder" ] && [ -n "$body" ] || return 1
+  [ "$body" != "$remainder" ] || return 1
+  # A terminator is present on everything this owner encodes now, and absent on
+  # an envelope from an older producer. Present, it must name the same kind as
+  # the header: a mismatch means two envelopes were concatenated or one was cut
+  # mid-message, and neither is a complete typed input.
+  if fm_operational_terminator_kind "$message" terminator_kind; then
+    [ "$terminator_kind" = "$parsed_kind" ] || return 1
+    body=${body%"${FM_OPERATIONAL_TERMINATOR_PREFIX}${parsed_kind}"}
+  fi
+  [ -n "$body" ] || return 1
   printf -v "$result_var" '%s' "$parsed_kind"
+}
+
+# fm_operational_input_is_truncated: 0 when the message carries a valid trailing
+# terminator but no complete leading header, i.e. a delivery that lost its head.
+# The surviving text is still operational input and must never be classified as
+# human speech, but its body is only a tail and callers must treat it as partial.
+fm_operational_input_is_truncated() {  # <message>
+  local kind
+  fm_operational_generic_kind "${1-}" kind && return 1
+  fm_operational_terminator_kind "${1-}" kind
 }
 
 fm_operational_input_kind() {  # <message> <result-var>
@@ -93,6 +141,12 @@ fm_operational_input_kind() {  # <message> <result-var>
       return 0
       ;;
   esac
+  # Front-truncated current envelope: the terminal marker is the only surviving
+  # proof of machine origin, and it still names the kind.
+  if fm_operational_terminator_kind "$message" current_kind; then
+    printf -v "$result_var" '%s' "$current_kind"
+    return 0
+  fi
   return 1
 }
 
@@ -101,6 +155,7 @@ fm_operational_input_body() {  # <current-message> <result-var>
   [ -n "$result_var" ] || return 2
   if fm_operational_generic_kind "$message" current_kind; then
     parsed_body=${message#"${FM_OPERATIONAL_HEADER_PREFIX}${current_kind}: "}
+    parsed_body=${parsed_body%"${FM_OPERATIONAL_TERMINATOR_PREFIX}${current_kind}"}
     printf -v "$result_var" '%s' "$parsed_body"
     return 0
   fi
@@ -111,6 +166,14 @@ fm_operational_input_body() {  # <current-message> <result-var>
       return 0
       ;;
   esac
+  # Front-truncated envelope: return the surviving tail with the terminator
+  # removed, so a caller can display or log it. Pair this with
+  # fm_operational_input_is_truncated - the value is a fragment, not a body.
+  if fm_operational_terminator_kind "$message" current_kind; then
+    parsed_body=${message%"${FM_OPERATIONAL_TERMINATOR_PREFIX}${current_kind}"}
+    printf -v "$result_var" '%s' "$parsed_body"
+    return 0
+  fi
   return 1
 }
 
@@ -201,11 +264,14 @@ Usage:
   bin/fm-operational-input.sh kind           # current input on stdin
   bin/fm-operational-input.sh classify       # current or legacy input on stdin
   bin/fm-operational-input.sh body           # current input on stdin
+  bin/fm-operational-input.sh truncated      # exit 0 if the input lost its head
 
 Current construction kinds:
   session-start watcher turn-end-guard away-supervisor from-firstmate launch-brief
 
 The from-firstmate kind uses its established live-charter-compatible carrier.
+Every other current envelope is marked at both ends, so a delivery cut from
+either end stays recognizable as operational input rather than human speech.
 EOF
 }
 
@@ -238,6 +304,11 @@ fm_operational_main() {
       fm_operational_read_stdin input || return 2
       fm_operational_input_body "$input" output || return 1
       printf '%s' "$output"
+      ;;
+    truncated)
+      [ "$#" -eq 1 ] || return 2
+      fm_operational_read_stdin input || return 2
+      fm_operational_input_is_truncated "$input" || return 1
       ;;
     *)
       fm_operational_usage >&2

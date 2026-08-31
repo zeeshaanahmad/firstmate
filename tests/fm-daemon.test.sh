@@ -798,6 +798,48 @@ test_marker_detection() {
   pass "marker detection: marker -> stay afk, no marker -> exit afk"
 }
 
+# The away-exit contract's failure direction. A delivery that loses its head
+# also loses the leading marker, and the leading-marker-only rule then read the
+# surviving fragment as the captain returning: away mode ends, this daemon
+# stops, and the decision the escalation was carrying is dropped - while the
+# captain is away by construction. Both signals are driven apart here on the
+# SAME digest text so the case cannot pass vacuously: with a terminator it must
+# stay away, and the identical prose without one must still exit.
+test_front_truncated_escalation_does_not_exit_afk() {
+  local dir state encoded fragment bare_tail stripped
+  dir=$(make_supercase truncated-escalation)
+  state="$dir/state"
+  afk_enter "$state"
+
+  fm_operational_input_encode away-supervisor \
+    "Supervisor escalate (3 event(s)): c1 needs-decision: retry policy A or B (pre-read; re-arm not needed - watcher daemon-managed)" \
+    encoded || fail "could not encode the away fixture"
+  fragment=${encoded:$(( ${#encoded} - 60 ))}
+  case "$fragment" in
+    "$FM_INJECT_MARK"*) fail "fragment still leads with the marker; the cut proves nothing" ;;
+  esac
+  bare_tail=${fragment%"${FM_OPERATIONAL_TERMINATOR_PREFIX}away-supervisor"}
+  [ "$bare_tail" != "$fragment" ] || fail "fixture fragment carried no terminator"
+
+  message_is_injection "$fragment" \
+    || fail "front-truncated escalation was not recognized as an injection"
+  should_exit_afk "$state" "$fragment" \
+    && fail "front-truncated escalation exited afk: the daemon would stop and the decision would be dropped"
+
+  # The divergence: the identical surviving prose with no terminator is exactly
+  # what a captain typing in that pane looks like, and must still exit.
+  message_is_injection "$bare_tail" \
+    && fail "unmarked prose was misdetected as an injection"
+  should_exit_afk "$state" "$bare_tail" \
+    || fail "unmarked prose no longer exits afk; the return signal was broken"
+
+  # The fragment reads as its surviving text, not with the terminator attached.
+  stripped=$(strip_injection_marker "$fragment")
+  [ "$stripped" = "$bare_tail" ] \
+    || fail "front-truncated escalation did not strip to its surviving text: '$stripped'"
+  pass "away exit: a front-cut escalation stays away mode while the same prose without a terminator still returns the captain"
+}
+
 test_afk_turn_exemption() {
   local dir state
   dir=$(make_supercase afk-exempt)
@@ -1866,6 +1908,78 @@ test_inject_msg_defers_on_unrecognized_composer_state() {
   pass "inject_msg: unrecognized composer states defer by default"
 }
 
+# The delivery bound. Past it a single literal send is no longer guaranteed to
+# arrive whole, and the way it fails is a front cut. The guard must refuse to
+# type such a message at all, preserving the buffer so the max-defer escape
+# turns it into the same visible stall every other undeliverable escalation
+# produces - never a headless fragment in the captain's pane.
+test_inject_msg_refuses_over_the_delivery_bound() {
+  local dir state oversized
+  dir=$(make_supercase inject-over-bound)
+  state="$dir/state"
+  afk_enter "$state"
+  oversized=$(awk 'BEGIN{ while (i++ < 90) printf "escalation-item-%d ", i }')
+  (
+    fm_backend_target_exists() { return 0; }
+    fm_backend_pane_agent_state() { printf 'alive'; }
+    pane_is_busy() { return 1; }
+    fm_backend_composer_state() { printf 'empty'; }
+    fm_backend_send_text_submit() { fail "send_text_submit must NOT run for a message over the delivery bound"; }
+    LOG="$state/.supervise-daemon.log"
+    if FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET="default:w1:p2" \
+       inject_msg "$oversized" "$state"; then
+      fail "inject_msg delivered a message over the single-send delivery bound"
+    fi
+    grep -q 'over the .*-byte single-send delivery bound' "$LOG" \
+      || fail "the refusal was silent: no delivery-bound ERROR in the daemon log"
+    grep -q "full text: .*escalation-item-90" "$LOG" \
+      || fail "the refused message was not logged in full, so nothing could recover it"
+    # The divergence: the same path delivers a message that fits.
+    fm_backend_send_text_submit() { printf 'empty'; }
+    FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET="default:w1:p2" \
+      inject_msg "a short escalation" "$state" \
+      || fail "inject_msg refused a message well inside the delivery bound"
+  ) || fail "delivery-bound inject_msg subshell failed"
+  pass "inject_msg: refuses and logs a message over the single-send delivery bound, and still delivers one inside it"
+}
+
+# escalate_flush must not simply run into that guard on a busy fleet: it cuts an
+# oversized digest itself, from the TAIL, keeping the leading marker and adding
+# the shared truncation marker plus a pointer to the durable record.
+test_escalate_flush_bounds_the_digest_it_composes() {
+  local dir state buf delivered wire i
+  dir=$(make_supercase flush-bound)
+  state="$dir/state"
+  buf="$state/.subsuper-escalations"
+  delivered="$dir/delivered.txt"
+  i=1
+  while [ "$i" -le 20 ]; do
+    printf 'c%s needs-decision: option A or option B for the checkout retry policy\n' "$i" >> "$buf"
+    i=$((i + 1))
+  done
+  (
+    inject_msg() { printf '%s' "$1" > "$delivered"; return 0; }
+    LOG="$state/.supervise-daemon.log"
+    escalate_flush "$state" || fail "escalate_flush failed on an oversized buffer"
+  ) || fail "bounded-flush subshell failed"
+
+  fm_operational_input_encode away-supervisor "$(cat "$delivered")" wire \
+    || fail "could not encode what escalate_flush composed"
+  [ "$(printf '%s' "$wire" | wc -c | tr -d ' ')" -le "$INJECT_MAX_BYTES_DEFAULT" ] \
+    || fail "escalate_flush composed a digest inject_msg would refuse"
+  case "$(cat "$delivered")" in
+    "Supervisor escalate ("*) : ;;
+    *) fail "the bounded digest lost its leading framing" ;;
+  esac
+  grep -qF "$FM_LINE_CAP_SUFFIX" "$delivered" \
+    || fail "the bounded digest carries no truncation marker"
+  grep -qF ".supervise-daemon.log" "$delivered" \
+    || fail "the bounded digest does not say where the full text is"
+  grep -q 'over the .*-byte delivery bound' "$state/.supervise-daemon.log" \
+    || fail "the cut was not recorded in the daemon log"
+  pass "escalate_flush: an oversized digest is cut from the tail, marked, and pointed at its durable full text"
+}
+
 test_afk_start_refuses_when_flag_cannot_be_written
 test_afk_start_ignores_stale_pidfile_without_lock
 test_afk_start_reclaims_stale_daemon_lock_reused_pid
@@ -1906,6 +2020,7 @@ test_collapse_newlines_pure
 test_afk_absent_daemon_does_not_inject
 test_busy_guard_defers_when_supervisor_busy
 test_marker_detection
+test_front_truncated_escalation_does_not_exit_afk
 test_afk_turn_exemption
 test_should_exit_afk_when_afk_inactive
 test_strip_injection_marker
@@ -1965,3 +2080,5 @@ test_inject_msg_herdr_pane_gone_defers
 test_inject_msg_herdr_submits_through_backend_dispatch
 test_inject_msg_defers_on_dead_shell_unknown
 test_inject_msg_defers_on_unrecognized_composer_state
+test_inject_msg_refuses_over_the_delivery_bound
+test_escalate_flush_bounds_the_digest_it_composes

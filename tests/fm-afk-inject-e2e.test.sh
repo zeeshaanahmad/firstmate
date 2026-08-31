@@ -15,6 +15,16 @@
 #     A captain-relevant status must deliver exactly ONE sentinel-prefixed,
 #     single-line digest with no duplicate or spurious user submission.
 #
+#   Scenario D (front-cut delivery): the delivery arrives with its head missing,
+#     so the leading marker is gone. It must STILL classify as an injection, or
+#     away mode ends on a delivery defect and the escalation is dropped. Real
+#     captain prose in the same pane must still classify as a captain message.
+#
+#   Scenario E (oversized escalation): a digest past the single-send delivery
+#     bound must arrive cut by us - marked at both ends, carrying the shared
+#     truncation marker and a pointer to its durable full text - or be refused
+#     with the buffer preserved. Never an unmarked fragment.
+#
 # Isolation: all test tmux runs on a dedicated socket (tmux -L afk-e2e-<pid>).
 # A tmux shim first on PATH redirects the daemon's bare `tmux` calls to the
 # private socket. The daemon points at a throwaway state dir (FM_STATE_OVERRIDE)
@@ -96,8 +106,15 @@ ln -s "$(command -v bash)" "$AGENT_SHIM"
 LOOP_SCRIPT="$STATE_DIR/supervisor-loop.sh"
 cat > "$LOOP_SCRIPT" <<'LOOP'
 #!/usr/bin/env bash
-MARK=$'\xE2\x81\xA3'
 LOG="$1"
+# Classify each submitted line through the SHIPPING predicate, not a local copy
+# of it. The away-exit contract is exactly this question - is what landed in the
+# pane machine-generated operational input, or the captain talking - so the
+# fixture must ask the owner rather than re-implement a leading-marker test that
+# a front-cut delivery would answer wrongly in the test and rightly in
+# production, or the other way round.
+# shellcheck source=/dev/null
+. "$2"
 OLD_STTY=$(stty -g 2>/dev/null || true)
 [ -z "$OLD_STTY" ] || stty -echo -icanon min 1 time 0 2>/dev/null || true
 cleanup() {
@@ -117,8 +134,8 @@ redraw() {
   printf '\r\033[K\xe2\x9d\xaf %s' "$_buf"
 }
 submit_line() {
-  local _line=$_buf _c _hex
-  if [ "${_line:0:1}" = "$MARK" ]; then
+  local _line=$_buf _c _hex _kind
+  if fm_operational_input_kind "$_line" _kind; then
     _c="injection"
   else
     _c="user"
@@ -147,7 +164,7 @@ chmod +x "$LOOP_SCRIPT"
 
 # Start the loop in the supervisor pane.
 "$REAL_TMUX" -L "$SOCKET" send-keys -t "$SUPERVISOR_PANE" \
-  "'$AGENT_SHIM' '$LOOP_SCRIPT' '$LOG_FILE'" Enter
+  "'$AGENT_SHIM' '$LOOP_SCRIPT' '$LOG_FILE' '$ROOT/bin/fm-operational-input.sh'" Enter
 sleep 1  # let the loop start and settle
 
 # tmux shim: redirects bare `tmux` to the private socket. Optionally swallows
@@ -155,6 +172,16 @@ sleep 1  # let the loop start and settle
 TMUX_SHIM_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-shim.XXXXXX")
 cat > "$TMUX_SHIM_DIR/tmux" <<SHIM
 #!/usr/bin/env bash
+# FRONT-CUT mode (Scenario D): reproduce the measured delivery failure in which
+# the receiving terminal keeps only the tail of a fast literal send and drops
+# everything before it, taking the leading marker with it. The file's contents
+# are how many trailing characters survive.
+if [ "\${1:-}" = "send-keys" ] && [ "\${2:-}" = "-t" ] && [ "\${4:-}" = "-l" ] \\
+   && [ -f "$STATE_DIR/.front-cut" ]; then
+  _keep=\$(cat "$STATE_DIR/.front-cut")
+  _text=\${5:-}
+  exec "$REAL_TMUX" -L "$SOCKET" send-keys -t "\${3:-}" -l "\${_text: -\$_keep}"
+fi
 if [ "\${1:-}" = "send-keys" ] && [ -f "$STATE_DIR/.swallow-enter" ]; then
   shift
   _args=()
@@ -227,6 +254,7 @@ reset_state() {
          "$STATE_DIR"/.seen-* \
          "$STATE_DIR"/.heartbeat-streak \
          "$STATE_DIR"/.swallow-enter \
+         "$STATE_DIR"/.front-cut \
          2>/dev/null || true
   : > "$LOG_FILE"
 }
@@ -362,11 +390,17 @@ test_scenario_b() {
   # swallowed Enter, the retry path fires).
   sleep 8
 
-  # Assert: exactly ONE terminal-safe marker in the log (no duplicate, no loss).
-  local marker_count
+  # Assert: exactly ONE envelope in the log (no duplicate, no loss). One envelope
+  # carries two U+2063 markers - the leading header and the trailing terminator
+  # that keeps a front-cut delivery identifiable - so a retyped or concatenated
+  # digest shows up as four.
+  local marker_count injection_count
   marker_count=$(awk -F '\t' '{ hex=$1; count += gsub(/e281a3/, "", hex) } END { print count + 0 }' "$LOG_FILE")
-  [ "$marker_count" -eq 1 ] \
-    || fail "Scenario B: expected exactly 1 U+2063 marker, got $marker_count (duplicate or lost)"
+  [ "$marker_count" -eq 2 ] \
+    || fail "Scenario B: expected exactly 1 envelope (2 U+2063 markers), got $marker_count markers (duplicate or lost)"
+  injection_count=$(grep -c $'\tinjection$' "$LOG_FILE" || true)
+  [ "$injection_count" -eq 1 ] \
+    || fail "Scenario B: expected exactly 1 injected digest, got $injection_count"
 
   # Assert: the digest line is classified as "injection" and starts with the
   # terminal-safe sentinel marker (hex starts with e281a3).
@@ -404,11 +438,15 @@ test_scenario_c() {
   echo "done: PR https://example.test/pr/300" > "$STATE_DIR/fake-c1.status"
   sleep 6
 
-  # Exactly one terminal-safe marker in the submitted log (no duplicate, no loss).
-  local marker_count
+  # Exactly one envelope in the submitted log (no duplicate, no loss): its
+  # leading header and trailing terminator are two U+2063 markers together.
+  local marker_count injection_count
   marker_count=$(awk -F '\t' '{ hex=$1; count += gsub(/e281a3/, "", hex) } END { print count + 0 }' "$LOG_FILE")
-  [ "$marker_count" -eq 1 ] \
-    || fail "Scenario C: expected exactly 1 U+2063 marker, got $marker_count"
+  [ "$marker_count" -eq 2 ] \
+    || fail "Scenario C: expected exactly 1 envelope (2 U+2063 markers), got $marker_count markers"
+  injection_count=$(grep -c $'\tinjection$' "$LOG_FILE" || true)
+  [ "$injection_count" -eq 1 ] \
+    || fail "Scenario C: expected exactly 1 injected digest, got $injection_count"
 
   # The digest is classified as an injection and starts with the sentinel byte.
   local digest_line digest_hex
@@ -434,8 +472,145 @@ test_scenario_c() {
   pass "Scenario C: a normal captain status injects exactly one clean single-line sentinel digest"
 }
 
+# --- Scenario D: front-cut delivery -----------------------------------------
+# The 2026-08-31 failure. A digest was delivered with its head missing: the
+# leading operational marker was gone, and the surviving tail read like a person
+# talking. Under the away-exit contract an unmarked message means the captain
+# returned, so the delivery defect became a wrong safety verdict - away mode
+# would end, this daemon would stop, and the decision the escalation carried
+# would be dropped, with the captain away by construction.
+#
+# The cut is forced through the tmux shim rather than reasoned about, so this
+# runs anywhere tmux does. The two signals are driven apart deliberately: the
+# SAME pane, the SAME classifier, a cut escalation and real captain prose, and
+# the divergence is asserted so the case cannot pass vacuously.
+
+test_scenario_d() {
+  reset_state
+  afk_enter "$STATE_DIR"
+
+  # Keep only the last 60 characters of whatever the daemon types. That is past
+  # the envelope header and into the digest body, exactly the shape observed.
+  printf '60' > "$STATE_DIR/.front-cut"
+  start_daemon
+  # A submission from the preceding scenario can land in the pane loop just
+  # after reset_state truncated the log. Settle, then start from a clean log so
+  # every line below belongs to this scenario.
+  sleep 1
+  : > "$LOG_FILE"
+
+  echo "needs-decision: retry policy A or B" > "$STATE_DIR/fake-c1.status"
+  sleep 8
+
+  # The digest is identified by the terminator, not by its framing prose: the
+  # cut removes the framing, which is the whole point of the scenario.
+  local line hex
+  line=$(grep 'FIRSTMATE_OP_END' "$LOG_FILE" | head -1)
+  [ -n "$line" ] \
+    || fail "Scenario D: no escalation was delivered, so the cut path was never exercised"
+
+  # The cut really happened: the delivered line does not begin with the sentinel.
+  hex=$(printf '%s' "$line" | cut -f1)
+  case "$hex" in
+    e281a3*) fail "Scenario D: the front cut did not remove the leading marker; the test proves nothing" ;;
+  esac
+
+  # And the headless fragment is STILL not captain speech.
+  case "$line" in
+    *injection) ;;
+    *) fail "Scenario D: a front-cut escalation was classified as a captain message: $line" ;;
+  esac
+  local user_count
+  user_count=$(grep -c $'\tuser$' "$LOG_FILE" || true)
+  [ "$user_count" -eq 0 ] \
+    || fail "Scenario D: a front-cut escalation landed as $user_count captain-classified line(s)"
+
+  # Divergence: with the cut disarmed, real captain prose in the same pane, read
+  # by the same classifier, must still be captain prose.
+  rm -f "$STATE_DIR/.front-cut"
+  "$REAL_TMUX" -L "$SOCKET" send-keys -t "$SUPERVISOR_PANE" -l "any news on the deploy?"
+  "$REAL_TMUX" -L "$SOCKET" send-keys -t "$SUPERVISOR_PANE" Enter
+  sleep 2
+  local captain_line
+  captain_line=$(grep 'any news on the deploy' "$LOG_FILE" | head -1)
+  [ -n "$captain_line" ] || fail "Scenario D: captain control message never landed"
+  case "$captain_line" in
+    *user) ;;
+    *) fail "Scenario D: real captain prose was misclassified as an injection: $captain_line" ;;
+  esac
+
+  stop_daemon
+  pass "Scenario D: a front-cut escalation stays an injection while real captain prose in the same pane stays a captain message"
+}
+
+# --- Scenario E: oversized escalation ---------------------------------------
+# Past the single-send delivery bound a literal send stops being guaranteed to
+# arrive whole, and the way it fails is the front cut above. An escalation that
+# large must therefore never be handed to the pane as-is: it either arrives cut
+# BY US - still marked at both ends, carrying the shared truncation marker and a
+# pointer to the durable full text - or it is refused and left buffered for the
+# wedge alarm. What it must never be is an unmarked fragment.
+
+test_scenario_e() {
+  reset_state
+  afk_enter "$STATE_DIR"
+  start_daemon
+  sleep 1
+  : > "$LOG_FILE"
+
+  # Many captain-relevant statuses with long notes: the batched digest they
+  # produce is far past the bound.
+  local i
+  i=1
+  while [ "$i" -le 12 ]; do
+    printf 'needs-decision: worker %s wants option A or option B for the checkout retry policy and the refund window\n' "$i" \
+      > "$STATE_DIR/fake-c$i.status"
+    i=$((i + 1))
+  done
+  sleep 12
+
+  local user_count
+  user_count=$(grep -c $'\tuser$' "$LOG_FILE" || true)
+  [ "$user_count" -eq 0 ] \
+    || fail "Scenario E: an oversized escalation landed as $user_count captain-classified line(s)"
+
+  if [ -s "$LOG_FILE" ]; then
+    # Delivered: it must be within the bound and self-describing.
+    local line text bytes
+    line=$(grep 'FIRSTMATE_OP_END' "$LOG_FILE" | head -1)
+    [ -n "$line" ] || fail "Scenario E: something was delivered but no digest line: $(cat "$LOG_FILE")"
+    case "$line" in
+      *injection) ;;
+      *) fail "Scenario E: the delivered digest was not classified as an injection: $line" ;;
+    esac
+    text=$(printf '%s' "$line" | cut -f2)
+    bytes=$(printf '%s' "$text" | wc -c | tr -d ' ')
+    [ "$bytes" -le "$INJECT_MAX_BYTES_DEFAULT" ] \
+      || fail "Scenario E: delivered $bytes bytes, over the ${INJECT_MAX_BYTES_DEFAULT}-byte bound"
+    case "$text" in
+      *"$FM_LINE_CAP_SUFFIX"*) ;;
+      *) fail "Scenario E: the digest was cut but carries no truncation marker: $text" ;;
+    esac
+    case "$text" in
+      *.supervise-daemon.log*) ;;
+      *) fail "Scenario E: the cut digest does not say where the full text is: $text" ;;
+    esac
+  else
+    # Refused: loudly, with the buffer preserved so nothing is lost.
+    [ -s "$STATE_DIR/.subsuper-escalations" ] \
+      || fail "Scenario E: nothing delivered and no buffered escalation preserved"
+    grep -q 'delivery bound' "$STATE_DIR/.supervise-daemon.log" \
+      || fail "Scenario E: nothing delivered and the daemon log says nothing about why"
+  fi
+
+  stop_daemon
+  pass "Scenario E: an oversized escalation is delivered marked and bounded, or refused loudly, but never as an unmarked fragment"
+}
+
 test_scenario_a
 test_scenario_b
 test_scenario_c
+test_scenario_d
+test_scenario_e
 
 echo "all e2e injection tests passed"

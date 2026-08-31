@@ -492,6 +492,36 @@ Observed output:
 
 The safe command-channel contract is covered without a notification by `tests/fm-daemon.test.sh`: the summary reaches both `$1` and stdin, every channel is process-group bounded, and a failed channel falls through.
 
+## Away-mode delivery bound
+
+This record supports `INJECT_MAX_BYTES_DEFAULT` in `bin/fm-supervise-daemon.sh`, the largest escalation the away-mode daemon will type into a supervisor pane in one send.
+The number is a measured vendor bound, not a derived one, so it is recorded with the measurement that produced it.
+`tests/fm-away-delivery-bound-live-e2e.test.sh` (`FM_AWAY_BOUND_LIVE=1`) is the command that refreshes it after a harness upgrade.
+
+Measured on 2026-08-31, macOS 26.5.1 (Darwin 25.5.0), tmux 3.6b, claude 2.1.251, a 200x50 pane.
+Method: one `tmux send-keys -t <pane> -l <text>` of position-encoded 8-byte blocks (`0000000 0000001 ...`) into an idle composer, then a separate short instruction burst, then Enter; the harness reported the first characters and total length of the message it received, and the block ids identify the byte offset the surviving text starts at.
+
+| Bytes sent in one literal send | First surviving byte offset | Result |
+| --- | --- | --- |
+| 400 | 0 | whole |
+| 800 | 0 | whole |
+| 1024 | 1022 | front cut |
+| 1104 | 1022 | front cut (reproduced twice) |
+| 1536 | 0 | whole |
+| 2048 | 2045 | front cut |
+
+The loss is always from the FRONT, in units of the 1024-byte pty input-queue size, which is the largest chunk a single stdin read returns from a pty on this platform.
+Above 1024 bytes delivery is therefore a race rather than a guarantee: 1536 arrived whole while 1024, 1104 and 2048 did not.
+800 is the largest size that arrived whole in every trial, and is the shipped default.
+
+The send primitive itself is not the truncating layer.
+A deliberately slow reader on a tmux pty received 400, 800, 1024, 1200, 2000, 4000, 8000 and 16000 byte sends byte-exactly with no loss and no reordering, and above roughly 16,341 characters `tmux send-keys -l` refuses loudly ("command too long", non-zero exit) instead of cutting.
+`fm_tmux_submit_core` already reports that refusal as `send-failed`.
+
+Coverage limits: this bound was measured on claude only.
+It was not measured on codex, opencode, pi, pi-signed, grok, kimi, cursor, or muse, and it was not measured on Linux.
+The live guard reports every harness it did not measure and refuses to pass when it measured nothing, so an unmeasured harness stays visible rather than being assumed safe.
+
 ## Validation-run liveness attribution
 
 This record supports the guarantee that a `no-mistakes` validation run suppresses a wedge verdict with no declared liveness source, which `AGENTS.md` states and `bin/fm-liveness-lib.sh` implements.

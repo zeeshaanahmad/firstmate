@@ -58,18 +58,26 @@ batched digest rather than per-wake injections.
 
 No `/back` is needed. The first genuine message is the return signal:
 
-- A message **without** the current operational prefix or a legacy bare marker, and **not** starting with `/afk` -> the captain is back.
+- A message **without** the current operational prefix, its trailing terminator, or a legacy bare marker, and **not** starting with `/afk` -> the captain is back.
   Run `bin/fm-afk-return.sh` before acting on the message that brought the captain back.
   That script owns correct-ordered daemon shutdown, durable wake presentation and post-handling acknowledgement, escalation and wedge evidence, and the return-catch-up gate.
   If it reports a firstmate-actionable `blocked:` event, remediate it immediately through the normal lifecycle, or explicitly reclassify it with a durable reason and close its decision key with `resolved [key=...]`, then run `bin/fm-afk-return.sh check`.
   Once the daemon stops, resume full per-wake responsiveness through the emitted primary-harness supervision protocol while blocker handling proceeds, so the gate never creates a blind wait.
   Do not answer a Bearings request or perform any other ordinary captain work until the check exits successfully.
 - A message **with** the current operational prefix (`FM_OPERATIONAL_PREFIX`, U+2063 INVISIBLE SEPARATOR followed by `FIRSTMATE_OP: `), or a legacy bare `FM_INJECT_MARK` daemon escalation -> stay afk and process it.
+- A message that carries the envelope's **trailing terminator** (U+2063 followed by `FIRSTMATE_OP_END: v1 <kind>`) but no leading prefix -> a daemon escalation whose front was cut in delivery: stay afk, and recover the full text from `state/.supervise-daemon.log`, which the digest names.
+  Do not treat it as the captain, and do not act on the surviving fragment alone; it is a tail, not a body.
 - Re-invoking `/afk` while already away -> stay afk (refresh the flag); this
   does **not** trigger an exit.
 
 Bias ambiguous cases toward exit: a present captain beats token savings, and
 a false exit is self-correcting (the captain re-runs `/afk`).
+That bias applies to genuinely ambiguous input, not to a cut escalation: the
+terminator is machine-generated, so a message carrying it is not ambiguous, and
+exiting on one would stop the daemon and silently drop the decision the
+escalation was asking about while the captain is away by construction.
+`bin/fm-supervise-daemon.sh`'s `message_is_injection` is the executable form of
+this whole predicate.
 
 ## Orthogonal to approval authority
 
@@ -80,10 +88,11 @@ The daemon only batches the notification.
 
 ## Operational prefix contract
 
-The daemon constructs every current injection as the `away-supervisor` kind owned by `bin/fm-operational-input.sh`, beginning with `FM_OPERATIONAL_PREFIX`: `FM_INJECT_MARK` (U+2063 INVISIBLE SEPARATOR) followed by the stable `FIRSTMATE_OP: ` label.
+The daemon constructs every current injection as the `away-supervisor` kind owned by `bin/fm-operational-input.sh`, beginning with `FM_OPERATIONAL_PREFIX`: `FM_INJECT_MARK` (U+2063 INVISIBLE SEPARATOR) followed by the stable `FIRSTMATE_OP: ` label, and ending with the matching `FIRSTMATE_OP_END: ` terminator that names the same kind.
 The bare `FM_INJECT_MARK` form remains accepted for legacy daemon escalations during rollout.
 U+2063 has no normal keyboard keystroke and survives terminal transport as UTF-8 text.
 This is how firstmate tells a daemon escalation apart from a real message in the same pane.
+The marker is repeated at the end because a delivery can be cut from either end, and only the leading copy carried that proof before: a front cut left a fragment that read as captain speech and inverted the away-exit decision.
 The operational prefix travels with the message text; it does not rely on harness-level typed-vs-injected detection, which is not portable across claude, codex, opencode, pi, pi-signed, grok, and kimi.
 
 ## Busy-guard and composer guard
@@ -102,6 +111,12 @@ backend (tmux or herdr; see "Auto-discovered supervisor pane" below):
 
 A busy primary pane, or any composer verdict other than `empty`, defers the injection; the buffered escalation survives in `state/.subsuper-escalations` and is retried on the next housekeeping tick.
 In afk mode the composer guard is belt-and-suspenders (no human is typing), but it protects against the race window between the captain returning and their message landing and the daemon's own previous injection sitting unsent; a dead shell is protected against separately, by the "Positively identified supervisor pane" foreground-process proof, not by the composer guard itself (`docs/herdr-backend.md` "Composer and injection safety").
+
+**Single-send delivery bound.**
+A pane receives typed input in bounded chunks, and a harness that keeps only the last chunk of a fast multi-chunk send drops everything before it - a cut that takes the front of the message.
+`bin/fm-supervise-daemon.sh` therefore caps what it will type in one send at `FM_INJECT_MAX_BYTES` (default 800, the largest measured-whole size; `docs/verification/supervision.md` "Away-mode delivery bound" owns the evidence).
+`escalate_flush` cuts an oversized digest itself, from the tail, with the shared `[truncated]` marker and a pointer to the daemon log holding the full text, so firstmate reads an obviously partial digest and knows where the rest is.
+`inject_msg` refuses anything still over the bound rather than typing it, which preserves the buffer and turns it into the visible stall below.
 
 **Max-defer escape (the daemon must never silently wedge).**
 If anything stays buffered past `FM_MAX_DEFER_SECS` (default 300), the daemon
