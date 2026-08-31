@@ -72,12 +72,8 @@ No `/back` is needed. The first genuine message is the return signal:
 
 Bias ambiguous cases toward exit: a present captain beats token savings, and
 a false exit is self-correcting (the captain re-runs `/afk`).
-That bias applies to genuinely ambiguous input, not to a cut escalation: the
-terminator is machine-generated, so a message carrying it is not ambiguous, and
-exiting on one would stop the daemon and silently drop the decision the
-escalation was asking about while the captain is away by construction.
-`bin/fm-supervise-daemon.sh`'s `message_is_injection` is the executable form of
-this whole predicate.
+That bias applies to genuinely ambiguous input, not to a cut escalation: the terminator is machine-generated, so a message carrying it is not ambiguous, and exiting on one would stop the daemon and silently drop the decision the escalation was asking about while the captain is away by construction.
+`bin/fm-supervise-daemon.sh`'s `message_is_injection` is the executable form of this whole predicate.
 
 ## Orthogonal to approval authority
 
