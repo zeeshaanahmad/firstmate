@@ -409,10 +409,16 @@ test_scenario_b() {
 
   sleep 10
 
-  local marker_count
+  # One envelope carries two U+2063 markers - the leading header and the
+  # trailing terminator that keeps a front-cut delivery identifiable - so a
+  # retyped or concatenated digest shows up as four.
+  local marker_count injection_count
   marker_count=$(awk -F '\t' '{ hex=$1; count += gsub(/e281a3/, "", hex) } END { print count + 0 }' "$LOG_FILE")
-  [ "$marker_count" -eq 1 ] \
-    || fail "Scenario B: expected exactly 1 U+2063 marker, got $marker_count (duplicate or lost)"
+  [ "$marker_count" -eq 2 ] \
+    || fail "Scenario B: expected exactly 1 envelope (2 U+2063 markers), got $marker_count markers (duplicate or lost)"
+  injection_count=$(grep -c $'\tinjection$' "$LOG_FILE" || true)
+  [ "$injection_count" -eq 1 ] \
+    || fail "Scenario B: expected exactly 1 injected digest, got $injection_count"
 
   local digest_line digest_hex
   digest_line=$(grep 'Supervisor escalate' "$LOG_FILE" | head -1)
@@ -441,10 +447,16 @@ test_scenario_c() {
   echo "done: PR https://example.test/pr/300" > "$STATE_DIR/fake-c1.status"
   sleep 8
 
-  local marker_count
+  # One envelope carries two U+2063 markers - the leading header and the
+  # trailing terminator that keeps a front-cut delivery identifiable - so a
+  # retyped or concatenated digest shows up as four.
+  local marker_count injection_count
   marker_count=$(awk -F '\t' '{ hex=$1; count += gsub(/e281a3/, "", hex) } END { print count + 0 }' "$LOG_FILE")
-  [ "$marker_count" -eq 1 ] \
-    || fail "Scenario C: expected exactly 1 U+2063 marker, got $marker_count"
+  [ "$marker_count" -eq 2 ] \
+    || fail "Scenario C: expected exactly 1 envelope (2 U+2063 markers), got $marker_count markers"
+  injection_count=$(grep -c $'\tinjection$' "$LOG_FILE" || true)
+  [ "$injection_count" -eq 1 ] \
+    || fail "Scenario C: expected exactly 1 injected digest, got $injection_count"
 
   local digest_line digest_hex
   digest_line=$(grep 'Supervisor escalate' "$LOG_FILE" | head -1)
