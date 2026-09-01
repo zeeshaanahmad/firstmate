@@ -96,7 +96,26 @@
 #
 # FM_MERGE_GUARD does not reach this guard. It selects the static check's
 # posture only, and `off` turns that check off, never this one.
-# Usage: fm-pr-merge.sh <task-id> <pr-url> [-- <extra gh-axi pr merge args>]
+#
+# REQUIRED WAYPOINT ANCESTRY GUARD. An upstream reconciliation batch names the
+# exact upstream commit that must remain reachable from what is merged. The
+# guard resolves the forge's current PR head and refuses unless
+# `git merge-base --is-ancestor <waypoint> <head>` succeeds. Both the waypoint
+# and head are printed on success and failure, so a pipeline-flattened batch is
+# loud even though its file content still looks complete. The value must be a
+# full lowercase 40-character commit SHA; this keeps the assertion immutable
+# and prevents a moving ref from changing what was checked.
+#
+# The waypoint comes from either of two places, so the assertion does not
+# depend on remembering a flag at merge time:
+#   --require-ancestor <sha>   passed on this command, before the optional --
+#   waypoint=<sha>             recorded in state/<task-id>.meta when the batch
+#                              was prepared
+# When both are present they must name the same commit; disagreement is a
+# refusal, because two different answers to "what must survive" is not a
+# question this script may settle on its own.
+#
+# Usage: fm-pr-merge.sh <task-id> <pr-url> [--require-ancestor <sha>] [-- <extra gh-axi pr merge args>]
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -130,7 +149,41 @@ PR_OWNER=$FM_PR_OWNER
 PR_REPO=$FM_PR_REPO
 PR_NUMBER=$FM_PR_NUMBER
 shift 2
-[ "${1:-}" = "--" ] && shift
+
+REQUIRED_ANCESTOR=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --require-ancestor)
+      [ -z "$REQUIRED_ANCESTOR" ] || {
+        echo "error: --require-ancestor may be passed only once" >&2
+        exit 2
+      }
+      [ "$#" -ge 2 ] || {
+        echo "error: --require-ancestor requires a full commit SHA" >&2
+        exit 2
+      }
+      REQUIRED_ANCESTOR=$2
+      shift 2
+      ;;
+    --require-ancestor=*)
+      [ -z "$REQUIRED_ANCESTOR" ] || {
+        echo "error: --require-ancestor may be passed only once" >&2
+        exit 2
+      }
+      REQUIRED_ANCESTOR=${1#--require-ancestor=}
+      shift
+      ;;
+    --)
+      shift
+      break
+      ;;
+    *) break ;;
+  esac
+done
+if [ -n "$REQUIRED_ANCESTOR" ] && ! fm_static_guard_sha_valid "$REQUIRED_ANCESTOR"; then
+  echo "error: --require-ancestor requires a full lowercase 40-character commit SHA" >&2
+  exit 2
+fi
 
 caller_has_merge_method() {
   local arg
@@ -183,6 +236,25 @@ grep -qxF "pr=$URL" "$META" || {
 meta_field() {  # <key>
   grep "^$1=" "$META" 2>/dev/null | tail -1 | cut -d= -f2- || true
 }
+
+# A batch that recorded its waypoint when it was prepared is asserted even if
+# the merge command omits --require-ancestor, so the guarantee does not rest on
+# remembering a flag. A recorded value that is not a full SHA is an error rather
+# than something to skip past: it was written to be checked.
+RECORDED_ANCESTOR=$(meta_field waypoint)
+if [ -n "$RECORDED_ANCESTOR" ]; then
+  if ! fm_static_guard_sha_valid "$RECORDED_ANCESTOR"; then
+    echo "error: recorded waypoint for this task is not a full lowercase 40-character commit SHA: $RECORDED_ANCESTOR" >&2
+    exit 2
+  fi
+  if [ -z "$REQUIRED_ANCESTOR" ]; then
+    REQUIRED_ANCESTOR=$RECORDED_ANCESTOR
+  elif [ "$REQUIRED_ANCESTOR" != "$RECORDED_ANCESTOR" ]; then
+    echo "error: merge refused - --require-ancestor $REQUIRED_ANCESTOR disagrees with the waypoint $RECORDED_ANCESTOR recorded for this task" >&2
+    echo "resolve which upstream commit this batch must keep reachable before merging" >&2
+    exit 1
+  fi
+fi
 
 # Remove a temporary file this script created, refusing an empty path so no
 # removal can compose a root-relative target.
@@ -546,7 +618,44 @@ UPSTREAM_ERASED
   [ "$total" -le 3 ] || printf '  ... and %s more\n' "$((total - 3))"
 }
 
+# Assert the named upstream waypoint against the exact PR head fetched for the
+# other merge guards. This guard fails closed: a missing object or unreadable
+# head is not evidence that ancestry is intact.
+required_ancestor_assert() {
+  local rc=0 head
+  merge_refs_ensure || {
+    head=${MERGE_REFS_HEAD:-unresolved}
+    echo "error: merge refused - required upstream waypoint $REQUIRED_ANCESTOR could not be checked against PR head $head: $MERGE_REFS_REASON" >&2
+    return 1
+  }
+  head=$MERGE_REFS_HEAD
+  if ! git --git-dir="$FM_STATIC_GUARD_GITDIR" rev-parse --verify --quiet \
+    "$REQUIRED_ANCESTOR^{commit}" >/dev/null 2>&1; then
+    echo "error: merge refused - required upstream waypoint $REQUIRED_ANCESTOR could not be read while checking PR head $head" >&2
+    return 1
+  fi
+  git --git-dir="$FM_STATIC_GUARD_GITDIR" merge-base --is-ancestor \
+    "$REQUIRED_ANCESTOR" "$head" >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0)
+      echo "upstream-waypoint: green - $REQUIRED_ANCESTOR is an ancestor of PR head $head"
+      ;;
+    1)
+      echo "error: merge refused - required upstream waypoint $REQUIRED_ANCESTOR is not an ancestor of PR head $head" >&2
+      return 1
+      ;;
+    *)
+      echo "error: merge refused - required upstream waypoint $REQUIRED_ANCESTOR could not be compared with PR head $head" >&2
+      return 1
+      ;;
+  esac
+}
+
 trap 'fm_static_guard_cleanup' EXIT
+
+if [ -n "$REQUIRED_ANCESTOR" ]; then
+  required_ancestor_assert || exit 1
+fi
 
 # The upstream-history guard runs before the static one: it is the cheaper of
 # the two on a project with no upstream, and a sync batch it refuses should not
