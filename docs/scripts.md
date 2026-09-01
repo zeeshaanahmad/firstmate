@@ -111,7 +111,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-pr-poll.sh`          | Provide the byte-static watcher program for validated PR/MR-poll sidecars           |
 | `fm-pr-check-migrate.sh` | Quarantine older task polls without execution and rebuild only canonical polls       |
 | `fm-pr-check.sh`         | Record validated `pr=` and `pr_head=` values, then atomically arm a static merge poll |
-| `fm-pr-merge.sh`         | Record PR metadata, refuse a merge method that would erase upstream history, guard the merge result against the current default branch, then merge a task's canonical full GitHub URL ([merge-time-static-guard.md](merge-time-static-guard.md)) |
+| `fm-pr-merge.sh`         | Record PR metadata, refuse a merge method that would erase upstream history, guard the merge result against the current default branch, assert a required upstream-sync waypoint's ancestry, then merge a task's canonical full GitHub URL ([merge-time-static-guard.md](merge-time-static-guard.md)) |
 | `fm-static-guard-lib.sh` | Discover a project's own pinned static check and run it against one git tree, for both merge-time and post-merge guards |
 | `fm-main-guard.sh`       | Arm, poll, and retire the registered check that reports a red default-branch tip     |
 | `fm-promote.sh`          | Promote a scout task in place to a protected ship task with an explicit delivery mode |
