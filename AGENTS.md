@@ -331,6 +331,7 @@ Use `bin/fm-pr-merge.sh` for every task PR merge so merge metadata is recorded, 
 That merge path re-checks the exact merge result against the current default branch and refuses a red one, which means the lane must rebase onto current main and re-gate rather than the check being worked around ([`docs/merge-time-static-guard.md`](docs/merge-time-static-guard.md)).
 It also refuses when that check could not finish, because an unmeasured merge result is not a green one; give the check more room and re-run rather than reaching for the override the refusal names.
 Separately, it refuses to squash or rebase a PR that carries upstream history the default branch lacks, because those methods erase the shared commits; pass `--merge` for such a PR rather than looking for a way past the refusal.
+Load `upstream-sync-batches` before preparing, validating, or merging a PR that reconciles commits from a separate upstream repository.
 After an autonomous merge, give the captain a one-line full-URL or local-main outcome.
 
 ### Validate
@@ -546,6 +547,7 @@ These skills are not captain-invocable; load them only at their precise triggers
 - `fmx-respond` - load on an `x-mention <request_id>` `check:` wake to handle the mention, on an `x-mode-error ...` `check:` wake to report the Relay configuration blocker, on a `public-followup ...` `check:` wake or a startup-surfaced public commitment, and on any milestone or terminal wake for a Relay-linked task before posting its completion follow-up; relevant only when Relay is on.
 - `firstmate-codexapp` - load before coordinating a visible Codex Desktop thread, evaluating a Codex App backend request, or reconciling Codex Desktop host-tool smoke evidence for Firstmate work.
 - `firstmate-coding-guidelines` - load before changing firstmate's shared, tracked material, as defined by section 1's list, whether editing directly or briefing a crewmate for a firstmate-repo task.
+- `upstream-sync-batches` - load before preparing, validating, or merging a branch that reconciles commits from a separate upstream repository into a fork.
 
 ## 14. Relay
 

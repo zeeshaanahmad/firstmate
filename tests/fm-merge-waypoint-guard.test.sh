@@ -32,6 +32,18 @@
 #   (i) upstream history IS present locally, but the base branch or PR head
 #       cannot be resolved - this REFUSES, unlike (h), because history that
 #       cannot be measured is not history that was found clear
+#   (j) a named upstream waypoint that is an ancestor of the PR head passes and
+#       names both commits in the successful assertion
+#   (k) a flattened branch with identical upstream content but no waypoint in
+#       its ancestry is refused, naming the missing waypoint and exact PR head
+#   (l) a waypoint recorded in the task's durable record is asserted even when
+#       the merge command omits the flag, passing on an intact batch and
+#       refusing a flattened one, so the guarantee does not rest on a flag
+#   (m) a flag and a recorded waypoint that name different commits refuse
+#       before any merge, rather than one silently winning
+#   (n) --require-ancestor '' is refused as a malformed value, not treated as
+#       the flag being absent
+#   (o) --require-ancestor= is refused the same way
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -51,8 +63,8 @@ wp_git() {  # <repo> <git args...>
 # The upstream commits are real objects reachable from a real refs/remotes/
 # tracking ref; only the upstream remote's URL is a stand-in, because the guard
 # reads that URL to classify the remote and never fetches from it.
-wp_make_project() {  # <case_dir> <sync|ordinary|no-upstream|unfetched>
-  local case_dir=$1 variant=$2 work="$1/work" origin="$1/origin.git" upstream_tip
+wp_make_project() {  # <case_dir> <sync|flattened|ordinary|no-upstream|unfetched>
+  local case_dir=$1 variant=$2 work="$1/work" origin="$1/origin.git" upstream_tip commit
   mkdir -p "$case_dir"
   git init -q --bare "$origin"
   git clone -q "$origin" "$work" 2>/dev/null
@@ -91,6 +103,21 @@ wp_make_project() {  # <case_dir> <sync|ordinary|no-upstream|unfetched>
       wp_git "$work" push -q origin sync
       git -C "$origin" update-ref refs/pull/7/head "$(wp_git "$work" rev-parse sync)"
       printf '%s\n' "$(wp_git "$work" rev-parse sync)" > "$case_dir/head.sha"
+      ;;
+    flattened)
+      # This is the silent failure shape: the upstream content is present, but
+      # cherry-picking gave it new identities and removed the waypoint from
+      # ancestry. A content-only check would accept it.
+      wp_git "$work" checkout -q -b flattened main
+      printf 'fork-side change\n' > "$work/FORK.md"
+      wp_git "$work" add -A
+      wp_git "$work" commit -qm 'fork: move the replay base'
+      for commit in $(wp_git "$work" rev-list --reverse "main..$upstream_tip"); do
+        wp_git "$work" cherry-pick "$commit" >/dev/null
+      done
+      wp_git "$work" push -q origin flattened
+      git -C "$origin" update-ref refs/pull/7/head "$(wp_git "$work" rev-parse flattened)"
+      printf '%s\n' "$(wp_git "$work" rev-parse flattened)" > "$case_dir/head.sha"
       ;;
     *)
       # A lane's own work: nothing shared with upstream.
@@ -306,6 +333,154 @@ test_unresolvable_history_refuses_when_upstream_present() {
   pass "upstream history present but unresolvable base/head refuses, unlike an unfetched upstream which merges loudly"
 }
 
+test_required_waypoint_ancestor_passes() {
+  local case_dir waypoint head
+  case_dir=$(make_case required-waypoint-passes sync)
+  waypoint=$(cat "$case_dir/upstream-tip.sha")
+  head=$(cat "$case_dir/head.sha")
+
+  run_pr_merge "$case_dir" task-w1 https://github.com/example/repo/pull/7 \
+    --require-ancestor "$waypoint" -- --merge \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "required-waypoint-passes: a reachable waypoint should permit the merge"
+
+  assert_grep "upstream-waypoint: green - $waypoint is an ancestor of PR head $head" "$case_dir/stdout" \
+    "required-waypoint-passes: the assertion did not name the waypoint and PR head"
+  grep -qxF 'pr merge 7 --repo example/repo --merge' "$case_dir/gh-axi.log" \
+    || fail "required-waypoint-passes: the merge method was not forwarded after the waypoint assertion"
+  pass "a required upstream waypoint that reaches the PR head passes with both commits named"
+}
+
+test_flattened_branch_missing_waypoint_refuses() {
+  local case_dir waypoint head rc
+  case_dir=$(make_case flattened-waypoint-refuses flattened)
+  waypoint=$(cat "$case_dir/upstream-tip.sha")
+  head=$(cat "$case_dir/head.sha")
+  git -C "$case_dir/work" diff --quiet "$waypoint" "$head" -- UPSTREAM.md \
+    || fail "flattened-waypoint-refuses: fixture lost the upstream content"
+  if git -C "$case_dir/work" merge-base --is-ancestor "$waypoint" "$head"; then
+    fail "flattened-waypoint-refuses: fixture still carries the upstream waypoint"
+  fi
+
+  set +e
+  run_pr_merge "$case_dir" task-w1 https://github.com/example/repo/pull/7 \
+    --require-ancestor "$waypoint" -- --merge \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "flattened-waypoint-refuses: a flattened batch must be refused"
+  assert_grep "required upstream waypoint $waypoint is not an ancestor of PR head $head" "$case_dir/stderr" \
+    "flattened-waypoint-refuses: the refusal did not name the waypoint and exact PR head"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "flattened-waypoint-refuses: gh-axi was called after the ancestry assertion failed"
+  pass "a content-complete flattened batch is refused when its named waypoint is absent from ancestry"
+}
+
+record_waypoint() {  # <case_dir> <sha>
+  printf 'waypoint=%s\n' "$2" >> "$1/state/task-w1.meta"
+}
+
+test_recorded_waypoint_passes_without_flag() {
+  local case_dir waypoint head
+  case_dir=$(make_case recorded-waypoint-passes sync)
+  waypoint=$(cat "$case_dir/upstream-tip.sha")
+  head=$(cat "$case_dir/head.sha")
+  record_waypoint "$case_dir" "$waypoint"
+
+  run_pr_merge "$case_dir" task-w1 https://github.com/example/repo/pull/7 -- --merge \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "recorded-waypoint-passes: an intact batch should merge on its recorded waypoint"
+
+  assert_grep "upstream-waypoint: green - $waypoint is an ancestor of PR head $head" "$case_dir/stdout" \
+    "recorded-waypoint-passes: the recorded waypoint was not asserted"
+  grep -qxF 'pr merge 7 --repo example/repo --merge' "$case_dir/gh-axi.log" \
+    || fail "recorded-waypoint-passes: the merge did not proceed after the assertion"
+  pass "a waypoint recorded on the task is asserted with no flag and lets an intact batch merge"
+}
+
+test_recorded_waypoint_refuses_flattened_without_flag() {
+  local case_dir waypoint head rc
+  case_dir=$(make_case recorded-waypoint-flattened flattened)
+  waypoint=$(cat "$case_dir/upstream-tip.sha")
+  head=$(cat "$case_dir/head.sha")
+  record_waypoint "$case_dir" "$waypoint"
+
+  set +e
+  run_pr_merge "$case_dir" task-w1 https://github.com/example/repo/pull/7 -- --merge \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "recorded-waypoint-flattened: a flattened batch must be refused on its recorded waypoint alone"
+  assert_grep "required upstream waypoint $waypoint is not an ancestor of PR head $head" "$case_dir/stderr" \
+    "recorded-waypoint-flattened: the refusal did not name the waypoint and exact PR head"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "recorded-waypoint-flattened: gh-axi was called after the recorded waypoint failed"
+  pass "a flattened batch is refused from its recorded waypoint even when the merge command omits the flag"
+}
+
+test_flag_and_recorded_waypoint_disagreement_refuses() {
+  local case_dir waypoint other rc
+  case_dir=$(make_case waypoint-disagreement sync)
+  waypoint=$(cat "$case_dir/upstream-tip.sha")
+  other=$(git -C "$case_dir/work" rev-parse main)
+  [ "$waypoint" != "$other" ] || fail "waypoint-disagreement: fixture produced two identical commits"
+  record_waypoint "$case_dir" "$waypoint"
+
+  set +e
+  run_pr_merge "$case_dir" task-w1 https://github.com/example/repo/pull/7 \
+    --require-ancestor "$other" -- --merge \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "waypoint-disagreement: two different waypoints must refuse"
+  assert_grep "--require-ancestor $other disagrees with the waypoint $waypoint recorded for this task" "$case_dir/stderr" \
+    "waypoint-disagreement: the refusal did not name both commits"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "waypoint-disagreement: gh-axi was called despite disagreeing waypoints"
+  pass "a flag and a recorded waypoint naming different commits refuse instead of one silently winning"
+}
+
+test_empty_require_ancestor_space_form_refuses() {
+  local case_dir rc
+  case_dir=$(make_case empty-require-ancestor-space sync)
+
+  set +e
+  run_pr_merge "$case_dir" task-w1 https://github.com/example/repo/pull/7 \
+    --require-ancestor '' -- --merge \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 2 "$rc" "empty-require-ancestor-space: an explicitly empty --require-ancestor value must be refused"
+  assert_grep 'error: --require-ancestor requires a full lowercase 40-character commit SHA' "$case_dir/stderr" \
+    "empty-require-ancestor-space: the refusal did not name the SHA-format requirement"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "empty-require-ancestor-space: gh-axi was called despite an empty waypoint value"
+  pass "--require-ancestor '' is refused as a malformed value rather than treated as the flag being absent"
+}
+
+test_empty_require_ancestor_equals_form_refuses() {
+  local case_dir rc
+  case_dir=$(make_case empty-require-ancestor-equals sync)
+
+  set +e
+  run_pr_merge "$case_dir" task-w1 https://github.com/example/repo/pull/7 \
+    --require-ancestor= -- --merge \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 2 "$rc" "empty-require-ancestor-equals: an explicitly empty --require-ancestor= value must be refused"
+  assert_grep 'error: --require-ancestor requires a full lowercase 40-character commit SHA' "$case_dir/stderr" \
+    "empty-require-ancestor-equals: the refusal did not name the SHA-format requirement"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "empty-require-ancestor-equals: gh-axi was called despite an empty waypoint value"
+  pass "--require-ancestor= is refused as a malformed value rather than treated as the flag being absent"
+}
+
 test_squash_default_refused_for_upstream_history
 test_ordinary_pr_still_squashes
 test_merge_method_is_allowed_and_forwarded
@@ -315,3 +490,10 @@ test_static_guard_off_does_not_disable_this_guard
 test_project_without_upstream_is_not_checked
 test_unfetched_upstream_is_loudly_unguarded
 test_unresolvable_history_refuses_when_upstream_present
+test_required_waypoint_ancestor_passes
+test_flattened_branch_missing_waypoint_refuses
+test_recorded_waypoint_passes_without_flag
+test_recorded_waypoint_refuses_flattened_without_flag
+test_flag_and_recorded_waypoint_disagreement_refuses
+test_empty_require_ancestor_space_form_refuses
+test_empty_require_ancestor_equals_form_refuses
