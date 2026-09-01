@@ -151,13 +151,15 @@ PR_NUMBER=$FM_PR_NUMBER
 shift 2
 
 REQUIRED_ANCESTOR=
+REQUIRE_ANCESTOR_SEEN=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --require-ancestor)
-      [ -z "$REQUIRED_ANCESTOR" ] || {
+      [ -z "$REQUIRE_ANCESTOR_SEEN" ] || {
         echo "error: --require-ancestor may be passed only once" >&2
         exit 2
       }
+      REQUIRE_ANCESTOR_SEEN=1
       [ "$#" -ge 2 ] || {
         echo "error: --require-ancestor requires a full commit SHA" >&2
         exit 2
@@ -166,10 +168,11 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --require-ancestor=*)
-      [ -z "$REQUIRED_ANCESTOR" ] || {
+      [ -z "$REQUIRE_ANCESTOR_SEEN" ] || {
         echo "error: --require-ancestor may be passed only once" >&2
         exit 2
       }
+      REQUIRE_ANCESTOR_SEEN=1
       REQUIRED_ANCESTOR=${1#--require-ancestor=}
       shift
       ;;
@@ -180,7 +183,7 @@ while [ "$#" -gt 0 ]; do
     *) break ;;
   esac
 done
-if [ -n "$REQUIRED_ANCESTOR" ] && ! fm_static_guard_sha_valid "$REQUIRED_ANCESTOR"; then
+if [ -n "$REQUIRE_ANCESTOR_SEEN" ] && ! fm_static_guard_sha_valid "$REQUIRED_ANCESTOR"; then
   echo "error: --require-ancestor requires a full lowercase 40-character commit SHA" >&2
   exit 2
 fi

@@ -41,6 +41,9 @@
 #       refusing a flattened one, so the guarantee does not rest on a flag
 #   (m) a flag and a recorded waypoint that name different commits refuse
 #       before any merge, rather than one silently winning
+#   (n) --require-ancestor '' is refused as a malformed value, not treated as
+#       the flag being absent
+#   (o) --require-ancestor= is refused the same way
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -440,6 +443,44 @@ test_flag_and_recorded_waypoint_disagreement_refuses() {
   pass "a flag and a recorded waypoint naming different commits refuse instead of one silently winning"
 }
 
+test_empty_require_ancestor_space_form_refuses() {
+  local case_dir rc
+  case_dir=$(make_case empty-require-ancestor-space sync)
+
+  set +e
+  run_pr_merge "$case_dir" task-w1 https://github.com/example/repo/pull/7 \
+    --require-ancestor '' -- --merge \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 2 "$rc" "empty-require-ancestor-space: an explicitly empty --require-ancestor value must be refused"
+  assert_grep 'error: --require-ancestor requires a full lowercase 40-character commit SHA' "$case_dir/stderr" \
+    "empty-require-ancestor-space: the refusal did not name the SHA-format requirement"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "empty-require-ancestor-space: gh-axi was called despite an empty waypoint value"
+  pass "--require-ancestor '' is refused as a malformed value rather than treated as the flag being absent"
+}
+
+test_empty_require_ancestor_equals_form_refuses() {
+  local case_dir rc
+  case_dir=$(make_case empty-require-ancestor-equals sync)
+
+  set +e
+  run_pr_merge "$case_dir" task-w1 https://github.com/example/repo/pull/7 \
+    --require-ancestor= -- --merge \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 2 "$rc" "empty-require-ancestor-equals: an explicitly empty --require-ancestor= value must be refused"
+  assert_grep 'error: --require-ancestor requires a full lowercase 40-character commit SHA' "$case_dir/stderr" \
+    "empty-require-ancestor-equals: the refusal did not name the SHA-format requirement"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "empty-require-ancestor-equals: gh-axi was called despite an empty waypoint value"
+  pass "--require-ancestor= is refused as a malformed value rather than treated as the flag being absent"
+}
+
 test_squash_default_refused_for_upstream_history
 test_ordinary_pr_still_squashes
 test_merge_method_is_allowed_and_forwarded
@@ -454,3 +495,5 @@ test_flattened_branch_missing_waypoint_refuses
 test_recorded_waypoint_passes_without_flag
 test_recorded_waypoint_refuses_flattened_without_flag
 test_flag_and_recorded_waypoint_disagreement_refuses
+test_empty_require_ancestor_space_form_refuses
+test_empty_require_ancestor_equals_form_refuses
