@@ -1556,6 +1556,35 @@ test_hook_claude_mode_absent_autoarm_reaches_bounded_fail_open() {
   pass "fm-turnend-guard --claude: a silent auto-arm becomes a recorded failure and reaches the bounded fail-open"
 }
 
+# A lock naming a DEAD pid is not the same case as a lock naming another live
+# session: the auto-arm should have reclaimed and armed behind it, so the
+# operator instruction is the opposite of the live-owner case (inspect the
+# reclaim mechanism, stay attended) rather than standing down read-only. Both
+# message surfaces the guard emits - the blocking banner and the terminal
+# fail-open systemMessage - must carry that distinction, not the live-owner
+# wording, or a session reading either one is sent after the wrong mechanism.
+test_hook_claude_mode_dead_lock_owner_reports_reclaim_needed() {
+  local dir out status i blocked=0
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-dead-owner")
+  : > "$dir/state/task1.meta"
+  printf '9999999\n' > "$dir/state/.lock"
+  for i in 1 2 3; do
+    out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude "$dir" true); status=$?
+    expect_code 2 "$status" "--claude stop $i with a dead lock owner must still block inside the bounded budget"
+    blocked=$((blocked + 1))
+    assert_contains "$out" 'a dead owner the automatic arm should have reclaimed and armed behind' "block $i did not name the dead lock owner needing reclaim"
+    assert_not_contains "$out" 'does NOT own the home lock' "block $i wrongly claimed a live session owns the home lock"
+  done
+  [ "$blocked" -eq 3 ] || fail "expected exactly 3 bounded blocks, got $blocked"
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude "$dir" true); status=$?
+  expect_code 0 "$status" "a dead lock owner past the block budget must reach the attended fail-open"
+  assert_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN' "the dead-owner fail-open was not unmistakable"
+  assert_contains "$out" 'a dead owner the automatic arm should have reclaimed and armed behind' "the fail-open did not name the dead lock owner needing reclaim"
+  assert_not_contains "$out" 'does NOT own the home lock' "the fail-open wrongly claimed a live session owns the home lock"
+  assert_not_contains "$out" 'stay read-only' "the dead-owner fail-open wrongly told the session to stay read-only"
+  pass "fm-turnend-guard --claude: a dead lock owner reports the reclaim mechanism, not a live-owner stand-down"
+}
+
 # The recorded non-participation is episode state, not a permanent unlock: the
 # same positive watcher recovery that clears an auto-arm failure clears it too.
 test_hook_claude_mode_absent_record_clears_on_recovery() {
@@ -1830,6 +1859,7 @@ test_hook_claude_mode_concurrent_recovery_resets_are_idempotent
 test_hook_claude_mode_stale_rewake_epoch_blocks
 test_hook_claude_mode_budget_while_autoarm_participates_keeps_blocking
 test_hook_claude_mode_absent_autoarm_reaches_bounded_fail_open
+test_hook_claude_mode_dead_lock_owner_reports_reclaim_needed
 test_hook_claude_mode_absent_record_clears_on_recovery
 test_hook_claude_mode_integrated_silent_autoarm_still_reaches_fail_open
 test_hook_claude_mode_verified_failure_alarm_is_loud_and_once
