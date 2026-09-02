@@ -1,0 +1,54 @@
+# Regression evidence: fleet-home override scrubbing, serial vs parallel lane
+# bin/fm-test-run.sh / tests/fm-test-run.test.sh
+#
+# The new test `test_fleet_home_overrides_are_scrubbed_in_both_lanes` launches
+# a fixture test script through both the serial lane and the `--jobs 2`
+# parallel lane of bin/fm-test-run.sh, with FM_HOME/FM_STATE_OVERRIDE/
+# FM_DATA_OVERRIDE/FM_ROOT_OVERRIDE/FM_PROJECTS_OVERRIDE/FM_CONFIG_OVERRIDE/
+# FM_BACKEND leaked into the runner's own environment, plus one unrelated
+# passthrough variable that must survive the scrub.
+
+## Run against the pre-fix runner (base commit 77ee3c82, before the change)
+$ bash /tmp/run-single-test-prefix.sh
+not ok - serial lane leaked FM_HOME into the test script:
+EXIT=1
+# -> Confirms the bug: before the fix, the serial lane let the invoking
+#    shell's FM_HOME leak into the test script's environment, while the
+#    parallel worker subshell already scrubbed it. Same script, different
+#    verdict depending on which lane it ran in.
+
+## Run against the fixed runner (target commit 1c5cee7)
+$ bash /tmp/run-single-test.sh
+ok - both lanes scrub the same inherited fleet-home overrides and keep the rest of the environment
+EXIT=0
+
+## Full contract-test file (tests/fm-test-run.test.sh), fixed runner, 27/27 passing
+$ bash tests/fm-test-run.test.sh
+ok - exact suite coverage: --all lists every tests/*.test.sh once
+ok - family selection returns a proper subset of the suite
+ok - single-script selection lists exactly that path
+ok - changed-file selection stays conservative (never silent full suite)
+ok - runner and its documentation surfaces select their curated family, not just their contract owners
+ok - changed selection covers dependents and fails closed for unmapped source
+ok - a bin reference selects the referencing scripts, and consumers still select their curated families
+ok - changed defaults to bounded automatic scheduling with serial override
+ok - empty changed selection emits deterministic text and JSON summaries
+ok - timing markers and JSON artifact are valid
+ok - aggregate exit reflects any script failure
+ok - gate-skip accounting is honest and non-failing
+ok - fail-on-gate-skip converts herdr-not-found into a hard failure
+ok - exclude-family drops the named primary family after selection
+ok - portable shard union, disjointness, and coverage guard hold
+ok - portable serial shards are a deterministic disjoint cover of the serial lane
+ok - coverage guard reports and bounds the unmeasured portable serial share
+ok - portable serial shard lanes refuse mismatched, out-of-range, and countless names
+ok - --jobs refuses non-proven / stateful selections
+ok - --jobs admits and schedules a family with a recorded concurrent proof
+ok - a concurrent run starts the longest-hint script first
+ok - --per-script-timeout-secs turns a hung script into a bounded failure
+ok - --max-wall-ms fails an over-budget run and refuses a malformed budget
+ok - jobs scheduler runs proven scripts; failure propagates; non-proven refused
+ok - both lanes scrub the same inherited fleet-home overrides and keep the rest of the environment
+ok - Herdr CI family-run step times out at 20 min under a 75 min job backstop
+ok - aggregate-json merges lane timing artifacts
+[exited with code 0]
