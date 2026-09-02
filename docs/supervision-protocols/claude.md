@@ -10,7 +10,9 @@ When this session owns supervision and away mode is not active:
    Do not run `bin/fm-watch-arm.sh` after an ordinary wake; the next turn end re-arms automatically when supervision is still needed.
    Do not invent a wake from an attach-status line alone; drain and act only on real wake records, the drain's `OPEN DECISIONS` and `UNREAD STATUS` entries, or a real watcher reason line.
 4. On the one `Stop hook feedback` automatic-mechanism failure notice (`firstmate watcher auto-arm FAILED ...`), drain, inspect the automatic mechanism failure, and do not turn the notice into a repeating manual-arm loop.
-5. If the Stop hook does not claim the home or reports an exhausted failure, inspect its registration and watcher startup path before ending blind.
+5. If the Stop hook reports an exhausted failure, inspect the automatic mechanism and the watcher startup path before ending blind.
+   If it instead claims nothing and reports nothing at all, read the guard's own banner first: it names whether this session holds the home lock.
+   When it does not, the hook is standing down correctly, supervision belongs to the owning session, and this one stays read-only rather than repairing it - do not go looking for a broken registration.
    Keep the Stop-owned automatic mechanism as the only Claude arm owner.
 6. Treat `watcher: started ...` and `watcher: attached ...` inside automatic arm output as proof that one live cycle exists.
    On attach, the arm follows verified identity-matched successors instead of exiting when the first cycle ends.
@@ -20,6 +22,7 @@ When this session owns supervision and away mode is not active:
 8. The turn-end guard (`bin/fm-turnend-guard.sh --claude`) remains the final backstop.
    It requires the PID-strict live-watcher and fresh-beacon predicate at the Stop boundary, while the mid-turn pull guard accepts a fresh beacon without a live process under Claude's between-turns auto-arm model.
    It allows the stop when a watcher is healthy or the role-verified auto-arm owns recovery, while fresh failure epochs advance the bounded one-time attended fail-open progression described in [`turnend-guard.md`](../turnend-guard.md).
+   An auto-arm that neither claims nor fails is recorded as its own exhausted failure once the block budget is spent, so that same fail-open still arrives instead of every turn blocking.
 9. Waiting on the hook-owned cycle is silent: do not send idle progress while the watcher is parked.
 
 The watcher itself remains `bin/fm-watch.sh`, and `bin/fm-watch-arm.sh` remains the verified arm wrapper that the Stop hook foregrounds.
