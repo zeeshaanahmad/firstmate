@@ -967,3 +967,49 @@ Refresh this harness-dependent proof before accepting a cursor upgrade:
 ```sh
 FM_HARNESS_LIVENESS_DRIFT=1 bin/fm-test-run.sh tests/fm-harness-liveness-drift-live-e2e.test.sh
 ```
+
+## Claude commit attribution
+
+Verified 2026-09-02 on Claude Code 2.1.258, macOS 26.5.1 arm64.
+
+Claude ships its commit and PR attribution as part of the Bash tool description in its own system prompt, so no brief, project `AGENTS.md`, or user memory can remove it.
+Asked to report the attribution instructions in its context, a worker launched with no attribution settings quoted its own tool description:
+
+```
+# Git
+...
+- End git commit messages with:
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+- End PR bodies with:
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+```
+
+The same worker launched with `--settings '{"attribution":{"commit":"","pr":""}}'` reported no such instruction, confirming empty attribution text removes the block rather than blanking one line of it.
+`sessionUrl` is the documented independent switch for the `Claude-Session:` trailer; empty commit text already drops that line on this version, and firstmate pins both so a later release cannot decouple them.
+
+The settings key is exercised by behavior, not by reading it back.
+`tests/fm-claude-attribution-live-e2e.test.sh` runs two arms that differ only in the attribution text and asserts on real commits:
+
+```sh
+FM_CLAUDE_LIVE_E2E=1 bin/fm-test-run.sh tests/fm-claude-attribution-live-e2e.test.sh
+# ok - claude 2.1.258 (Claude Code) still binds attribution.commit and applies it to a real commit
+# ok - claude 2.1.258 (Claude Code) applies empty attribution as no trailer: a real commit carries no agent co-author and no session URL
+```
+
+The first arm sets `attribution.commit` to a probe string this test invents and requires it to appear in the commit the worker makes.
+Only a harness that still reads that key could put it there, so a renamed or dropped key fails loudly instead of letting the second arm pass for the wrong reason.
+Run both arms after every Claude Code upgrade and refresh the version above.
+
+`tests/fm-claude-attribution.test.sh` is the portable half: it drives the real `bin/fm-spawn.sh` against a fake tmux and a fake claude, so CI enforces that the launch reaches claude's argv with one well-formed suppressing `--settings` JSON, that the per-worktree busy-state hook settings survive alongside it, and that no other adapter is handed the flag.
+
+### What the squash merge publishes
+
+Measured 2026-09-02 against GitHub, because a fix that cleaned local commit messages while the published squash re-derived the trailer elsewhere would look like it worked and change nothing.
+
+Both published trailers are derived from the branch commits, not from the pull-request body.
+The forge reports `squash_merge_commit_message: COMMIT_MESSAGES`, so the squash body is the branch commit messages concatenated verbatim, which carries any `Co-Authored-By:` and `Claude-Session:` lines straight through.
+GitHub then appends its own aggregated `Co-authored-by:` block after a `---------` separator.
+That aggregate is also branch-derived: on a sampled squash-merged pull request every branch commit was authored by the human operator and two of them carried the `Co-Authored-By: Claude` trailer, and the published squash carried both the verbatim uppercase trailer and the aggregated lowercase one.
+The converse holds on this repository under the same `bin/fm-pr-merge.sh --squash` path: a pull request whose branch commits carried no trailer published a squash commit with none.
+
+Removing the trailer from the branch commits therefore removes it from the published result, and no separate merge-time change is required.
