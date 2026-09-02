@@ -18,7 +18,8 @@ It requires a non-empty captain decision file of at most 8192 bytes, writes a re
 An exact retry is idempotent only when the requested close mode matches the newest record; a drifted answer or mode mismatch is rejected, while a re-held task accepts a new answer as a new record on top.
 On a task closed outside the script, `answer` records the missing block only when the captain-hold annotations tasks-axi preserves through a close prove the captain owned it, and it verifies the task stays closed.
 A hold whose `--until` date has passed keeps those annotations while tasks-axi reports it no longer held, so an expired deferral remains answerable.
-Every successful `answer` also prints the work its close frees - the tasks whose declared `blocked-by` edges name this call, or the released task itself - as an advisory reminder to re-check what those tasks still wait on.
+A direct `answer` invocation also prints the work its close frees - the tasks whose declared `blocked-by` edges name this call, or the released task itself - as an advisory reminder to re-check what those tasks still wait on.
+The keyed-answer intake (`answers`) deliberately discards its child's stdout, so a call closed through a channel prints no reminder and relies on the policy owner's own recheck step instead.
 It reads the declared edges rather than the live blocked-by set, so an idempotent replay names the same work the closing run did, and an unreadable backlog yields no reminder instead of failing an answer that otherwise succeeded.
 The reminder is informational only and gates nothing; the policy owner named in the line owns the recheck.
 
@@ -79,6 +80,7 @@ It proves: a report-only unresolved captain call refuses `--none` completion bef
 
 Three further regressions carry behaviors this fork had before the collapse.
 A routed call proves every successful `answer` names the work it frees and only that work, that an idempotent replay keeps the line, that `--release` names the resumed work item, and that a call gating nothing prints no reminder at all.
+A further regression proves the keyed-answer intake's silence is deliberate: it drives a real `answers` close and asserts no reminder line, alongside a direct `answer` on an equivalent task that does print it.
 A binding record corrupted on disk proves the captured-result channel forwards the diagnostic and closes nothing, while a genuinely unbound source alongside it stays silent.
 A pre-collapse row and binding created only through the retired command surface prove they answer, feed, complete, verify, and leave Captain's Call through the collapsed surface alone, with no data migration.
 

@@ -1094,6 +1094,46 @@ test_answer_names_the_work_it_frees() {
   pass "answering names the work it frees so its real preconditions get re-checked"
 }
 
+# The freed-work reminder is printed by a direct `answer` invocation only. The
+# keyed-answer intake (`answers`) deliberately discards its child's stdout, so
+# a call closed through a channel prints no reminder even though it still
+# closes the task and frees the same gated work. This pins that boundary as
+# deliberate rather than accidental, and proves it by contrast: the same close
+# through `answer` directly still prints the reminder.
+test_channel_answers_intake_suppresses_the_reminder() {
+  local home out show
+  home=$(make_home channel-reminder-boundary)
+  run_captain "$home" hold sample-channel-route-call --title "Captain call: channel route" \
+    --reason "captain channel route choice pending" --repo sample >/dev/null \
+    || fail "could not register the channel-routed captain call"
+  tasks_in "$home" add sample-channel-gated-work "Apply the channel route" \
+    --kind ship --repo sample --blocked-by sample-channel-route-call >/dev/null \
+    || fail "could not create the channel-gated work"
+
+  out=$(printf 'sample-channel-route-call\tnorth\tRoute: north\n' \
+    | run_captain "$home" answers --source "channel reminder boundary fixture") \
+    || fail "the intake did not close the channel-routed captain call: $out"
+  assert_contains "$out" "closed: sample-channel-route-call" \
+    "the intake did not report closing the channel-routed captain call: $out"
+  assert_not_contains "$out" "recheck freed task preconditions" \
+    "the keyed-answer intake leaked the direct-invocation reminder: $out"
+  show=$(tasks_in "$home" show sample-channel-route-call --full)
+  assert_contains "$show" "state: done" "the channel-routed captain call did not close"
+
+  run_captain "$home" hold sample-direct-route-call --title "Captain call: direct route" \
+    --reason "captain direct route choice pending" --repo sample >/dev/null \
+    || fail "could not register the directly-answered captain call"
+  tasks_in "$home" add sample-direct-gated-work "Apply the direct route" \
+    --kind ship --repo sample --blocked-by sample-direct-route-call >/dev/null \
+    || fail "could not create the directly-gated work"
+  printf 'Use route north.\n' > "$home/direct-route.txt"
+  out=$(run_captain "$home" answer sample-direct-route-call --decision-file "$home/direct-route.txt") \
+    || fail "could not answer the directly-routed captain call"
+  assert_contains "$out" "recheck freed task preconditions" \
+    "a direct answer invocation did not print the reminder: $out"
+  pass "the keyed-answer intake stays silent on the reminder while a direct answer still prints it"
+}
+
 # read_binding treats an unreadable or wrong-schema binding record as a hard
 # error, never a silent "unbound" - feeding nothing is the safe direction only
 # when it is a deliberate choice. The captured-result channel
@@ -1264,6 +1304,7 @@ test_uninventoried_report_decision_refuses_completion
 test_completion_gate_attests_and_transfers
 test_answer_records_and_closes
 test_answer_names_the_work_it_frees
+test_channel_answers_intake_suppresses_the_reminder
 test_release_frees_held_work
 test_deferral_leaves_captains_call_until_due
 test_out_of_band_close_is_recordable

@@ -53,10 +53,12 @@
 # answered captain call. A hold that expired by date (`--until` in the past) is
 # still answerable: the surviving hold annotations, not tasks-axi's live
 # `held:` bit, prove the captain owned it.
-# Every successful `answer` also names the work its close frees - the tasks
+# A direct `answer` invocation also names the work its close frees - the tasks
 # that were blocked by this call, or the released task itself - as an advisory
-# reminder to re-check what those tasks still wait on. The policy owner named
-# in that line owns the recheck; the reminder gates nothing.
+# reminder to re-check what those tasks still wait on. The keyed-answer intake
+# (`answers`) deliberately discards its child's stdout, so a call closed
+# through a channel prints no reminder; the policy owner's own recheck step
+# covers that path instead. The reminder is advisory and gates nothing.
 #
 # ONE KEYED-ANSWER INTAKE, FED BY EVERY CHANNEL.
 # "A keyed answer closes its matching captain-held task" is a single
@@ -529,7 +531,7 @@ print_precondition_reminder() {  # <space-separated-task-ids>
 }
 
 # Every successful outcome of command_answer prints through here, so the
-# reminder cannot be forgotten on one of its six exits. command_answer sets
+# reminder cannot be forgotten on one of its five exits. command_answer sets
 # PRECONDITION_FREED before its first mutation and before any of them run.
 PRECONDITION_FREED=''
 print_answer_outcome() {  # <outcome-word> <task-id>
