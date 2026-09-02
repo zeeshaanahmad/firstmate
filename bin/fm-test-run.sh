@@ -1565,6 +1565,21 @@ record_script_result() {
   TOTAL=$((TOTAL + 1))
 }
 
+# The fleet-home overrides a test script must never inherit from whoever invoked
+# the runner. A test builds its own home; an inherited one is a second, invisible
+# input that can decide a verdict - bin/fm-arm-pretool-check.sh, for one, reads
+# FM_HOME as a classification input. Both execution paths below scrub the same
+# list so a script's verdict cannot depend on the lane it was scheduled into.
+FM_TEST_INHERITED_OVERRIDES=(
+  FM_HOME
+  FM_STATE_OVERRIDE
+  FM_DATA_OVERRIDE
+  FM_ROOT_OVERRIDE
+  FM_PROJECTS_OVERRIDE
+  FM_CONFIG_OVERRIDE
+  FM_BACKEND
+)
+
 run_one_serial() {
   local script=$1
   local base family expected out begin_iso begin_ms end_ms end_iso duration rc
@@ -1578,10 +1593,18 @@ run_one_serial() {
   printf 'FM_TEST_BEGIN %s %s family=%s expected_gate_skip=%s\n' \
     "$begin_iso" "$script" "$family" "$expected"
 
+  # The serial path runs the script from this shell, so the scrub is an env -u
+  # prefix rather than the parallel worker subshell's unset.
+  local name
+  local -a scrub=()
+  for name in "${FM_TEST_INHERITED_OVERRIDES[@]}"; do
+    scrub+=(-u "$name")
+  done
+
   set +e
   # Stream live output while retaining a copy for gate-skip detection.
   # PIPESTATUS[0] is the test script; tee's exit is ignored for aggregate.
-  bash "$script" 2>&1 | tee "$out"
+  env "${scrub[@]}" bash "$script" 2>&1 | tee "$out"
   rc=${PIPESTATUS[0]}
   set -e
   : "${rc:=1}"
@@ -1684,8 +1707,7 @@ else
       set +e
       export TMPDIR="$work/tmp"
       export TMP="$work/tmp"
-      unset FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_ROOT_OVERRIDE \
-        FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND 2>/dev/null || true
+      unset "${FM_TEST_INHERITED_OVERRIDES[@]}" 2>/dev/null || true
       cd "$ROOT" || exit 1
       begin_ms=$(now_ms)
       bash "$script" >"$work/output" 2>&1
