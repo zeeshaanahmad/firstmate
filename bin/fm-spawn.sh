@@ -1167,7 +1167,16 @@ launch_template() {
     # does NOT suppress the interactive ghost text (verified empirically), so the env
     # var is the correct control. The dim-aware composer reader in fm-tmux-lib.sh is
     # the defense-in-depth backstop for any pane this flag cannot reach.
-    claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    #
+    # --settings empties claude's commit and PR attribution text, which is what
+    # keeps the agent co-author trailer AGENTS.md section 1 forbids out of a
+    # worker's commits. Claude states that attribution in its own Bash tool
+    # description, so instructions can only argue with it; emptying the text
+    # removes it. It loads ADDITIONAL settings, so it composes with the
+    # per-worktree .claude/settings.local.json written below for the busy-state
+    # hooks rather than replacing it. The harness-adapters skill owns the
+    # adapter fact and docs/verification/runtime-backends.md the dated evidence.
+    claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions --settings '\''{"attribution":{"commit":"","pr":"","sessionUrl":false}}'\'' __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     codex)
       if [ "$kind" = secondmate ]; then
         printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'

@@ -202,6 +202,11 @@ Its broader dark-TRUECOLOR placeholder handling and dark-theme tradeoff are docu
 That styled capture is internal to the boolean detector only.
 `fm-peek` and every other human or LLM-facing capture path stays plain `tmux capture-pane` with no escape codes.
 
+Claude states its own commit and PR attribution inside the Bash tool description it ships in the system prompt ("End git commit messages with: `Co-Authored-By: Claude ...`" plus a `Claude-Session:` URL).
+That is a harness instruction, not a model preference, so a brief, a project `AGENTS.md`, or the captain's global memory can only argue with it, and a lost argument is how the agent co-author trailer `AGENTS.md` section 1 forbids reaches a project's default branch.
+Firstmate therefore launches every claude worker with `--settings '{"attribution":{"commit":"","pr":"","sessionUrl":false}}'` through `bin/fm-spawn.sh`, which removes the instruction rather than contradicting it; `--settings` loads ADDITIONAL settings, so it composes with the per-worktree `.claude/settings.local.json` carrying the busy-state hooks.
+`tests/fm-claude-attribution.test.sh` pins the launch and `tests/fm-claude-attribution-live-e2e.test.sh` is the live guard for the settings key itself, with dated evidence in `docs/verification/runtime-backends.md`.
+
 **Primary-session guard fact (verified 2026-07-04, Claude Code 2.1.201; preserved 2026-07-08, Claude Code 2.1.204; Stop-owned auto-arm revalidated 2026-07-24, Claude Code 2.1.219).**
 This is separate from the per-task crewmate turn-end hook above (that one just `touch`es a marker file in a task's own `.claude/settings.local.json`).
 The firstmate PRIMARY's own `.claude/settings.json` registers two Stop hooks: `bin/fm-turnend-guard.sh --claude` and the Stop-owned auto-arm `bin/fm-claude-stop-autoarm.sh` (`asyncRewake: true`, `timeout: 28800`), and exiting the guard with status 2 plus stderr reliably forces the model to continue.
