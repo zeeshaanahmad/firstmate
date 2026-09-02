@@ -822,6 +822,10 @@ command_answers() {
   tmp=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-keyed-decision.XXXXXX") || fail "cannot stage the captain decision"
   err=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-keyed-decision-err.XXXXXX") \
     || { rm -f -- "$tmp"; fail "cannot stage the captain decision diagnostics"; }
+  # Both `"$0" decline --drop` and `"$0" answer` below redirect stdin from
+  # /dev/null: without it, the child inherits this loop's stdin and consumes
+  # the remaining keyed-answer lines meant for this `read`, silently dropping
+  # every answer after the first.
   while IFS=$'\t' read -r key answer label; do
     [ -n "${key:-}" ] || continue
     case "$key" in *[!A-Za-z0-9._-]*) continue ;; esac
