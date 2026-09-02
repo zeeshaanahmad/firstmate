@@ -77,10 +77,10 @@
 #
 # Keyed captain answers are adapter-owned through one more seam of the same kind,
 # and this runner still decides nothing about them. Some sources carry the
-# captain's answer to a durable decision. What such an answer MEANS is owned once,
-# by bin/fm-decision-hold.sh's keyed-answer intake, and reaching it must not
-# depend on an agent remembering. So after capture, a source that has been bound
-# to a decision origin has its result passed to
+# captain's answer to a captain-held task. What such an answer MEANS is owned
+# once, by bin/fm-captain-hold.sh's keyed-answer intake, and reaching it must not
+# depend on an agent remembering. So after capture, a bound source
+# has its result passed to
 # `bin/fm-procevent-<adapter>.sh answers <result-file>`, and whatever that prints
 # is piped straight into that one intake. The adapter reports only what the
 # captain chose; the intake owns every rule about what happens next. This runner
@@ -178,13 +178,13 @@ adapter_autohandle() {  # <adapter> <source-id> <result-file>
 # capture untouched and still announced, because this never acknowledges
 # anything (see the keyed-answer note in the header). The binding lookup itself
 # stays loud on a corrupted record rather than silenced, per read_binding's own
-# contract in fm-decision-hold.sh.
+# contract in fm-captain-hold.sh.
 feed_keyed_answers() {  # <adapter> <source-id> <result-file>
   local adapter=$1 id=$2 result=$3 script origin seq err
   script=$(adapter_script "$adapter")
   [ -f "$script" ] && [ ! -L "$script" ] || return 1
   err=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-procevent-binding-err.XXXXXX") || return 1
-  if ! origin=$("$SCRIPT_DIR/fm-decision-hold.sh" binding "$id" 2>"$err"); then
+  if ! origin=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$id" 2>"$err"); then
     [ -s "$err" ] && cat -- "$err" >&2
     rm -f -- "$err"
     return 1
@@ -193,7 +193,7 @@ feed_keyed_answers() {  # <adapter> <source-id> <result-file>
   [ -n "$origin" ] || return 1
   seq=$(fm_procevent_result_sequence "$result") || return 1
   "$script" answers "$result" 2>/dev/null \
-    | "$SCRIPT_DIR/fm-decision-hold.sh" answers "$origin" \
+    | "$SCRIPT_DIR/fm-captain-hold.sh" answers "$origin" \
         --source "the captured result $id sequence $seq" >/dev/null 2>&1
 }
 
@@ -718,7 +718,7 @@ cmd_retire() {
   # A retired source produces no further answer, so drop any decision binding it
   # carried. Generic and idempotent: the binding owner is asked to forget this
   # source id, and an unbound source is unaffected.
-  "$SCRIPT_DIR/fm-decision-hold.sh" unbind "$id" >/dev/null 2>&1 || true
+  "$SCRIPT_DIR/fm-captain-hold.sh" unbind "$id" >/dev/null 2>&1 || true
   printf 'retired: %s\n' "$id"
 }
 
