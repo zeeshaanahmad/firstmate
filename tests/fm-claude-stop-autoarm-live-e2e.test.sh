@@ -51,7 +51,7 @@ CLAUDE_VERSION=$(claude --version)
 
 cleanup() {
   tmux -L "$SOCKET" kill-server >/dev/null 2>&1 || true
-  rm -f "/private/tmp/tmux-501/$SOCKET" 2>/dev/null || true
+  rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SOCKET" 2>/dev/null || true
   rm -rf "$LAB" "$CONC_ROOT"
 }
 trap cleanup EXIT

@@ -208,8 +208,10 @@ autoarm_absent_reason() {
     printf 'No session owns this home (state/.lock is absent or empty), so the automatic arm stands down for every session: acquire the home lock through session start rather than arming a watcher by hand.'
   elif fm_session_lock_owned_by_self "$STATE"; then
     printf 'This session owns the home lock, so the automatic arm should have claimed and did not: inspect its Stop-hook registration and the watcher startup, and keep the session attended.'
-  else
+  elif fm_harness_pid_alive "$lock_pid"; then
     printf 'This session does NOT own the home lock (state/.lock names pid %s), so the automatic arm correctly stands down for it: supervision belongs to the owning session, and this one must stay read-only rather than repair supervision itself.' "$lock_pid"
+  else
+    printf 'state/.lock names pid %s, a dead owner the automatic arm should have reclaimed and armed behind: inspect the reclaim mechanism itself, and keep the session attended rather than assuming another session owns supervision.' "$lock_pid"
   fi
 }
 
@@ -483,11 +485,16 @@ if [ "$terminal_status" -eq 0 ]; then
   else
     NEED_DESC="X-mode relay polling active"
   fi
+  json_escape() {
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr '\n' ' '
+  }
+  ESCAPED_NEED_DESC=$(json_escape "$NEED_DESC")
   if [ "$ABSENT_RECORDED" -eq 1 ]; then
+    ESCAPED_REASON=$(json_escape "$(autoarm_absent_reason)")
     printf '{"systemMessage":"FIRSTMATE SUPERVISION IS GENUINELY DOWN: %s, and the Stop-owned auto-arm never participated - it neither claimed this home nor reported a failure across the whole block budget, so nothing is recovering supervision. %s Do not hand-arm a watcher from this notice: an arm started from a turn dies with the job hosting it, which is exactly the gap between turns supervision must cover."}\n' \
-      "$NEED_DESC" "$(autoarm_absent_reason)"
+      "$ESCAPED_NEED_DESC" "$ESCAPED_REASON"
   else
-    printf '{"systemMessage":"FIRSTMATE SUPERVISION IS GENUINELY DOWN: %s, the Stop-owned auto-arm exhausted its bounded retries and one failure notice, no watcher or automatic continuation exists, and the block budget is exhausted. Keep this session attended and diagnose the automatic Stop-hook and watcher startup before relying on unattended supervision."}\n' "$NEED_DESC"
+    printf '{"systemMessage":"FIRSTMATE SUPERVISION IS GENUINELY DOWN: %s, the Stop-owned auto-arm exhausted its bounded retries and one failure notice, no watcher or automatic continuation exists, and the block budget is exhausted. Keep this session attended and diagnose the automatic Stop-hook and watcher startup before relying on unattended supervision."}\n' "$ESCAPED_NEED_DESC"
   fi
   exit 0
 fi
