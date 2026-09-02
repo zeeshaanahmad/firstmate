@@ -1147,7 +1147,8 @@ fm_failure_episode_reset() {
   for path in \
     "$state/.turnend-claude-blocks" \
     "$state/.claude-autoarm-failure-notified" \
-    "$state/.claude-autoarm-failure-alarmed"
+    "$state/.claude-autoarm-failure-alarmed" \
+    "$state/.claude-autoarm-absent"
   do
     if [ -d "$path" ] && [ ! -L "$path" ]; then
       [ "$acquired" -eq 0 ] || fm_lock_release "$lock"
@@ -1158,6 +1159,7 @@ fm_failure_episode_reset() {
     "$state/.turnend-claude-blocks" \
     "$state/.claude-autoarm-failure-notified" \
     "$state/.claude-autoarm-failure-alarmed" \
+    "$state/.claude-autoarm-absent" \
     2>/dev/null; then
     [ "$acquired" -eq 0 ] || fm_lock_release "$lock"
     return 1

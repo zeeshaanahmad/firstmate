@@ -218,6 +218,48 @@ The blocking and bounded-follow-up mechanisms were validated across six harnesse
 | Grok | 0.2.112 native and 0.2.73 pre-native | Running-payload adaptive `Stop` | Native false-to-true continuation stayed in one process with two model turns and zero resume launches; the field-absent pre-native process launched exactly one guarded resume. |
 | Cursor | 2026.08.11-e8db854 | Awaited `stop` hook park returning one `followup_message` | Exit 2 ended the turn normally, proving it cannot block; a returned follow-up ran a genuine second turn; a sleeping hook held the boundary open and the wake landed after it; `loop_limit` stopped the hook being invoked at its ceiling. |
 
+### Claude Stop hook concurrency, 2026-09-02
+
+The whole `--claude` cooperative contract rests on Claude running BOTH registered `Stop` hooks on the same Stop, including a Stop the blocking guard refuses with exit 2.
+If a refusal pre-empted its `asyncRewake` sibling the pair would deadlock: the auto-arm could never record the exhausted failure the guard's bounded fail-open requires, and every turn would block.
+That scheduling is the vendor's, so it is measured rather than assumed.
+
+First measured on Claude Code 2.1.252 and re-confirmed on 2.1.258, macOS 26.5.2 arm64, in throwaway labs outside any real home.
+A lab registered two `Stop` hooks in one group, the tracked shape: a synchronous recorder that exits 2 for its first N consecutive stops, and an `asyncRewake` recorder that logs entry and completion around a real sleeping body.
+Each hook appends one line per firing, so the counts are the measurement.
+
+Headless (`claude -p`), synchronous hook refusing its first two stops:
+
+```
+sync 0
+async-start 0
+async-done 0
+sync 1
+async-start 1
+async-done 1
+sync 2
+async-start 2
+async-done 2
+```
+
+Interactive TUI, synchronous hook refusing five consecutive stops:
+
+```
+ok - Claude 2.1.258 (Claude Code) (interactive TUI): all 6 refused stop(s) also ran the asyncRewake hook to completion
+```
+
+In both modes the `asyncRewake` hook ran, and ran to completion, on every refused stop, one-to-one, with no ordering guarantee between the two.
+A blocking sibling therefore does not pre-empt it: a Claude auto-arm that records nothing was not denied the chance to run, and its silence has some other cause.
+On the observed 2026-09-01 incident that cause was the auto-arm's identity gate, which correctly exits 0 without a trace when `state/.lock` names another live session.
+
+`FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` re-establishes this against the installed binary and fails naming the version; run it after every Claude upgrade before trusting this record.
+The same guard proves the consequence that matters: from a home the auto-arm permanently stands down from, the turn-end guard still blocks exactly its bounded budget and then reaches one loud attended fail-open naming non-participation.
+[`../turnend-guard.md`](../turnend-guard.md) owns the contract itself, and `tests/fm-turnend-guard.test.sh` pins the guard-side consequences portably.
+
+Its remaining credentialed model-driven cycle - two tokenless Stop-owned rewakes with no model arm command - was observed failing on 2.1.252 and 2.1.258 for reasons unrelated to the hooks: the model does not reliably reproduce the exact turn sequence those assertions require, sometimes skipping the session-start command the run-tier hook has already executed for it, and sometimes ending fewer turns than the fixture expects.
+Three runs produced three different mismatches, on unmodified code, so that section is currently unreliable rather than a live regression signal.
+It runs last for that reason, so a flaky turn there cannot hide the deterministic evidence above.
+
 ### Cursor primary park, 2026-08-13
 
 Cursor was validated as a primary on 2026-08-13 against the installed CLI on macOS 26.5.2 arm64 with tmux 3.6a, in a throwaway firstmate home on a private tmux socket, never against a live home and never with a user-scope hook.

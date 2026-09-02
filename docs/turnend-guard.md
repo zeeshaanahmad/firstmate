@@ -78,13 +78,25 @@ The auto-arm itself rechecks the healthy watcher predicate and retries a bounded
 The first fresh exhausted-failure epoch preserves its handoff without consuming a blocked-stop count, while later fresh failed epochs advance the same monotonic progression instead of resetting it.
 When none of those proofs appears, it re-blocks up to `FM_CLAUDE_TURNEND_BLOCK_BUDGET` times (default 3, below Claude's 8-block override).
 In Claude mode, positive watcher recovery clears the block budget, failure notice, and attended alarm together under the existing budget lock before either hook reports ordinary recovery.
-The one loud attended fail-open is available only when the auto-arm has recorded an exhausted failure, its one notice is already consumed, the block budget is exhausted, and a final check finds neither a healthy watcher nor an automatic continuation.
+The one loud attended fail-open is available when the block budget is exhausted, a final check finds neither a healthy watcher nor an automatic continuation, and the episode carries verified exhausted-failure evidence: either the auto-arm recorded its own exhausted failure with its one notice already consumed, or the guard recorded the auto-arm's sustained non-participation as described below.
 Each epoch identity is accounted at most once under the budget lock.
 Whenever both coordination locks are needed, positive auto-arm recovery and the terminal check acquire the auto-arm owner lock before the budget lock.
 After that alarm, the Stop auto-arm suppresses further exit-2 continuations until positive watcher recovery, so the final fail-open remains reachable.
 The alarm cannot repeat during that failure episode, and a later unhealthy stop blocks again.
 A positively verified healthy watcher clears the failure notice, alarm, and block budget for a future independent episode.
 A Claude failure notice describes the automatic mechanism as broken and does not direct a routine manual background arm.
+
+The auto-arm reports an exhausted failure only when it actually ran the arm and it failed.
+It also has silent stand-down paths that claim nothing and record nothing, the most important being its identity gate, which correctly exits 0 without a trace when `state/.lock` names a live session this hook does not descend from.
+That produces a third state the cooperative design did not model: the auto-arm neither claims nor fails.
+It had no exit at all, for two independent reasons - the fail-open's precondition was evidence only a participating auto-arm ever writes, and a ledger nothing advances also pinned the block count below its budget, because an unchanged epoch suppressed the per-block increment.
+So the guard blocked every turn indefinitely while both bounds stayed permanently out of reach.
+The epoch is now used as an accounting key only while the auto-arm is participating - a live `autoarm` owner on `state/.claude-autoarm.lock`, or an epoch that moved within `FM_CLAUDE_AUTOARM_EPOCH_FRESH` - so a silent auto-arm no longer freezes the budget.
+When that budget is then exhausted and the auto-arm is still not participating, the terminal check records `state/.claude-autoarm-absent` under the auto-arm owner lock and the budget lock, after its watcher re-check, and treats it as the exhausted failure it is.
+Holding the owner lock is what proves no auto-arm exists to record one itself.
+That record makes the SAME bounded fail-open reachable rather than adding a second escape, and the same positive-recovery reset clears it alongside the notice, alarm, and budget.
+Its message names non-participation rather than exhausted retries, and names what the session can actually do about it: a session that does not hold this home lock is told supervision belongs to the owning session and that it must stay read-only, rather than being sent to inspect a hook registration that is working correctly.
+Away mode is excluded throughout, because the away daemon owns supervision there.
 
 OpenCode, Pi, and pi-signed expose passive callbacks for this purpose.
 Their adapters fail open at the hook boundary to protect the user session but schedule one bounded follow-up when the predicate blocks.
@@ -147,6 +159,8 @@ That warning uses `bin/fm-supervision-instructions.sh --repair-line`, so it alwa
 ## Regression coverage
 
 `tests/fm-turnend-guard.test.sh` covers the predicate, main and secondmate primary scope, child-worktree exclusion, `FM_HOME` and `FM_STATE_OVERRIDE` precedence, the live-lock and fresh-beacon guard predicate, the cooperative `--claude` claim wait, monotonic failed-epoch progression, bounded attended fail-open, post-alarm continuation suppression, positive recovery reset, Pi logical-run latching, missing-`jq` behavior, all five primary registrations, Grok native and legacy selection, typed field precedence, malformed input, and exactly-one-path safety.
+It also covers the non-participation path end to end over the real auto-arm: a live foreign session lock makes it stand down leaving the state directory byte-for-byte unchanged, the guard still blocks exactly the bounded budget and then reaches its loud fail-open, a participating auto-arm never trips that path however long it blocks, a partial auto-arm failure record is never reported as exhausted retries, and positive watcher recovery clears the recorded episode.
+`FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` is the opt-in guard that proves the same non-participation path against the installed Claude, alongside the vendor fact it depends on - that a refused Stop still runs its `asyncRewake` sibling - and [`verification/supervision.md`](verification/supervision.md#claude-stop-hook-concurrency-2026-09-02) records the dated result.
 `tests/fm-guard-stale-banner.test.sh` covers the pull-guard predicate, including the persistent-model fresh-leftover-beacon negative control, the auto-arm model's healthy fresh-beacon-without-a-watcher case and stale-beacon alarm, and the extension model's live-watcher path, ownership-qualified fresh hand-off, held-lock failures, independently broken ownership signals, stale-beacon alarm, queued-wake warning, and Pi and pi-signed harness routing.
 It also covers true-reason banner wording and reason-keyed episode dedup surviving a beacon mtime change.
 `tests/fm-cursor-primary.test.sh` covers the Cursor park end to end over real processes with no harness installed: each tracked Claude-shaped entrypoint standing down on a Cursor payload, both follow-up sources, the bounded repair nag and its reset, the nested loop bounds, supersession, away-mode and lock-ownership inertness, child-worktree exclusion, and that the adapter never exits 2.
