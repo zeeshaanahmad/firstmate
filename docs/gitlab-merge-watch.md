@@ -288,6 +288,11 @@ Without it, a push landing in that window would merge commits nothing verified.
 `--yes` is passed for the same reason the watch poll needs no terminal: an unattended run cannot answer a confirmation prompt, and a wedged prompt is worse than a refusal.
 It skips only that prompt; the conditions above are what authorize the merge.
 
+This fork's merge-time guards - the static check, the upstream-history refusal, and the waypoint-ancestor assertion - all judge the head fetched from `refs/merge_requests/<n>/head` before any of them run.
+`gitlab_verify_mergeable` re-reads the live head from glab's own view moments later, immediately before the merge call.
+If a push lands in that window the two heads diverge, and the merge is refused: merging the live head would land a commit none of the guards evaluated, which is the same erased-history outcome they exist to prevent, just unmeasured.
+The refusal names both heads - the one the guards measured and the one glab verified mergeable - and is skipped only when the guarded head could not be resolved at all, the same already-accepted unguarded state every other environmentally-unreachable case in this script degrades to.
+
 ## Why a recorded head is not the authority
 
 `bin/fm-pr-check.sh` records `pr_head=` only for GitHub, where `gh` exposes the head commit as a selectable field.
