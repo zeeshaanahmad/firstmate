@@ -1956,19 +1956,13 @@ record_script_result() {
 }
 
 # The fleet-home overrides a test script must never inherit from whoever invoked
-# the runner. A test builds its own home; an inherited one is a second, invisible
-# input that can decide a verdict - bin/fm-arm-pretool-check.sh, for one, reads
-# FM_HOME as a classification input. Both execution paths below scrub the same
-# list so a script's verdict cannot depend on the lane it was scheduled into.
-FM_TEST_INHERITED_OVERRIDES=(
-  FM_HOME
-  FM_STATE_OVERRIDE
-  FM_DATA_OVERRIDE
-  FM_ROOT_OVERRIDE
-  FM_PROJECTS_OVERRIDE
-  FM_CONFIG_OVERRIDE
-  FM_BACKEND
-)
+# the runner (bin/fm-test-env-lib.sh owns the list and the rationale). Both
+# execution paths below scrub it, so a script's verdict cannot depend on the lane
+# it was scheduled into - nor on the shell the lane was started from.
+[ -f "$ROOT/bin/fm-test-env-lib.sh" ] \
+  || die "missing bin/fm-test-env-lib.sh beside this runner; a fixture that copies the runner must copy it too"
+# shellcheck source=bin/fm-test-env-lib.sh
+. "$ROOT/bin/fm-test-env-lib.sh"
 
 # The env -u prefix form of the list above, built once. bin/fm-test-run.sh
 # launches a test script in exactly one place - run_script_bounded - so the

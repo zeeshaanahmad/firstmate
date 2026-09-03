@@ -49,6 +49,18 @@ export FM_GATE_REFUSE_BYPASS=1
 # shellcheck disable=SC2034
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Scrub the ambient fleet-home overrides before any fixture is built, so a direct
+# `bash tests/<x>.test.sh` run sees the same environment bin/fm-test-run.sh gives
+# its lanes. Without this a test file inherits the operator's FM_HOME - every
+# firstmate-spawned shell exports one - and any fixture that sets only
+# FM_ROOT_OVERRIDE has its config probes answered by that real home instead,
+# which makes a case red locally and green on a bare runner. No test file sets
+# one of these before sourcing this library; every one that wants an override
+# passes it per command, after this point. bin/fm-test-env-lib.sh owns the list.
+# shellcheck source=bin/fm-test-env-lib.sh
+. "$ROOT/bin/fm-test-env-lib.sh"
+unset "${FM_TEST_INHERITED_OVERRIDES[@]}" 2>/dev/null || true
+
 # --- reporters --------------------------------------------------------------
 
 fail() {

@@ -129,8 +129,21 @@ repair_line() {
   if [ "$QUEUE_PENDING" -eq 1 ]; then
     prefix='After draining queued wakes, '
   fi
+  # The Relay cadence config is inherited by whatever LAUNCHES the watcher
+  # process, so this prefix belongs only on the adapters whose repair line hands
+  # the model a command that does that launching (docs/supervision-protocols/
+  # codex.md and grok.md say the same thing in their own step 2). Under the
+  # hook-, park-, and extension-owned adapters the model has no such command:
+  # bin/fm-claude-stop-autoarm.sh, bin/fm-turnend-guard-cursor.sh, and the Pi
+  # watcher extension each source the config in their own launch path, so
+  # telling the model to source it "first" in a turn shell that never spawns a
+  # watcher is an instruction it cannot act on.
   if [ "$X_MODE" -eq 1 ]; then
-    prefix="${prefix}source ${x_mode_env_sh} first, then "
+    case "$HARNESS" in
+      codex|grok|opencode|unknown)
+        prefix="${prefix}source ${x_mode_env_sh} first, then "
+        ;;
+    esac
   fi
 
   case "$HARNESS" in

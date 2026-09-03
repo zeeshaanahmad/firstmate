@@ -71,6 +71,40 @@ test_repair_lines() {
   pass "renderer repair-line mode is harness-aware and honors conditional state"
 }
 
+# The Relay cadence config is inherited by whatever LAUNCHES the watcher, so the
+# repair line names it exactly for the adapters that hand the model a command
+# doing that launching. Under the hook-, park-, and extension-owned adapters
+# bin/fm-claude-stop-autoarm.sh, bin/fm-turnend-guard-cursor.sh, and the Pi
+# watcher extension source it in their own launch path and the model has no
+# command to source into, so naming it there is an instruction it cannot act on.
+test_x_mode_cadence_rides_only_launching_repair_lines() {
+  local home out harness
+  home="$TMP_ROOT/xmode-home"
+  mkdir -p "$home/state" "$home/config"
+  : > "$home/config/x-mode.env"
+
+  for harness in codex grok opencode unknown; do
+    out=$(FM_HOME="$home" "$RENDER" --harness "$harness" --x-mode 1 --repair-line)
+    assert_contains "$out" "source '$home/config/x-mode.env' first" \
+      "$harness repair line launches a watcher by command but lost the cadence config"
+  done
+
+  for harness in claude cursor pi pi-signed; do
+    out=$(FM_HOME="$home" "$RENDER" --harness "$harness" --x-mode 1 --repair-line)
+    assert_not_contains "$out" "source '$home/config/x-mode.env' first" \
+      "$harness repair line told the model to source the cadence config with no command to source into"
+  done
+
+  # The independent queue-pending prefix must survive on both sides.
+  out=$(FM_HOME="$home" "$RENDER" --harness claude --x-mode 1 --queue-pending 1 --repair-line)
+  assert_contains "$out" "After draining queued wakes, watcher supervision needs Stop-owned" \
+    "x-mode suppression on a hook-owned adapter also dropped the queue-pending prefix"
+  out=$(FM_HOME="$home" "$RENDER" --harness grok --x-mode 1 --queue-pending 1 --repair-line)
+  assert_contains "$out" "After draining queued wakes, source '$home/config/x-mode.env' first, then" \
+    "queue-pending and cadence prefixes lost their order on a launching adapter"
+  pass "x-mode cadence config rides only the repair lines that launch a watcher by command"
+}
+
 test_cross_harness_ordinary_continuation_and_repair_matrix() {
   local ordinary out
 
@@ -182,6 +216,7 @@ test_selected_harness_block_only
 test_unknown_fallback
 test_conditional_stanzas
 test_repair_lines
+test_x_mode_cadence_rides_only_launching_repair_lines
 test_cross_harness_ordinary_continuation_and_repair_matrix
 test_pi_signed_preserves_identity_with_pi_supervision_protocol
 test_grok_is_background_notify

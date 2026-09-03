@@ -377,7 +377,15 @@ test_hook_blocks_from_fm_home_state() {
   pass "fm-turnend-guard: blocks from active FM_HOME state, not only repo-root state"
 }
 
-test_hook_x_mode_reason_sources_cadence() {
+# The Relay cadence is inherited by whatever LAUNCHES the watcher. This hook runs
+# under the Claude Stop-hook adapter, where bin/fm-claude-stop-autoarm.sh sources
+# the cadence config in its own launch path and the model is handed no command to
+# source into, so the block reason must state the Stop-owned contract instead of
+# naming a config the model cannot act on. The cadence config still rides the
+# repair lines of the adapters that DO emit a launching command; that side is
+# pinned in tests/fm-supervision-instructions.test.sh and, end to end through the
+# guard, in tests/fm-watcher-lock.test.sh.
+test_hook_x_mode_reason_keeps_stop_owned_contract() {
   local dir home out status
   dir=$(make_primary_dir "$TMP_ROOT/hook-x-mode")
   home=$(cd "$dir" && pwd)
@@ -386,8 +394,11 @@ test_hook_x_mode_reason_sources_cadence() {
   : > "$dir/state/task1.meta"
   out=$(run_hook "$dir" false); status=$?
   expect_code 2 "$status" "hook must block when in-flight X-mode work has no live watcher"
-  assert_contains "$out" "source '$home/config/x-mode.env' first" "block reason must source the effective X-mode cadence"
-  pass "fm-turnend-guard: X-mode repair reason sources the cadence config"
+  assert_contains "$out" "watcher supervision needs Stop-owned automatic recovery" \
+    "block reason lost the Stop-owned recovery contract under X mode"
+  assert_not_contains "$out" "source '$home/config/x-mode.env' first" \
+    "block reason told the model to source the cadence config with no command to source into"
+  pass "fm-turnend-guard: X-mode block reason keeps the Stop-owned recovery contract"
 }
 
 test_hook_x_mode_only_blocks_in_default_mode() {
@@ -1965,7 +1976,7 @@ test_hook_non_claude_health_ignores_claude_budget_contention
 test_hook_blocks_with_live_lock_and_stale_beacon
 test_hook_blocks_when_unhealthy_in_primary
 test_hook_blocks_from_fm_home_state
-test_hook_x_mode_reason_sources_cadence
+test_hook_x_mode_reason_keeps_stop_owned_contract
 test_hook_x_mode_only_blocks_in_default_mode
 test_hook_ignores_repo_state_when_fm_home_set
 test_hook_uses_state_override

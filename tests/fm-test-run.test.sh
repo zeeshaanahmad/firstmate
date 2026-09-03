@@ -12,6 +12,16 @@ set -u
 
 RUNNER="$ROOT/bin/fm-test-run.sh"
 
+# Copy the runner into a fixture repo's bin/ along with the one library it
+# sources (bin/fm-test-env-lib.sh, the owner of the never-inherit override
+# list). A fixture that copies only the runner leaves it unable to start.
+install_runner() {  # <fixture-bin-dir>
+  local bin=$1
+  cp "$RUNNER" "$bin/fm-test-run.sh"
+  cp "$ROOT/bin/fm-test-env-lib.sh" "$bin/fm-test-env-lib.sh"
+  chmod +x "$bin/fm-test-run.sh"
+}
+
 assert_present "$RUNNER" "bin/fm-test-run.sh is missing"
 [ -x "$RUNNER" ] || fail "bin/fm-test-run.sh must be executable"
 
@@ -91,8 +101,7 @@ test_changed_file_selection_is_conservative() {
 init_changed_fixture_repo() {
   local repo=$1 script
   mkdir -p "$repo/bin" "$repo/tests"
-  cp "$RUNNER" "$repo/bin/fm-test-run.sh"
-  chmod +x "$repo/bin/fm-test-run.sh"
+  install_runner "$repo/bin"
   for script in \
     fm-brief.test.sh \
     fm-ask-user-authority.test.sh \
@@ -928,7 +937,7 @@ test_jobs_parallel_scheduler_and_failure_propagation() {
   c=tests/fm-lint.test.sh
   d=tests/fm-supervision-instructions.test.sh
   mkdir -p "$repo/bin" "$repo/tests" "$evidence" "$fake_bin"
-  cp "$RUNNER" "$runner"
+  install_runner "$repo/bin"
   cat >"$fake_bin/stat" <<'SH'
 #!/usr/bin/env bash
 if [ "$1" = "-c" ] && [ "$2" = "%a" ]; then
@@ -1142,7 +1151,7 @@ test_fleet_home_overrides_are_scrubbed_in_both_lanes() {
   a=tests/fm-brief.test.sh
   b=tests/fm-composer-lib.test.sh
   mkdir -p "$repo/bin" "$repo/tests" "$evidence" "$fake_bin"
-  cp "$RUNNER" "$runner"
+  install_runner "$repo/bin"
   cat >"$fake_bin/stat" <<'SH'
 #!/usr/bin/env bash
 if [ "$1" = "-c" ] && [ "$2" = "%a" ]; then
