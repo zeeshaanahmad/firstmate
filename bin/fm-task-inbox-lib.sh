@@ -261,19 +261,27 @@ fm_task_inbox_doorbell_line() {  # <record-path>
 # the composer PROVENLY holds pending text (the watcher re-rings later), 2 the
 # backend send failed, 3 the endpoint had no live agent before anything was
 # typed, 4 the endpoint's agent exited to a shell between typing the doorbell
-# line and confirming submission. No return value is delivery proof; the
+# line and confirming submission, 5 the endpoint's recorded target could not be
+# proven to exist on the server this call is bound to (see
+# fm_backend_tmux_target_resolves). No return value is delivery proof; the
 # acknowledgement move is the only delivery signal.
 #
-# 3 and 4 are separated from 0 because they are the ring outcomes a reader
-# would otherwise misread as success: the submit core answers `no-agent` and
-# `agent-lost` as VERDICTs with exit 0, so folding either into "rang" reports a
-# doorbell that provably reached nobody. The record is still durable and the
-# ladder still escalates it - the caller's job is only to say the agent was
-# absent, never to fail the send. They are also separated from EACH OTHER
-# because they disagree on whether the doorbell line was typed: `no-agent`
-# means it was not, `agent-lost` means it was typed and Enter was sent before
-# the agent exited - collapsing them into one outcome would force a message
-# that is false for one of the two.
+# 3, 4, and 5 are separated from 0 because they are the ring outcomes a reader
+# would otherwise misread as success: the submit core answers `no-agent`,
+# `agent-lost`, and `unresolvable` as VERDICTs with exit 0, so folding any of
+# them into "rang" reports a doorbell that provably reached nobody. The record
+# is still durable and the ladder still escalates it - the caller's job is
+# only to say the agent was absent (or the endpoint unverifiable), never to
+# fail the send. They are also separated from EACH OTHER because they
+# disagree on what is actually known: `no-agent` means the doorbell line was
+# not typed into a proven-dead pane, `agent-lost` means it was typed and Enter
+# was sent before the agent exited, and `unresolvable` means neither of those
+# facts could even be established - the recorded target does not resolve on
+# this call's bound server at all, so NOTHING was typed anywhere. Collapsing
+# any of these into another would force a message that is false for at least
+# one of them; a wrong or unresolvable server is not the same fact as a dead
+# agent; folding them would report a doorbell that provably reached nobody as
+# one that reached a dead worker.
 #
 # The authoritative agent-state read runs BEFORE the composer pre-check, not
 # after: a dead pane's rendered composer can still classify as `pending` (a
@@ -302,6 +310,7 @@ fm_task_inbox_ring() {  # <backend> <target> <record-path> [expected-label]
   local backend=$1 target=$2 rec=$3 label=${4:-} line cstate verdict
   line=$(fm_task_inbox_doorbell_line "$rec")
   case "$(fm_backend_pane_agent_state "$backend" "$target" 2>/dev/null)" in
+    unresolvable) return 5 ;;
     dead|missing) return 3 ;;
   esac
   cstate=$(fm_backend_composer_state "$backend" "$target" "$label" 2>/dev/null) || cstate=unknown
@@ -311,13 +320,15 @@ fm_task_inbox_ring() {  # <backend> <target> <record-path> [expected-label]
   if ! verdict=$(fm_backend_send_text_submit "$backend" "$target" "$line" 1 0.4 0.3 "$label" 2>/dev/null); then
     return 2
   fi
-  # The verdict is read only to report a failed keystroke and an endpoint with
-  # no live agent; every other value (empty, pending, unknown, ...) is
+  # The verdict is read only to report a failed keystroke, an endpoint with no
+  # live agent, and an endpoint whose target could not be proven to exist on
+  # the bound server; every other value (empty, pending, unknown, ...) is
   # deliberately ignored, never proof.
   [ "$verdict" != send-failed ] || return 2
   case "$verdict" in
     no-agent) return 3 ;;
     agent-lost) return 4 ;;
+    unresolvable) return 5 ;;
   esac
   return 0
 }

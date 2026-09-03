@@ -1046,6 +1046,16 @@ if [ "$RELAUNCH" -eq 1 ]; then
   RELAUNCH_TARGET=$FM_BACKEND_VALIDATED_TARGET
   fm_backend_validate_spawn "$BACKEND" || exit 1
   fm_backend_source "$BACKEND" || exit 1
+  RELAUNCH_TMUX_SOCKET=
+  if [ "$BACKEND" = tmux ]; then
+    # Pin the exact server this task's endpoint was recorded on (or the
+    # ambient default for a pre-fix record with no tmux_socket=) BEFORE the
+    # liveness check below reads it, so relaunch's own "prove the previous
+    # agent exited" verification cannot be fooled by a same-id pane on some
+    # other server either.
+    RELAUNCH_TMUX_SOCKET=$(fm_meta_get "$RELAUNCH_META" tmux_socket)
+    fm_backend_tmux_bind_socket "$RELAUNCH_TMUX_SOCKET"
+  fi
   # A relaunch must PROVE the previous agent is gone before it launches another
   # one into the same endpoint, and only tmux and herdr have a recovery-grade
   # classifier that can (bin/fm-control-lib.sh owns that capability table).
@@ -1981,6 +1991,7 @@ herdr_projection_existing_meta_allows_flat() {  # <meta>
 }
 
 W="fm-$ID"
+SPAWN_TMUX_SOCKET=
 if [ "$RELAUNCH" -eq 1 ]; then
   # Adopt the recorded endpoint instead of creating one. This is what keeps a
   # relaunch a REPLACEMENT rather than a second copy of the task: no new
@@ -1996,6 +2007,20 @@ else
 case "$BACKEND" in
   tmux)
     SES=$(fm_backend_tmux_container_ensure)
+    # Record the exact server this task's window lives on, alongside window=,
+    # so every later reader/sender (bin/fm-send.sh, bin/fm-task-inbox-lib.sh's
+    # doorbell) can pin its own tmux calls to THIS server rather than trust
+    # whatever server its own ambient PATH/environment happens to resolve -
+    # pane ids are per-server counters, so an unpinned caller cannot tell this
+    # task's window from a same-id window on a different server.
+    SPAWN_TMUX_SOCKET=$(fm_tmux_bin display-message -p -t "$SES" '#{socket_path}' 2>/dev/null) || SPAWN_TMUX_SOCKET=
+    # A real tmux's #{socket_path} always answers an absolute path; anything
+    # else (a stubbed/fake tmux answering some unrelated placeholder for an
+    # unmatched format string, or a read that silently failed) is not a
+    # socket and must not be recorded as one - fm_backend_tmux_bind_socket
+    # independently enforces the same shape, so this is belt-and-suspenders
+    # against ever writing a bogus tmux_socket= into a task's meta at all.
+    case "$SPAWN_TMUX_SOCKET" in /*) ;; *) SPAWN_TMUX_SOCKET= ;; esac
     T="$SES:$W"
     # #134 robustness (tmux): fm_backend_tmux_create_task captures a stable window
     # id and pins the window name (automatic-rename/allow-rename off) so a captain's
@@ -2767,7 +2792,7 @@ fi
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend tmux_socket herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -2792,6 +2817,13 @@ preserve_relaunch_meta() {
   # default path's meta stays byte-identical (absent backend= means tmux;
   # data/fm-backend-design-d7's P1 compatibility contract).
   [ "$BACKEND" = tmux ] || echo "backend=$BACKEND"
+  if [ "$BACKEND" = tmux ]; then
+    if [ "$RELAUNCH" -eq 1 ]; then
+      [ -z "$RELAUNCH_TMUX_SOCKET" ] || echo "tmux_socket=$RELAUNCH_TMUX_SOCKET"
+    else
+      [ -z "$SPAWN_TMUX_SOCKET" ] || echo "tmux_socket=$SPAWN_TMUX_SOCKET"
+    fi
+  fi
   if [ "$BACKEND" = herdr ]; then
     echo "herdr_session=$HERDR_SES"
     echo "herdr_workspace_id=$HERDR_WORKSPACE_ID"

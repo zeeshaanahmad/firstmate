@@ -25,6 +25,67 @@
 # shellcheck source=bin/fm-cursor-lib.sh
 . "$FM_BACKEND_LIB_DIR/fm-cursor-lib.sh"
 
+# fm_backend_tmux_bind_socket: pin every subsequent fm_tmux_bin call (this
+# adapter and bin/fm-tmux-lib.sh's shared primitives) to the exact server at
+# <socket-path>, or unpin back to ambient resolution when <socket-path> is
+# empty. A caller that has resolved a task's recorded endpoint binds here
+# BEFORE reading or acting on that endpoint's target, so the wrong-server
+# doorbell defect (2026-09-04 - a target recorded against one tmux server
+# escaping to whatever server ambient PATH/environment happens to resolve
+# instead) cannot recur for that caller. See fm_tmux_bin (bin/fm-tmux-lib.sh)
+# for the seam this feeds.
+fm_backend_tmux_bind_socket() {  # <socket-path-or-empty>
+  FM_BACKEND_TMUX_SOCKET=${1:-}
+  # A recorded value that is not an absolute path is not a real tmux socket -
+  # for instance a real tmux's own #{socket_path} always answers an absolute
+  # path, so a fake/stubbed tmux's unrelated placeholder text (several test
+  # fixtures' `display-message` case answers a fixed non-path string for any
+  # unmatched format, tests/fixtures.sh's fm_test_fake_tmux_spawn among them)
+  # can never accidentally get bound as one. Treat it as unbound rather than
+  # pinning a caller to a value that could not possibly be a socket, which
+  # would otherwise inject an unexpected `-S <value>` into every subsequent
+  # tmux invocation and break argument parsing in stubs that assume the
+  # subcommand is always $1.
+  case "$FM_BACKEND_TMUX_SOCKET" in
+    /*) ;;
+    *) FM_BACKEND_TMUX_SOCKET= ;;
+  esac
+  export FM_BACKEND_TMUX_SOCKET
+}
+
+# fm_backend_tmux_target_resolves: TRUE only when <target> names a pane or
+# window that genuinely exists on the tmux server this call is bound to
+# (ambient, or pinned via fm_backend_tmux_bind_socket).
+#
+# It exists because a `-t` selector naming an ABSENT target does not fail the
+# way a caller would expect: tmux answers some reads from the client's
+# current/active pane instead of erroring (measured empirically, 2026-09-04:
+# `tmux display-message -p -t '%<absent>' '#{pane_tty}'` on a server lacking
+# that pane returned EMPTY OUTPUT WITH EXIT 0), so no single-target `-t` read
+# in this file can be trusted to prove a target's existence on its own -
+# every one of them is exactly as unsafe on the CORRECT server as on a wrong
+# one. Enumerating every real pane and window on the bound server with one
+# listing and checking exact membership is not subject to that fallback: a
+# target that is not in the listing is not resolvable, period.
+#
+# Accepts the two target shapes this backend's callers pass: a raw pane id
+# (`%N`, the away-mode supervisor's own pane) or a `session:window` name (a
+# spawned task's recorded endpoint). Anything else refuses to resolve rather
+# than guess.
+fm_backend_tmux_target_resolves() {  # <target>
+  local target=$1 panes
+  panes=$(fm_tmux_bin list-panes -a -F '#{pane_id}~#{session_name}:#{window_name}' 2>/dev/null) || return 1
+  case "$target" in
+    %*)
+      printf '%s\n' "$panes" | awk -F'~' -v t="$target" '$1 == t { f = 1 } END { exit(f ? 0 : 1) }'
+      ;;
+    *:*)
+      printf '%s\n' "$panes" | awk -F'~' -v t="$target" '$2 == t { f = 1 } END { exit(f ? 0 : 1) }'
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 # fm_backend_tmux_resolve_bare_selector: the live-window-listing fallback for a
 # selector that is neither an explicit target nor a task selector routed
 # through meta - an ad hoc window name with no recorded task. Mirrors the
@@ -32,22 +93,22 @@
 # fm-send.sh's and fm-peek.sh's own (until now duplicated) resolve().
 fm_backend_tmux_resolve_bare_selector() {  # <name>
   local name=$1
-  tmux list-windows -a -F '#{session_name}:#{window_name}' | grep -m1 ":$name\$" \
+  fm_tmux_bin list-windows -a -F '#{session_name}:#{window_name}' | grep -m1 ":$name\$" \
     || { echo "error: no window named $name" >&2; return 1; }
 }
 
 # fm_backend_tmux_capture: bounded plain-text pane capture. Mirrors
 # fm-peek.sh's and fm-watch.sh's `tmux capture-pane -p -t "$T" -S -"$N"`.
 fm_backend_tmux_capture() {  # <target> <lines>
-  tmux capture-pane -p -t "$1" -S -"$2"
+  fm_tmux_bin capture-pane -p -t "$1" -S -"$2"
 }
 
 # fm_backend_tmux_send_key: one named key. Mirrors fm-send.sh's --key path:
 # `tmux display-message -p -t "$T" '#{pane_id}' >/dev/null`, then
 # `tmux send-keys -t "$T" "$2"`.
 fm_backend_tmux_send_key() {  # <target> <key>
-  tmux display-message -p -t "$1" '#{pane_id}' >/dev/null
-  tmux send-keys -t "$1" "$2"
+  fm_tmux_bin display-message -p -t "$1" '#{pane_id}' >/dev/null
+  fm_tmux_bin send-keys -t "$1" "$2"
 }
 
 # fm_backend_tmux_send_text_submit: type <text> into <target> once, then
@@ -87,11 +148,26 @@ fm_backend_tmux_send_key() {  # <target> <key>
 # describes the pane that receives the keystrokes, including when tmux answers
 # an absent target from the client's active window.
 fm_backend_tmux_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
-  local target=$1 verdict
-  if [ "$(fm_backend_tmux_pane_agent_state "$target")" = dead ]; then
-    printf 'no-agent'
-    return 0
-  fi
+  local target=$1 verdict state
+  state=$(fm_backend_tmux_pane_agent_state "$target")
+  case "$state" in
+    unresolvable)
+      # <target> does not exist on the server this call is bound to (see
+      # fm_backend_tmux_target_resolves). This is NOT the same fact as
+      # `dead` - a dead pane is a proven endpoint with no agent, while an
+      # unresolvable one could not be proven to be the task's endpoint at
+      # all, on a wrong or absent server. Refusing here, before anything is
+      # typed, is what closes the wrong-server doorbell defect for the typed
+      # plane the same way it closes it for the ring (bin/fm-task-inbox-lib.sh
+      # fm_task_inbox_ring outcome 5).
+      printf 'unresolvable'
+      return 0
+      ;;
+    dead)
+      printf 'no-agent'
+      return 0
+      ;;
+  esac
   verdict=$(fm_tmux_submit_core "$@")
   if [ "$verdict" = empty ] \
     && [ "$(fm_backend_tmux_pane_agent_state "$target")" = dead ]; then
@@ -107,9 +183,9 @@ fm_backend_tmux_send_text_submit() {  # <target> <text> <retries> <enter-sleep> 
 # prints the resolved session name.
 fm_backend_tmux_container_ensure() {
   if [ -n "${TMUX:-}" ]; then
-    tmux display-message -p '#S'
+    fm_tmux_bin display-message -p '#S'
   else
-    tmux has-session -t firstmate 2>/dev/null || tmux new-session -d -s firstmate
+    fm_tmux_bin has-session -t firstmate 2>/dev/null || fm_tmux_bin new-session -d -s firstmate
     printf 'firstmate'
   fi
 }
@@ -131,13 +207,13 @@ fm_backend_tmux_container_ensure() {
 # lost, so worktree discovery cannot fall back to the active client's window.
 fm_backend_tmux_create_task() {  # <session> <window-name> <proj-abs> -> prints window id
   local ses=$1 wname=$2 proj_abs=$3 wid
-  if tmux list-windows -t "$ses" -F '#{window_name}' | grep -qx "$wname"; then
+  if fm_tmux_bin list-windows -t "$ses" -F '#{window_name}' | grep -qx "$wname"; then
     echo "error: window $ses:$wname already exists" >&2
     return 1
   fi
-  wid=$(tmux new-window -dP -F '#{window_id}' -t "$ses:" -n "$wname" -c "$proj_abs") || return 1
-  tmux set-window-option -t "$wid" automatic-rename off 2>/dev/null || true
-  tmux set-window-option -t "$wid" allow-rename off 2>/dev/null || true
+  wid=$(fm_tmux_bin new-window -dP -F '#{window_id}' -t "$ses:" -n "$wname" -c "$proj_abs") || return 1
+  fm_tmux_bin set-window-option -t "$wid" automatic-rename off 2>/dev/null || true
+  fm_tmux_bin set-window-option -t "$wid" allow-rename off 2>/dev/null || true
   printf '%s\n' "$wid"
 }
 
@@ -145,7 +221,7 @@ fm_backend_tmux_create_task() {  # <session> <window-name> <proj-abs> -> prints 
 # empty on any tmux error. Mirrors fm-spawn.sh's worktree-discovery poll:
 # `tmux display-message -p -t "$T" '#{pane_current_path}'`.
 fm_backend_tmux_current_path() {  # <target>
-  tmux display-message -p -t "$1" '#{pane_current_path}' 2>/dev/null
+  fm_tmux_bin display-message -p -t "$1" '#{pane_current_path}' 2>/dev/null
 }
 
 # fm_backend_tmux_send_text_line: send one line of TEXT then Enter, with no
@@ -153,7 +229,7 @@ fm_backend_tmux_current_path() {  # <target>
 # (`treehouse get`, the GOTMPDIR export) that already ran this exact sequence
 # inline in fm-spawn.sh. Mirrors `tmux send-keys -t "$T" "<text>" Enter`.
 fm_backend_tmux_send_text_line() {  # <target> <text>
-  tmux send-keys -t "$1" "$2" Enter
+  fm_tmux_bin send-keys -t "$1" "$2" Enter
 }
 
 # fm_backend_tmux_send_literal: send TEXT as literal bytes with no
@@ -161,7 +237,7 @@ fm_backend_tmux_send_text_line() {  # <target> <text>
 # send pauses between the literal send and Enter for the harness to settle).
 # Mirrors `tmux send-keys -t "$T" -l "<text>"`.
 fm_backend_tmux_send_literal() {  # <target> <text>
-  tmux send-keys -t "$1" -l "$2"
+  fm_tmux_bin send-keys -t "$1" -l "$2"
 }
 
 # fm_backend_tmux_kill: remove one explicitly named task window, best-effort.
@@ -179,7 +255,7 @@ fm_backend_tmux_kill() {  # <target>
   case "$session:$window" in
     :*|*:|*:*:*) return 1 ;;
   esac
-  tmux kill-window -t "=$session:=$window" 2>/dev/null || true
+  fm_tmux_bin kill-window -t "=$session:=$window" 2>/dev/null || true
 }
 
 # fm_backend_tmux_current_command: <target>'s live foreground process name -
@@ -192,7 +268,7 @@ fm_backend_tmux_kill() {  # <target>
 # own name throughout; the value reverts to the shell's own name only once
 # the foreground command actually exits). Empty on any tmux error.
 fm_backend_tmux_current_command() {  # <target>
-  tmux display-message -p -t "$1" '#{pane_current_command}' 2>/dev/null
+  fm_tmux_bin display-message -p -t "$1" '#{pane_current_command}' 2>/dev/null
 }
 
 # fm_backend_tmux_classify_process_name: the single owner of the process-name
@@ -264,7 +340,7 @@ fm_backend_tmux_classify_process_name() {  # <path> [argv0] -> agent|shell|other
 # does, or they will describe some other pane entirely.
 fm_backend_tmux_foreground_comms() {  # <target>
   local target=$1 tty pid pgid tpgid comm
-  tty=$(tmux display-message -p -t "$target" '#{pane_tty}' 2>/dev/null) || return 0
+  tty=$(fm_tmux_bin display-message -p -t "$target" '#{pane_tty}' 2>/dev/null) || return 0
   [ -n "$tty" ] || return 0
   LC_ALL=C ps -t "${tty#/dev/}" -o pid=,pgid=,tpgid=,comm= 2>/dev/null \
     | while read -r pid pgid tpgid comm; do
@@ -276,7 +352,7 @@ fm_backend_tmux_foreground_comms() {  # <target>
 
 fm_backend_tmux_foreground_argv0s() {  # <target>
   local target=$1 tty pid pgid tpgid comm args argv0
-  tty=$(tmux display-message -p -t "$target" '#{pane_tty}' 2>/dev/null) || return 0
+  tty=$(fm_tmux_bin display-message -p -t "$target" '#{pane_tty}' 2>/dev/null) || return 0
   [ -n "$tty" ] || return 0
   LC_ALL=C ps -t "${tty#/dev/}" -o pid=,pgid=,tpgid=,comm= 2>/dev/null \
     | while read -r pid pgid tpgid comm; do
@@ -314,7 +390,7 @@ fm_backend_tmux_agent_state() {  # <target>
   esac
   session=${target%%:*}
   window=${target#*:}
-  if windows=$(LC_ALL=C tmux list-windows -t "$session" -F '#{window_name}' 2>&1); then
+  if windows=$(LC_ALL=C fm_tmux_bin list-windows -t "$session" -F '#{window_name}' 2>&1); then
     inventory_status=0
   else
     inventory_status=$?
@@ -340,8 +416,9 @@ fm_backend_tmux_agent_state() {  # <target>
 
 # fm_backend_tmux_pane_agent_state: the PROCESS-EVIDENCE half of the verdict
 # above, for a target the caller has ALREADY established resolves to the exact
-# endpoint it means. Prints alive|dead|ambiguous|unreadable - never `missing`,
-# because establishing that the endpoint exists is the caller's half.
+# endpoint it means. Prints alive|dead|ambiguous|unreadable|unresolvable -
+# never `missing`, because establishing that the endpoint exists is the
+# caller's half.
 #
 # It exists because the window-inventory guard above only accepts a
 # `session:window` target, while the away-mode supervisor pane is normally a
@@ -349,12 +426,35 @@ fm_backend_tmux_agent_state() {  # <target>
 # name. Splitting the two halves keeps ONE copy of the name-source combination
 # logic rather than a second, drifting one for pane-id callers.
 #
+# `unresolvable` is checked first, ahead of every other read, but ONLY for a
+# caller that has bound an explicit server (fm_backend_tmux_bind_socket):
+# every raw `-t`-addressed query below (display-message, ps against the
+# resolved tty) shares the SAME wrong-server/absent-target fallback hazard
+# documented on fm_backend_tmux_target_resolves, so answering from those reads
+# before confirming the target's own existence would describe whatever pane
+# tmux fell back to, not the one this call means. An UNBOUND caller (every
+# caller that has not opted in, including every existing fake-tmux test
+# fixture that predates this check and has no `list-panes` of its own) skips
+# the existence read entirely and keeps its exact prior ambient behavior -
+# there is no bound server to prove the target against, so this stays exactly
+# as permissive as it was before this fix.
+#
 # The evidence rule is unchanged: either name source naming a verified harness
 # is enough for `alive`, and a readable foreground process group is what settles
 # the negative verdicts, so only a group that is nothing but shells is
 # confidently agent-free.
 fm_backend_tmux_pane_agent_state() {  # <target>
   local target=$1 comm foreground argv0s name fg_seen=0 fg_shell=0 fg_other=0
+  # The existence check is gated on an explicitly BOUND server: it is the
+  # binding (fm_backend_tmux_bind_socket) that turns "does this target exist"
+  # into an answerable question with a server to check against. An unbound
+  # caller is asking nothing new versus before this fix - unchanged ambient
+  # behavior, byte-identical to every caller (and every fake-tmux test
+  # fixture across the suite, none of which implement list-panes) that has
+  # never opted into pinning a server.
+  if [ -n "${FM_BACKEND_TMUX_SOCKET:-}" ]; then
+    fm_backend_tmux_target_resolves "$target" || { printf 'unresolvable'; return 0; }
+  fi
   foreground=$(fm_backend_tmux_foreground_comms "$target")
   while IFS= read -r name; do
     [ -n "$name" ] || continue

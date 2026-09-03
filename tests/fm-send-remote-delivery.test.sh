@@ -142,6 +142,39 @@ SH
   printf '%s\n' "$fb"
 }
 
+# A minimal, real (non-mocked) herdr CLI stand-in that answers `pane get` as a
+# structurally present pane with no registered agent (`agent get` ->
+# agent_not_found) - exactly the fixture header of tests/remote-herdr-fixture.sh
+# describes for a pane nothing has registered on. This is deliberately
+# narrower than that full stateful fixture: it exists only to give
+# bin/backends/herdr.sh's fm_backend_herdr_pane_agent_state a real CLI to
+# drive fm_task_inbox_ring to its no-agent outcome (3), so
+# bin/fm-remote-secondmate-control.sh's own ring_rc=3 notice text can be
+# exercised end-to-end rather than asserted only by mocking the ring itself.
+make_herdr_noagent_stub() {  # <fakebin-dir> <log> -> writes <fakebin-dir>/herdr
+  local fb=$1 log=$2 script="$fb/herdr"
+  cat > "$script" <<EOF
+#!/usr/bin/env bash
+set -u
+LOG='$log'
+EOF
+  cat >> "$script" <<'EOF'
+printf '%s\n' "$*" >> "$LOG"
+case "${1:-} ${2:-}" in
+  "pane get")
+    printf '{"result":{"pane":{"pane_id":"%s"}}}\n' "${3:-}"
+    ;;
+  "agent get")
+    printf '{"error":{"code":"agent_not_found"}}\n'
+    ;;
+  *)
+    printf '{}\n'
+    ;;
+esac
+EOF
+  chmod +x "$script"
+}
+
 setup_home() {  # <name> -> echoes a fresh home dir with an empty state/
   local home="$TMP_ROOT/$1-$RANDOM"
   mkdir -p "$home/state"
@@ -776,6 +809,56 @@ test_local_pending_does_not_close_resolve_key() {
   pass "fm-send local: an unconfirmed submit still never closes a --resolve-key decision"
 }
 
+test_remote_ring_no_agent_names_absent_endpoint() {
+  local dir fb ssh_log home rhome rc err herdr_log recs
+
+  # This one scenario needs a real (if minimal) herdr CLI on PATH so
+  # bin/backends/herdr.sh's JSON reads have something to parse; every other
+  # test in this file needs neither herdr nor jq (fm_task_inbox_ring falls
+  # through to send-failed without a herdr CLI at all - outcome 2, already
+  # covered by test_remote_steer_lands_in_remote_inbox). Scope the skip to
+  # just this test rather than the whole file.
+  command -v jq >/dev/null 2>&1 || { echo "skip: jq not found, skipping remote no-agent ring coverage"; return 0; }
+
+  dir="$TMP_ROOT/remote-no-agent"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); ssh_log="$dir/ssh.log"; : > "$ssh_log"
+  herdr_log="$dir/herdr.log"; : > "$herdr_log"
+  make_herdr_noagent_stub "$fb" "$herdr_log"
+  rhome=$(setup_remote_secondmate_home remote-no-agent)
+  home=$(setup_remote_parent_home remote-no-agent "$rhome")
+
+  rc=0
+  send_env "$fb" "$home" "$ssh_log" \
+    "$SEND" rsm "rebase onto main and re-run the gate" >"$dir/out" 2>"$dir/err" || rc=$?
+  err=$(cat "$dir/err")
+  expect_code 0 "$rc" "an ordinary steer is durably recorded, so a no-agent doorbell must not fail the send: $err"
+
+  recs=$(remote_inbox_records "$rhome")
+  [ -n "$recs" ] || fail "the steer must land as a record in the remote steering inbox"
+  grep -rqF 'rebase onto main' "$rhome/state/parent-route/rsm.inbox" \
+    || fail "the durable record does not carry the steer text"
+
+  # bin/fm-remote-secondmate-control.sh cmd_send's OWN ring_rc=3 wording -
+  # distinct from the generic "durably recorded" substring every ring_rc arm
+  # shares (already covered, for outcome 2 only, by
+  # test_remote_steer_lands_in_remote_inbox's no-herdr-CLI scenario). Note
+  # outcome 4 (agent-lost) has no equivalent coverage here: it is structurally
+  # unreachable on herdr, whose fm_backend_herdr_send_text_submit never emits
+  # that verdict string (unlike tmux's fm_backend_tmux_send_text_submit,
+  # covered by tests/fm-send-shell-pane-refusal.test.sh) - deliberately not
+  # fabricated here.
+  assert_contains "$err" "no live agent at fm-remote:p1" \
+    "the remote no-agent ring must name the absent endpoint"
+  assert_contains "$err" "doorbell line was NOT typed there" \
+    "the remote no-agent ring must say the doorbell line was not typed"
+  assert_contains "$err" "waits for a live agent" \
+    "the remote no-agent ring must say the record waits for a live agent"
+
+  grep -qF 'agent get' "$herdr_log" || fail "the fake herdr CLI's agent-liveness read was never exercised"
+
+  pass "fm-send remote: a doorbell to a no-agent Herdr endpoint reports absence and never fails the send"
+}
+
 test_remote_steer_lands_in_remote_inbox
 test_remote_rerun_is_idempotent
 test_remote_retry_failure_preserves_ambiguous_expectation
@@ -792,5 +875,6 @@ test_remote_send_budget_bounds_busy_lane
 test_local_pending_reports_delivered_unconfirmed
 test_local_pending_does_not_close_resolve_key
 test_local_secondmate_pending_keeps_expectation_armed
+test_remote_ring_no_agent_names_absent_endpoint
 
 echo "all fm-send-remote-delivery tests passed"

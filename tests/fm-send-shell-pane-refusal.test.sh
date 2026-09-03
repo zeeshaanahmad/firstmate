@@ -59,11 +59,21 @@ BASH_BIN=$(command -v bash) || { echo "skip: bash not found"; exit 0; }
 
 REAL_TMUX=$(command -v tmux)
 SOCKET="fm-sendshell-$$"
+RIGHT_SOCKET="fm-sendshell-right-$$"
 LAB=$(mktemp -d "${TMPDIR:-/tmp}/fm-sendshell.XXXXXX")
+ORIG_PATH=$PATH
+# A short, top-level tmp dir - NOT nested under $LAB - because a scoped
+# TMUX_TMPDIR's socket path is `<dir>/tmux-<uid>/default`, and $LAB's own
+# deeply-nested mktemp path plus that suffix can exceed AF_UNIX's ~104-byte
+# sun_path limit (measured: 106 bytes nested under $LAB, "File name too long").
+WRONG_TMPDIR=$(mktemp -d "/tmp/fm-wrongtmux.XXXXXX")
 
 cleanup_all() {
   "$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || true
+  "$REAL_TMUX" -L "$RIGHT_SOCKET" kill-server >/dev/null 2>&1 || true
+  TMUX_TMPDIR="$WRONG_TMPDIR" "$REAL_TMUX" kill-server >/dev/null 2>&1 || true
   [ -n "${LAB:-}" ] && rm -rf "$LAB"
+  [ -n "${WRONG_TMPDIR:-}" ] && rm -rf "$WRONG_TMPDIR"
 }
 trap cleanup_all EXIT
 
@@ -94,6 +104,14 @@ ln -s "$BASH_BIN" "$LAB/bin/claude-shim"
 # discards its buffer, redraws the empty prompt, and re-execs itself under the
 # real bash - so from that instant the pane renders a cleared composer while
 # the kernel names a shell as its foreground process.
+#
+# `handoff-first` is the same technique for the RING (doorbell) path: the
+# doorbell line is a fixed, backend-generated constant the test cannot append
+# its own trigger character to, so instead of matching a character this mode
+# fires on the very first character read at all - the doorbell's literal send
+# arrives as one shot, so this still guarantees the handoff completes before
+# Enter is confirmed, exactly like `handoff`'s `~` trigger did for a
+# caller-supplied message.
 cat > "$LAB/pane-program.sh" <<'PROG'
 #!/usr/bin/env bash
 LOG="$1"
@@ -106,6 +124,10 @@ _buf=
 redraw() { printf '\r\033[K\xe2\x9d\xaf '; [ -n "$_buf" ] && printf '%s' "$_buf"; }
 redraw
 while IFS= read -r -n 1 _ch; do
+  if [ "$MODE" = handoff-first ]; then
+    _buf=; redraw
+    exec "$(command -v bash)" "$0" "$LOG" plain
+  fi
   if [ "$MODE" = handoff ] && [ "$_ch" = '~' ]; then
     _buf=; redraw
     exec "$(command -v bash)" "$0" "$LOG" plain
@@ -128,10 +150,20 @@ SHELL_PANE=$("$REAL_TMUX" -L "$SOCKET" display-message -p -t panes '#{pane_id}')
 AGENT_PANE=$("$REAL_TMUX" -L "$SOCKET" display-message -p -t panes:agentwin '#{pane_id}')
 "$REAL_TMUX" -L "$SOCKET" new-window -d -n losswin -t panes
 LOSS_PANE=$("$REAL_TMUX" -L "$SOCKET" display-message -p -t panes:losswin '#{pane_id}')
+"$REAL_TMUX" -L "$SOCKET" new-window -d -n ringlosswin -t panes
+RING_LOSS_PANE=$("$REAL_TMUX" -L "$SOCKET" display-message -p -t panes:ringlosswin '#{pane_id}')
+
+# The real, absolute socket path this private server actually lives at - what
+# bin/fm-spawn.sh now records as tmux_socket= alongside window=, so every meta
+# below binds fm-send.sh to THIS server explicitly rather than depending on
+# the PATH shim surviving (see the wrong-server case near the bottom, which
+# proves the shim alone is not load-bearing for isolation once this is set).
+SOCK_PATH=$("$REAL_TMUX" -L "$SOCKET" display-message -p -t panes '#{socket_path}')
 
 SHELL_LOG="$LAB/shell-submitted.log"; : > "$SHELL_LOG"
 AGENT_LOG="$LAB/agent-submitted.log"; : > "$AGENT_LOG"
 LOSS_LOG="$LAB/loss-submitted.log"; : > "$LOSS_LOG"
+RING_LOSS_LOG="$LAB/ring-loss-submitted.log"; : > "$RING_LOSS_LOG"
 
 # The SHELL pane: a real interactive bash, the pane program running under its
 # own kernel identity. This is the crewmate whose agent has exited.
@@ -144,6 +176,11 @@ LOSS_LOG="$LAB/loss-submitted.log"; : > "$LOSS_LOG"
 # The LOSS pane: starts as a live agent and becomes a shell mid-send.
 "$REAL_TMUX" -L "$SOCKET" send-keys -t "$LOSS_PANE" \
   "exec '$LAB/bin/claude-shim' '$LAB/pane-program.sh' '$LOSS_LOG' handoff" Enter
+# The RING-LOSS pane: starts as a live agent and becomes a shell the instant
+# the doorbell's literal send starts arriving (handoff-first), so its agent is
+# gone before the ring's own Enter can be confirmed.
+"$REAL_TMUX" -L "$SOCKET" send-keys -t "$RING_LOSS_PANE" \
+  "exec '$LAB/bin/claude-shim' '$LAB/pane-program.sh' '$RING_LOSS_LOG' handoff-first" Enter
 
 wait_for_prompt() {  # <pane>
   local pane=$1 i=0
@@ -157,17 +194,23 @@ wait_for_prompt() {  # <pane>
 wait_for_prompt "$SHELL_PANE" || fail "the shell pane never drew its prompt"
 wait_for_prompt "$AGENT_PANE" || fail "the agent pane never drew its prompt"
 wait_for_prompt "$LOSS_PANE" || fail "the handoff pane never drew its prompt"
+wait_for_prompt "$RING_LOSS_PANE" || fail "the ring-handoff pane never drew its prompt"
 
 # shellcheck source=bin/fm-backend.sh
 . "$ROOT/bin/fm-backend.sh"
 fm_backend_source tmux || fail "fm_backend_source tmux failed"
 
 # The steers are sent through the real bin/fm-send.sh against recorded task
-# endpoints, which is exactly how firstmate steers a crewmate.
+# endpoints, which is exactly how firstmate steers a crewmate. tmux_socket=
+# pins every one of these to this private server explicitly (bin/fm-spawn.sh
+# now records this at spawn time); it is not merely redundant with the PATH
+# shim above - the wrong-server case below proves fm-send.sh honors it even
+# when ambient resolution points elsewhere.
 HOME_DIR="$LAB/home"
-printf 'window=%s\nbackend=tmux\nkind=ship\nharness=claude\n' "$SHELL_PANE" > "$HOME_DIR/state/deadmate.meta"
-printf 'window=%s\nbackend=tmux\nkind=ship\nharness=claude\n' "$AGENT_PANE" > "$HOME_DIR/state/livemate.meta"
-printf 'window=%s\nbackend=tmux\nkind=ship\nharness=claude\n' "$LOSS_PANE" > "$HOME_DIR/state/lossmate.meta"
+printf 'window=%s\nbackend=tmux\ntmux_socket=%s\nkind=ship\nharness=claude\n' "$SHELL_PANE" "$SOCK_PATH" > "$HOME_DIR/state/deadmate.meta"
+printf 'window=%s\nbackend=tmux\ntmux_socket=%s\nkind=ship\nharness=claude\n' "$AGENT_PANE" "$SOCK_PATH" > "$HOME_DIR/state/livemate.meta"
+printf 'window=%s\nbackend=tmux\ntmux_socket=%s\nkind=ship\nharness=claude\n' "$LOSS_PANE" "$SOCK_PATH" > "$HOME_DIR/state/lossmate.meta"
+printf 'window=%s\nbackend=tmux\ntmux_socket=%s\nkind=ship\nharness=claude\n' "$RING_LOSS_PANE" "$SOCK_PATH" > "$HOME_DIR/state/ringlossmate.meta"
 
 send_steer() {  # <task-id> <text> -> exit status, output in SEND_OUT
   local id=$1 text=$2 rc=0
@@ -317,9 +360,151 @@ test_agent_lost_during_send_is_not_reported_delivered() {
   pass "an agent that exits to a shell mid-send is never reported as having received the steer"
 }
 
+# --- 5: the agent dies DURING THE RING ITSELF (ordinary/inbox plane) --------
+# Case 4 proves the typed (harness-native) plane refuses an agent lost between
+# typing and read-back. This proves the SAME race on the RING (doorbell) path
+# that an ordinary steer now rides: fm_task_inbox_ring's own outcome 4
+# (bin/fm-task-inbox-lib.sh), reported by bin/fm-send.sh, is a distinct code
+# path from case 4's - it is reached via fm_task_inbox_ring, never via a
+# direct fm_backend_send_text_submit call - and had no coverage before this.
+test_ring_agent_lost_during_doorbell_is_not_reported_delivered() {
+  local composer agent_state
+  [ "$(fm_backend_pane_agent_state tmux "$RING_LOSS_PANE")" = alive ] || fail \
+    "the ring-handoff pane should start as a live agent pane"
+
+  # An ORDINARY steer: it never types the instruction text itself (that rides
+  # the durable record), only the constant doorbell line, so handoff-first is
+  # what makes the agent die mid-ring without depending on message content.
+  send_steer ringlossmate 'rebase onto main and re-run the gate' || fail \
+    "an ordinary steer is durably recorded, so it must not fail: $SEND_OUT"
+
+  # The window this case owns, asserted so it cannot go vacuous: at read-back
+  # time the pane renders a cleared composer and the process facts say shell.
+  composer=$(fm_backend_composer_state tmux "$RING_LOSS_PANE")
+  agent_state=$(fm_backend_pane_agent_state tmux "$RING_LOSS_PANE")
+  [ "$composer" = empty ] || fail \
+    "the ring-handoff pane did not end up rendering a cleared composer (got '$composer'), so this case never exercised the ring's submit read-back"
+  [ "$agent_state" = dead ] || fail \
+    "the ring-handoff pane did not end up owned by a shell (got '$agent_state'), so this case never exercised the ring's submit read-back"
+
+  # The steer is still durably recorded: the record IS the delivery.
+  grep -F 'rebase onto main' "$HOME_DIR/state/ringlossmate.inbox/001.msg" >/dev/null || fail \
+    "the durable record does not carry the steer text"
+
+  # The doorbell line itself was never actually submitted: handoff-first
+  # discards its buffer on the very first character, so the LEADING byte of
+  # the doorbell's literal send is lost to the exec - the same "Enter was
+  # already in flight" leftover case 4 accepts, not a claim that the pane
+  # received nothing byte-for-byte. Asserting on the exact leading text (as
+  # opposed to a completely empty log) is what keeps this equivalent to case
+  # 4's `! grep -F '/status'` check rather than a stricter, more fragile one.
+  ! grep -F 'Firstmate instruction waiting' "$RING_LOSS_LOG" >/dev/null || fail \
+    "the doorbell line was submitted into the pane after its agent exited: $(cat "$RING_LOSS_LOG")"
+
+  # The report must name this exact outcome - typed, Enter sent, then lost -
+  # distinctly from outcome 3's never-typed wording.
+  case "$SEND_OUT" in
+    *"the doorbell line was typed there but its agent exited to a shell before the submission could be confirmed"*) ;;
+    *) fail "the result did not report the doorbell-typed-then-agent-lost outcome: $SEND_OUT" ;;
+  esac
+  case "$SEND_OUT" in
+    *"waits for a live agent"*) ;;
+    *) fail "the result did not say the record is waiting for a live agent: $SEND_OUT" ;;
+  esac
+
+  pass "an agent that exits to a shell during the ring itself is never reported as having received the doorbell"
+}
+
+# --- 6: a same-id pane on a DIFFERENT tmux server must never be touched -----
+# THE DEFECT THIS EXISTS FOR (2026-09-04): a task's recorded window= is a bare
+# pane id or session:window with no server identity, so a caller whose ambient
+# `tmux` resolves a DIFFERENT server than the one the id was allocated on
+# cannot tell its target from a same-id pane over there - pane ids are
+# per-server counters, so a fresh server's first pane is always the same id as
+# any other fresh server's first pane. This drove a real doorbell into a real
+# operator's primary tmux pane during this branch's own testing. tmux_socket=
+# (bin/fm-spawn.sh) is the fix: it pins the exact server, so ambient
+# resolution drifting elsewhere cannot matter.
+test_wrong_server_pane_is_never_touched() {
+  local right_pane wrong_pane right_sock rc=0
+
+  # Two BRAND NEW servers, so each one's first pane is "%0" - the exact
+  # collision the defect depends on. RIGHT is reached only through -L (the
+  # same mechanism the rest of this suite uses); WRONG is reached only through
+  # bare `tmux`'s OWN ambient default-socket resolution under a scoped
+  # TMUX_TMPDIR, with NO -L, no -S, and NO PATH shim in effect - i.e. exactly
+  # the unshimmed, ambient invocation a lost isolation seam would fall back to.
+  "$REAL_TMUX" -L "$RIGHT_SOCKET" new-session -d -s rightpanes -x 80 -y 24
+  right_pane=$("$REAL_TMUX" -L "$RIGHT_SOCKET" display-message -p -t rightpanes '#{pane_id}')
+  right_sock=$("$REAL_TMUX" -L "$RIGHT_SOCKET" display-message -p -t rightpanes '#{socket_path}')
+  TMUX_TMPDIR="$WRONG_TMPDIR" "$REAL_TMUX" new-session -d -s wrongpanes -x 80 -y 24
+  wrong_pane=$(TMUX_TMPDIR="$WRONG_TMPDIR" "$REAL_TMUX" display-message -p -t wrongpanes '#{pane_id}')
+
+  [ "$right_pane" = "$wrong_pane" ] || fail \
+    "the two fresh servers' first panes must collide on id to exercise the defect (right=$right_pane wrong=$wrong_pane)"
+
+  WRONG_LOG="$LAB/wrong-server-submitted.log"; : > "$WRONG_LOG"
+  RIGHT_LOG="$LAB/right-server-submitted.log"; : > "$RIGHT_LOG"
+  # Both panes are shaped as live agents: if the wrong-server pane received
+  # anything, it would look exactly as deliverable as the right one, so a
+  # false "reached" here could not hide behind a shell-refusal instead.
+  TMUX_TMPDIR="$WRONG_TMPDIR" "$REAL_TMUX" send-keys -t "$wrong_pane" \
+    "exec '$LAB/bin/claude-shim' '$LAB/pane-program.sh' '$WRONG_LOG'" Enter
+  "$REAL_TMUX" -L "$RIGHT_SOCKET" send-keys -t "$right_pane" \
+    "exec '$LAB/bin/claude-shim' '$LAB/pane-program.sh' '$RIGHT_LOG'" Enter
+
+  wait_for_wrong_prompt() {
+    local i=0
+    while [ "$i" -lt 100 ]; do
+      TMUX_TMPDIR="$WRONG_TMPDIR" "$REAL_TMUX" capture-pane -p -t "$wrong_pane" 2>/dev/null | grep -q '❯' && return 0
+      sleep 0.1
+      i=$((i + 1))
+    done
+    return 1
+  }
+  wait_for_right_prompt() {
+    local i=0
+    while [ "$i" -lt 100 ]; do
+      "$REAL_TMUX" -L "$RIGHT_SOCKET" capture-pane -p -t "$right_pane" 2>/dev/null | grep -q '❯' && return 0
+      sleep 0.1
+      i=$((i + 1))
+    done
+    return 1
+  }
+  wait_for_wrong_prompt || fail "the wrong-server pane never drew its prompt"
+  wait_for_right_prompt || fail "the right-server pane never drew its prompt"
+
+  printf 'window=%s\nbackend=tmux\ntmux_socket=%s\nkind=ship\nharness=claude\n' \
+    "$right_pane" "$right_sock" > "$HOME_DIR/state/wrongservermate.meta"
+
+  # Ambient resolution for this one call is deliberately pointed at the WRONG
+  # server (TMUX_TMPDIR set, no -S, no -L, and the unshimmed real PATH so the
+  # suite's own -L shim cannot rescue this call either) - the meta's
+  # tmux_socket= is the ONLY thing that can route this correctly.
+  rc=0
+  env PATH="$ORIG_PATH" TMUX_TMPDIR="$WRONG_TMPDIR" \
+    FM_HOME="$HOME_DIR" FM_SEND_SETTLE=0 FM_SEND_SLEEP=0.3 \
+    "$SEND" wrongservermate 'rebase onto main and re-run the gate' \
+    > "$LAB/send.out" 2>&1 || rc=$?
+  SEND_OUT=$(grep -v '^●' "$LAB/send.out" || true)
+  [ "$rc" -eq 0 ] || fail \
+    "an ordinary steer is durably recorded, so it must not fail (exit $rc): $SEND_OUT"
+
+  [ ! -s "$WRONG_LOG" ] || fail \
+    "the doorbell reached a same-id pane on the WRONG tmux server: $(cat "$WRONG_LOG")"
+  [ -s "$RIGHT_LOG" ] || fail \
+    "the doorbell never reached the CORRECT server's pane either - this proves nothing, re-derive the fixture"
+  grep -F 'Firstmate instruction waiting' "$RIGHT_LOG" >/dev/null || fail \
+    "what reached the right-server pane was not the doorbell line: $(cat "$RIGHT_LOG")"
+
+  pass "a doorbell bound to one tmux server never reaches a same-id pane on another"
+}
+
 test_shell_pane_steer_is_refused
 test_shell_pane_typed_plane_is_refused
 test_agent_pane_steer_is_delivered
 test_agent_lost_during_send_is_not_reported_delivered
+test_ring_agent_lost_during_doorbell_is_not_reported_delivered
+test_wrong_server_pane_is_never_touched
 
 echo "all fm-send shell-pane refusal tests passed"

@@ -427,6 +427,18 @@ fm_send_resolve_target "$RAW_TARGET" || exit 1
 T=$RESOLVED_TARGET
 shift
 
+# Pin this send to the exact tmux server its recorded endpoint was spawned on
+# (bin/fm-spawn.sh's tmux_socket= meta field), before anything reads or types
+# into $T: a bare `tmux` call resolves whatever server is ambient, which is
+# not provably the server $T's window/pane id was allocated on (pane ids are
+# per-server counters). Every other backend, and a legacy record with no
+# recorded socket, is unaffected - fm_backend_tmux_bind_socket("") restores
+# ambient resolution exactly as before this fix shipped.
+if [ "$TARGET_BACKEND" = tmux ]; then
+  fm_backend_source tmux || true
+  fm_backend_tmux_bind_socket "$(fm_meta_get "${TARGET_META:-/dev/null}" tmux_socket 2>/dev/null || true)"
+fi
+
 # Supervision lease guard: a steer is overlap territory between the two Pi
 # supervision actors, so refuse while the OTHER actor holds this task's live
 # lease. A home with no supervision branch has no lease files and passes
@@ -981,6 +993,7 @@ else
       2) echo "fm-send: doorbell did not reach $T; the steer is durably recorded at $INBOX_RECORD and the watcher will re-ring" >&2 ;;
       3) echo "fm-send: no live agent at $T - its terminal is held by a shell, so the worker's agent has exited and the doorbell line was NOT typed there. The steer is durably recorded at $INBOX_RECORD and waits for a live agent; the watcher re-rings and escalates it. Recover the worker rather than resending, or the record is duplicated." >&2 ;;
       4) echo "fm-send: no live agent at $T - the doorbell line was typed there but its agent exited to a shell before the submission could be confirmed, so no agent received it. The steer is durably recorded at $INBOX_RECORD and waits for a live agent; the watcher re-rings and escalates it. Recover the worker rather than resending, or the record is duplicated." >&2 ;;
+      5) echo "fm-send: doorbell not sent to $T - its recorded endpoint could not be verified to exist on the expected tmux server, so nothing was typed there. The steer is durably recorded at $INBOX_RECORD and waits for a live agent; the watcher re-rings and escalates it. Recover or re-verify the worker's endpoint rather than resending, or the record is duplicated." >&2 ;;
     esac
     exit 0
   fi
