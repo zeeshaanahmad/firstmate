@@ -819,7 +819,7 @@ arm_rollback() {
   if [ -n "$ARM_BACKUP" ]; then
     mv -f -- "$ARM_BACKUP" "$CHECK_SHIM" 2>/dev/null || rm -f -- "$ARM_BACKUP"
     ARM_BACKUP=
-    if fm_custom_check_registered "$STATE" "$CHECK_ID"; then
+    if fm_task_script_registered "$STATE" "$CHECK_ID" check; then
       return 0
     fi
   fi
