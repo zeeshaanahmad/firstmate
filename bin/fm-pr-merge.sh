@@ -28,11 +28,11 @@
 # Runtime test failures, type-checker errors, and snapshot drift all pass it.
 #
 # THE GUARD DOES NOT SURVIVE AN AIRGAPPED SITE. It needs the forge to learn the
-# current default-branch tip, and a pinned checker fetched by its pin needs the
-# network on a cold cache. Where it cannot REACH the check at all it says
-# "merge-guard: UNGUARDED - <reason>" out loud and merges as before, rather than
-# implying a check that did not happen or wedging every merge behind an
-# unrelated outage.
+# current tip of the branch it targets, and a pinned checker fetched by its
+# pin needs the network on a cold cache. Where it cannot REACH the check at
+# all it says "merge-guard: UNGUARDED - <reason>" out loud and merges as
+# before, rather than implying a check that did not happen or wedging every
+# merge behind an unrelated outage.
 #
 # A CHECK THAT RAN OUT OF BUDGET IS DIFFERENT, AND REFUSES. The unguarded cases
 # above have no next step: the forge is gone, or the project declares no check.
@@ -455,8 +455,12 @@ merge_refs_resolve() {
   fi
   base=$(git --git-dir="$FM_STATIC_GUARD_GITDIR" rev-parse --verify --quiet "$FM_STATIC_GUARD_BASE_REF" 2>/dev/null) || base=
   [ -n "$base" ] || { MERGE_REFS_REASON="the current tip of $branch could not be read"; return 1; }
-  [ -n "$head" ] || { MERGE_REFS_REASON='the PR head commit could not be read'; return 1; }
+  # Recorded ahead of the head check below so a caller can tell "this project's
+  # base branch was genuinely reachable, but its head specifically was not" (a
+  # real, actionable gap) apart from "nothing here could be checked at all" (an
+  # unrelated, already-accepted environmental unguarded state).
   MERGE_REFS_BASE=$base
+  [ -n "$head" ] || { MERGE_REFS_REASON='the PR head commit could not be read'; return 1; }
   MERGE_REFS_HEAD=$head
 }
 
@@ -951,6 +955,19 @@ case "$PROVIDER" in
     ;;
   gitlab)
     gitlab_verify_mergeable || exit 1
+    # The guards above judged MERGE_REFS_HEAD, fetched before this live
+    # verification ran. If the merge request moved in between - or its head
+    # specifically could not be resolved even though its base branch could -
+    # FM_PR_MERGE_HEAD names a commit none of the guards evaluated, and merging
+    # it would be exactly the erased-history outcome they exist to prevent,
+    # just unmeasured. MERGE_REFS_BASE gates this: an empty one means nothing
+    # here was reachable at all, the same already-accepted unguarded state
+    # every other environmentally-unreachable case in this script degrades to.
+    if [ -n "$MERGE_REFS_BASE" ] && [ "$MERGE_REFS_HEAD" != "$FM_PR_MERGE_HEAD" ]; then
+      printf 'error: merge refused - the guards measured head %s, but the verified mergeable head is %s; merging would land a commit none of them evaluated\n' \
+        "${MERGE_REFS_HEAD:-<none: the guards could not resolve the head>}" "$FM_PR_MERGE_HEAD" >&2
+      exit 1
+    fi
     # --sha binds the merge to the head this run verified, so a push that lands
     # in between is refused by GitLab instead of merged unverified. --yes only
     # skips the interactive confirmation, which no supervised run can answer;

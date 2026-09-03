@@ -4,8 +4,9 @@
 #
 # Sourced, never executed. Two callers share it and must not drift:
 #
-#   bin/fm-pr-merge.sh   prevention: checks the exact squash RESULT of a PR
-#                        against the current default-branch tip before merging
+#   bin/fm-pr-merge.sh   prevention: checks the exact merge RESULT of a PR
+#                        against the current tip of the branch it targets
+#                        before merging
 #   bin/fm-main-guard.sh detection: checks the default-branch tip itself after
 #                        it moves, and wakes firstmate when it is red
 #
@@ -28,10 +29,11 @@
 # the guard degrades to "unguarded" rather than pretending to a verdict.
 #
 # TRUST. The check command is discovered ONLY from a trusted revision - the
-# current default-branch tip - never from the tree under test. A pushed branch
-# therefore cannot weaken, redirect, or disable the guard by editing its own
-# `.no-mistakes.yaml` or `Makefile`. The tree under test is still project code
-# the checker reads, exactly as the project's own gate reads it.
+# current tip of the branch being checked against - never from the tree under
+# test. A pushed branch therefore cannot weaken, redirect, or disable the guard
+# by editing its own `.no-mistakes.yaml` or `Makefile`. The tree under test is
+# still project code the checker reads, exactly as the project's own gate
+# reads it.
 #
 # OBJECT STORE. Callers never fetch into a project clone: firstmate does not
 # run state-changing commands inside a project. Instead

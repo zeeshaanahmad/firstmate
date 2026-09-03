@@ -157,7 +157,7 @@ pf_registry_lock_release() {
   local -a remaining=()
   pf_registry_lock_held "$id" || return 0
   fm_pf_registry_lock_release "$STATE" "$id"
-  for held in "${PF_REGISTRY_LOCK_IDS[@]}"; do
+  for held in ${PF_REGISTRY_LOCK_IDS[@]+"${PF_REGISTRY_LOCK_IDS[@]}"}; do
     [ "$held" = "$id" ] || remaining+=("$held")
   done
   PF_REGISTRY_LOCK_IDS=(${remaining[@]+"${remaining[@]}"})

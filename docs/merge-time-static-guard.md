@@ -31,7 +31,8 @@ Runtime test failures, type-checker errors, and snapshot drift all pass it.
 It is a cheap guard on the one thing the gate never sees, never a substitute for the gate, and it does not claim to be one.
 
 **It does not survive an airgapped site.**
-Both halves read the current default-branch tip from the forge, and a checker pinned through a fetching launcher needs the network on a cold cache.
+The detection half reads the current default-branch tip from the forge, and the merge-time half reads the current tip of the branch a request targets.
+Either way, a checker pinned through a fetching launcher needs the network on a cold cache.
 At a sealed site neither is available.
 The sealed-site equivalent is a separate question and is deliberately not answered here.
 
@@ -66,7 +67,7 @@ Both borrow a project's object store through git alternates into a private throw
 ## Where the check command comes from
 
 Discovery reads, in order, `commands.lint` from the project's `.no-mistakes.yaml`, then a `lint:` target in its `Makefile`.
-It reads them from the current default-branch tip, never from the tree under test.
+It reads them from the current tip of the branch being checked against, never from the tree under test.
 A pushed branch therefore cannot weaken, redirect, or disable the guard by editing its own configuration.
 The pinned version and the exact command belong to the project; firstmate hard-codes neither.
 

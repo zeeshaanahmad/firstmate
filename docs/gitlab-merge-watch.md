@@ -2,7 +2,8 @@
 
 Empirical record for the merge watch and the merge path on GitLab, alongside the existing GitHub ones.
 Every command through "Upgrade path from an existing armed watch" was run on 2026-07-21; "Merging a merge request" was run on 2026-08-22.
-Every output is reproduced exactly.
+Every output is reproduced exactly as it was captured on those dates.
+The "Merging a merge request" transcripts predate this fork's merge-time and upstream-history guards landing on the GitLab path, so they show only `glab`'s own pipeline-condition refusals and omit the `merge-guard: ...` line those guards now print before every one of these outcomes; see [`merge-time-static-guard.md`](merge-time-static-guard.md) for that line's current wording.
 
 ## Versions
 

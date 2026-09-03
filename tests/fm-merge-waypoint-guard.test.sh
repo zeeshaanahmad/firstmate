@@ -50,6 +50,9 @@
 #       a reachable waypoint passes both guards and merges through glab
 #   (r) --merge does not excuse a GitLab merge request the way it does a pull
 #       request, because that forge takes no merge-method flag at all
+#   (s) a GitLab merge request whose live head (read moments before merging)
+#       differs from the head the guards actually measured is refused, naming
+#       both commits, rather than merging a commit none of them evaluated
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -592,6 +595,53 @@ test_gitlab_ordinary_mr_merges_after_waypoint_assertion() {
   pass "an ordinary GitLab merge request passes both guards and merges through glab"
 }
 
+# The fork's three guards all read MERGE_REFS_HEAD, fetched from GitLab's own
+# refs/merge_requests/<n>/head before the guards run. gitlab_verify_mergeable
+# separately re-reads the live head from glab's own view moments before
+# merging. If a push lands in that window the two heads diverge, and merging
+# the live one anyway would land a commit none of the guards ever measured -
+# exactly the erased-history outcome they exist to prevent, just unmeasured.
+test_gitlab_guard_head_mismatch_refuses() {
+  local case_dir rc clean_head diverged_head upstream_tip
+  case_dir=$(make_gitlab_case gitlab-guard-head-mismatch ordinary)
+  clean_head=$(cat "$case_dir/head.sha")
+  upstream_tip=$(cat "$case_dir/upstream-tip.sha")
+
+  # A second, real commit that DOES carry upstream history, built in the same
+  # repo but never published at refs/merge_requests/7/head - the ref the
+  # guards actually fetch and measure.
+  wp_git "$case_dir/work" checkout -q -b diverged main
+  wp_git "$case_dir/work" merge -q --no-ff -m 'merge: bring in upstream waypoints' "$upstream_tip"
+  wp_git "$case_dir/work" push -q origin diverged
+  diverged_head=$(wp_git "$case_dir/work" rev-parse diverged)
+
+  # Drive glab's live view to the diverged commit, as though the merge
+  # request moved after the guards already fetched and measured clean_head.
+  printf '{"iid":7,"state":"opened","detailed_merge_status":"mergeable",' \
+    > "$case_dir/mr.json"
+  printf '"has_conflicts":false,"blocking_discussions_resolved":true,' \
+    >> "$case_dir/mr.json"
+  printf '"target_branch":"main","sha":"%s","head_pipeline":{"sha":"%s","status":"success"}}\n' \
+    "$diverged_head" "$diverged_head" >> "$case_dir/mr.json"
+
+  set +e
+  run_pr_merge "$case_dir" task-w1 "$MR_URL" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "gitlab-guard-head-mismatch: a live head diverging from the guarded head must be refused"
+  assert_grep 'merge refused' "$case_dir/stderr" \
+    "gitlab-guard-head-mismatch: refusal did not say the merge was refused"
+  assert_grep "$clean_head" "$case_dir/stderr" \
+    "gitlab-guard-head-mismatch: refusal did not name the head the guards measured"
+  assert_grep "$diverged_head" "$case_dir/stderr" \
+    "gitlab-guard-head-mismatch: refusal did not name the verified live head"
+  assert_no_grep ' mr merge ' "$case_dir/glab.log" \
+    "gitlab-guard-head-mismatch: the merge request was merged despite the head mismatch"
+  pass "a GitLab merge request whose live head diverges from the guarded head is refused before merging"
+}
+
 test_squash_default_refused_for_upstream_history
 test_ordinary_pr_still_squashes
 test_merge_method_is_allowed_and_forwarded
@@ -611,3 +661,4 @@ test_empty_require_ancestor_equals_form_refuses
 test_gitlab_upstream_history_refused
 test_gitlab_ordinary_mr_merges_after_waypoint_assertion
 test_gitlab_merge_flag_does_not_excuse_upstream_history
+test_gitlab_guard_head_mismatch_refuses

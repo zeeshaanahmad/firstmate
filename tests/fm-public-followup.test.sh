@@ -1395,7 +1395,7 @@ test_typed_records_exclude_raw_public_material() {
 # --- 10. delivery does not close the public loop --------------------------------
 
 test_dropped_baton_now_surfaces_open_loop() {
-  local parent child log
+  local parent child log rc out
   parent=$(make_home baton-parent)
   child="$TMP_ROOT/baton-child"
   FM_SECONDMATE_CHARTER='Baton repro charter.' FM_HOME="$parent" \
@@ -1420,9 +1420,11 @@ test_dropped_baton_now_surfaces_open_loop() {
   assert_present "$parent/state/public-followup/registry/public-final-pi-rearm-repro" \
     "delivery must retain the registration"
 
+  fm_git_init_commit "$child/projects/worktree"
   fm_write_meta "$child/state/pi-rearm-loop-fix-r1.meta" \
     "window=firstmate:fm-pi-rearm-loop-fix-r1" "endpoint_task_id=pi-rearm-loop-fix-r1" \
-    "worktree=$child" "project=$child" "kind=ship" "mode=local-only"
+    "worktree=$child/projects/worktree" "project=$child/projects/worktree" \
+    "kind=ship" "mode=local-only"
   write_completion_report "$child/data" pi-rearm-loop-fix-r1
 
   PATH="$parent/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$parent" \
@@ -1435,10 +1437,12 @@ test_dropped_baton_now_surfaces_open_loop() {
   grep -q 'request=req-pirearm' "$TMP_ROOT/pending.out" \
     || fail "the open-loop line must name the original request"
 
-  PATH="$child/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$child" \
+  rc=0
+  out=$(PATH="$child/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$child" \
     FM_STATE_OVERRIDE="$child/state" FM_DATA_OVERRIDE="$child/data" FAKE_CURL_LOG="$log" \
-    "$TEARDOWN" pi-rearm-loop-fix-r1 > "$TMP_ROOT/td.out" 2>&1 || true
-  case "$(cat "$TMP_ROOT/td.out")" in
+    "$TEARDOWN" pi-rearm-loop-fix-r1 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "teardown of the unregistered follow-on must succeed (rc=$rc): $out"
+  case "$out" in
     *"still owes a public reply"*) fail "teardown unexpectedly guarded the unregistered follow-on" ;;
   esac
   [ "$(followup_posts "$log")" = 1 ] || fail "unexpected extra post"
@@ -1457,9 +1461,11 @@ test_control_registered_followon_is_guarded() {
   seed_repro_commitment "$parent" public-final-pi-rearm-ship req-pirearm2 \
     secondmate:mate pi-rearm-loop-fix-r1
   fm_write_meta "$parent/state/mate.meta" "kind=secondmate" "home=$child"
+  fm_git_init_commit "$child/projects/worktree"
   fm_write_meta "$child/state/pi-rearm-loop-fix-r1.meta" \
     "window=firstmate:fm-pi-rearm-loop-fix-r1" "endpoint_task_id=pi-rearm-loop-fix-r1" \
-    "worktree=$child" "project=$child" "kind=ship" "mode=local-only"
+    "worktree=$child/projects/worktree" "project=$child/projects/worktree" \
+    "kind=ship" "mode=local-only"
   write_completion_report "$child/data" pi-rearm-loop-fix-r1
   PATH="$child/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$child" \
     FM_STATE_OVERRIDE="$child/state" FM_DATA_OVERRIDE="$child/data" \
