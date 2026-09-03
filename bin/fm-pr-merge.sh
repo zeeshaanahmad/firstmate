@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
-# Merge a task's PR after recording pr= and any available pr_head= through
+# Merge a task's PR or MR after recording pr= and any available pr_head= through
 # bin/fm-pr-check.sh, so teardown can verify landed work after squash merges.
-# The full canonical GitHub PR URL is parsed by bin/fm-pr-lib.sh and the derived
-# owner/repository and PR number are passed to gh-axi as separate arguments.
+# The full canonical URL is parsed by bin/fm-pr-lib.sh. A GitHub pull request is
+# addressed through gh-axi by the derived owner and repository; a GitLab merge
+# request is addressed through glab by the project URL rebuilt from the parsed
+# host and path, so any instance works and no host is hardcoded.
+#
+# EVERY GUARD BELOW RUNS ON BOTH FORGES. They read the base branch and head from
+# the forge that hosts the request and compare them with git, so nothing in them
+# is GitHub-specific except how those two refs are named and asked for.
 #
 # MERGE-TIME STATIC GUARD. Immediately before the merge, this computes the exact
-# squash RESULT of the PR head onto the CURRENT default-branch tip with
+# merge RESULT of the PR head onto the CURRENT base-branch tip with
 # `git merge-tree --write-tree`, writes that tree out, and runs the project's
 # OWN pinned static check against it (bin/fm-static-guard-lib.sh owns discovery
 # and execution). A red result refuses the merge and tells the lane to rebase
@@ -22,11 +28,11 @@
 # Runtime test failures, type-checker errors, and snapshot drift all pass it.
 #
 # THE GUARD DOES NOT SURVIVE AN AIRGAPPED SITE. It needs the forge to learn the
-# current default-branch tip, and a pinned checker fetched by its pin needs the
-# network on a cold cache. Where it cannot REACH the check at all it says
-# "merge-guard: UNGUARDED - <reason>" out loud and merges as before, rather than
-# implying a check that did not happen or wedging every merge behind an
-# unrelated outage.
+# current tip of the branch it targets, and a pinned checker fetched by its
+# pin needs the network on a cold cache. Where it cannot REACH the check at
+# all it says "merge-guard: UNGUARDED - <reason>" out loud and merges as
+# before, rather than implying a check that did not happen or wedging every
+# merge behind an unrelated outage.
 #
 # A CHECK THAT RAN OUT OF BUDGET IS DIFFERENT, AND REFUSES. The unguarded cases
 # above have no next step: the forge is gone, or the project declares no check.
@@ -59,9 +65,27 @@
 # Any other value is refused rather than silently ignored, so a misspelled
 # override never quietly becomes a different posture than the operator asked for.
 #
-# Merge method defaults to --squash when the caller passes none of --squash,
-# --merge, --rebase, or --method after the optional -- separator. Extra args
-# must not include --repo or -R because the repository comes only from the URL.
+# Merge method on GitHub defaults to --squash when the caller passes none of
+# --squash, --merge, --rebase, or --method after the optional -- separator.
+# GitLab adds no method flag at all: its merge method is the project's own
+# setting, which the merge API applies, and imposing squash there would override
+# that convention rather than mirror the GitHub default.
+#
+# A GitLab merge is refused unless every pre-merge condition holds, each read
+# live at merge time rather than taken from recorded metadata: the merge request
+# is open, detailed_merge_status is mergeable, has_conflicts is false,
+# blocking_discussions_resolved is true, and the head pipeline succeeded at the
+# exact current head commit. Every failing condition is reported, not just the
+# first. The verified head is then passed to glab as --sha, so a push that lands
+# between that read and the merge fails the merge instead of landing commits
+# nothing verified. A recorded pr_head that disagrees with the live head is
+# reported rather than trusted, because a rebase moves the head and leaves the
+# recorded value stale. Reading that state needs glab and jq, and either one
+# absent stops the merge before any state is recorded.
+#
+# Extra args must not include --repo or -R in any form, including a bundled
+# short-option cluster such as -yR, because the repository comes only from the
+# URL, nor --sha on GitLab because the head comes only from the live read.
 #
 # UPSTREAM-HISTORY GUARD. That squash default is right for a lane's own work and
 # wrong for a fork-sync PR, where the history IS the deliverable. Squashing one
@@ -73,10 +97,12 @@
 # default - this checks whether the PR head carries commits that are reachable
 # from an upstream remote and not already reachable from the PR's base branch.
 # When it does, the merge is REFUSED and the commits that would be erased are
-# named. The remedy is --merge, the only method that keeps them reachable.
-# There is deliberately no override flag: a flag the caller must remember is
-# exactly what failed, and --merge is the correct method for such a PR rather
-# than a way around a check.
+# named. On GitHub the remedy is --merge, the only method that keeps them
+# reachable. On GitLab the merge method is the project's own setting, which this
+# path can neither read nor override, so an unnamed method reads as rewriting
+# and such a merge request is refused here; land it in GitLab with the project
+# configured to create a merge commit. There is deliberately no override flag on
+# either forge: a flag the caller must remember is exactly what failed.
 #
 # WHICH REMOTES COUNT AS UPSTREAM. Any remote of the local copy whose fetch URL
 # names a hosted repository OTHER than the one this PR is on. That reads the
@@ -115,7 +141,7 @@
 # refusal, because two different answers to "what must survive" is not a
 # question this script may settle on its own.
 #
-# Usage: fm-pr-merge.sh <task-id> <pr-url> [--require-ancestor <sha>] [-- <extra gh-axi pr merge args>]
+# Usage: fm-pr-merge.sh <task-id> <pr-url> [--require-ancestor <sha>] [-- <extra forge merge args>]
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -136,18 +162,22 @@ if [ "$#" -lt 2 ]; then
 fi
 ID=$1
 RAW_URL=$2
-# bin/fm-pr-lib.sh parses GitLab merge request URLs so the watcher can follow
-# them, but this path still addresses only GitHub by owner/repository. The
-# provider check holds that refusal exactly as it was until merge parity lands.
-if ! fm_pr_task_id_valid "$ID" || ! fm_pr_url_parse "$RAW_URL" \
-  || [ "$FM_PR_PROVIDER" != github ]; then
+if ! fm_pr_task_id_valid "$ID" || ! fm_pr_url_parse "$RAW_URL"; then
   echo "error: invalid PR merge request" >&2
   exit 2
 fi
 URL=$FM_PR_URL
+PROVIDER=$FM_PR_PROVIDER
 PR_OWNER=$FM_PR_OWNER
 PR_REPO=$FM_PR_REPO
 PR_NUMBER=$FM_PR_NUMBER
+# The forge-neutral identity of the project this request is on: <owner>/<repo>
+# on GitHub, and the full namespace path on GitLab. Every guard that has to ask
+# "is this remote the same project?" compares against this one value.
+PR_PATH=$FM_PR_PATH
+# glab resolves the instance from the project URL passed to -R, so the host is
+# rebuilt from the parsed identity rather than read from any ambient default.
+PROJECT_URL="https://$FM_PR_HOST/$FM_PR_PATH"
 shift 2
 
 REQUIRED_ANCESTOR=
@@ -202,7 +232,14 @@ reject_repo_overrides() {
   local arg
   for arg in "$@"; do
     case "$arg" in
-      --repo|--repo=*|-R|-R?*)
+      --repo|--repo=*)
+        echo "error: extra merge arguments must not override the repository" >&2
+        return 1
+        ;;
+      --*) ;;
+      # A single-dash argument is a short-option cluster, which both CLIs expand
+      # one character at a time, so -yR carries --repo exactly as a bare -R does.
+      -*R*)
         echo "error: extra merge arguments must not override the repository" >&2
         return 1
         ;;
@@ -210,7 +247,20 @@ reject_repo_overrides() {
   done
 }
 
+reject_head_overrides() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --sha|--sha=*)
+        echo "error: extra merge arguments must not override the head commit" >&2
+        return 1
+        ;;
+    esac
+  done
+}
+
 reject_repo_overrides "$@" || exit 1
+[ "$PROVIDER" != gitlab ] || reject_head_overrides "$@" || exit 1
 
 # Resolved once, before any work, so an unreadable posture stops the merge
 # rather than half-running it.
@@ -228,6 +278,28 @@ META="$STATE/$ID.meta"
 if [ ! -f "$META" ] || [ -L "$META" ]; then
   echo "error: task metadata is unavailable" >&2
   exit 1
+fi
+
+# Reading the merge request state needs both tools. Report them together and
+# before anything is recorded, so a missing tool is a named prerequisite rather
+# than a merge that is armed and then refused for an unexplained reason.
+GITLAB_MISSING=
+if [ "$PROVIDER" = gitlab ]; then
+  command -v glab >/dev/null 2>&1 || GITLAB_MISSING="glab"
+  if ! command -v jq >/dev/null 2>&1; then
+    GITLAB_MISSING="${GITLAB_MISSING:+$GITLAB_MISSING and }jq"
+  fi
+  if [ -n "$GITLAB_MISSING" ]; then
+    echo "error: merging a GitLab merge request requires $GITLAB_MISSING on PATH" >&2
+    exit 1
+  fi
+fi
+
+# The recorded head is read before bin/fm-pr-check.sh rewrites the metadata,
+# because that script re-records pr= and drops a pr_head= it cannot resolve.
+RECORDED_HEAD=
+if [ "$PROVIDER" = gitlab ]; then
+  RECORDED_HEAD=$(grep '^pr_head=' "$META" | tail -1 | cut -d= -f2- || true)
 fi
 
 "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"
@@ -305,13 +377,29 @@ merge_guard_source_repo() {
 # default branch. The forge is authoritative; the remote's advertised HEAD is
 # the fallback when the forge cannot be asked.
 merge_guard_base_branch() {  # <source-repo> <remote-url>
-  local src=$1 url=$2 branch
-  if command -v gh >/dev/null 2>&1 \
-    && branch=$(cd "$src" && gh pr view "$URL" --json baseRefName -q .baseRefName 2>/dev/null) \
-    && fm_static_guard_ref_name_safe "$branch"; then
-    printf '%s\n' "$branch"
-    return 0
-  fi
+  local src=$1 url=$2 branch=
+  case "$PROVIDER" in
+    github)
+      if command -v gh >/dev/null 2>&1 \
+        && branch=$(cd "$src" && gh pr view "$URL" --json baseRefName -q .baseRefName 2>/dev/null) \
+        && fm_static_guard_ref_name_safe "$branch"; then
+        printf '%s\n' "$branch"
+        return 0
+      fi
+      ;;
+    gitlab)
+      # A separate read from the pre-merge one below, because it answers a
+      # different question and is needed before the guards run rather than at
+      # the moment of merging. GITLAB_HOST comes from the parsed URL for the
+      # same reason it does there.
+      if branch=$(GITLAB_HOST="$FM_PR_HOST" glab mr view "$PR_NUMBER" -R "$PROJECT_URL" -F json 2>/dev/null \
+        | jq -r 'if type == "object" then (.target_branch // "") else "" end' 2>/dev/null) \
+        && fm_static_guard_ref_name_safe "$branch"; then
+        printf '%s\n' "$branch"
+        return 0
+      fi
+      ;;
+  esac
   fm_static_guard_default_branch "$url" || return 1
   printf '%s\n' "$FM_STATIC_GUARD_BRANCH"
 }
@@ -328,14 +416,14 @@ MERGE_REFS_REASON=
 MERGE_REFS_ATTEMPTED=
 MERGE_REFS_OK=
 merge_refs_resolve() {
-  local src url branch base head recorded_head
+  local src url branch base head recorded_head head_ref
   MERGE_REFS_BRANCH=
   MERGE_REFS_BASE=
   MERGE_REFS_HEAD=
   MERGE_REFS_REASON=
   command -v git >/dev/null 2>&1 || { MERGE_REFS_REASON='git is unavailable'; return 1; }
   src=$(merge_guard_source_repo) || { MERGE_REFS_REASON='no local copy of this project to read objects from'; return 1; }
-  fm_static_guard_remote_pick "$src" "$PR_OWNER/$PR_REPO" \
+  fm_static_guard_remote_pick "$src" "$PR_PATH" \
     || { MERGE_REFS_REASON='no usable remote for this project'; return 1; }
   url=$FM_STATIC_GUARD_REMOTE
   branch=$(merge_guard_base_branch "$src" "$url") \
@@ -345,13 +433,19 @@ merge_refs_resolve() {
   fm_static_guard_repo_prepare "$src" \
     || { MERGE_REFS_REASON='a private object store could not be prepared'; return 1; }
   recorded_head=$(meta_field pr_head)
+  # Each forge publishes a request's head under its own namespace: GitHub serves
+  # refs/pull/<n>/head, GitLab serves refs/merge_requests/<n>/head.
+  case "$PROVIDER" in
+    gitlab) head_ref="refs/merge_requests/$PR_NUMBER/head" ;;
+    *) head_ref="refs/pull/$PR_NUMBER/head" ;;
+  esac
   if fm_static_guard_fetch "$FM_STATIC_GUARD_GITDIR" "$url" \
     "+refs/heads/$branch:$FM_STATIC_GUARD_BASE_REF" \
-    "+refs/pull/$PR_NUMBER/head:$FM_STATIC_GUARD_HEAD_REF"; then
+    "+$head_ref:$FM_STATIC_GUARD_HEAD_REF"; then
     head=$(git --git-dir="$FM_STATIC_GUARD_GITDIR" rev-parse --verify --quiet "$FM_STATIC_GUARD_HEAD_REF" 2>/dev/null) || head=
   elif fm_static_guard_fetch "$FM_STATIC_GUARD_GITDIR" "$url" \
     "+refs/heads/$branch:$FM_STATIC_GUARD_BASE_REF"; then
-    # A forge that does not serve refs/pull/<n>/head still leaves the head that
+    # A forge that does not serve that ref still leaves the head that
     # bin/fm-pr-check.sh recorded, which the borrowed object store already has.
     head=$(fm_static_guard_sha_valid "$recorded_head" \
       && git --git-dir="$FM_STATIC_GUARD_GITDIR" rev-parse --verify --quiet "$recorded_head^{commit}" 2>/dev/null) || head=
@@ -361,8 +455,12 @@ merge_refs_resolve() {
   fi
   base=$(git --git-dir="$FM_STATIC_GUARD_GITDIR" rev-parse --verify --quiet "$FM_STATIC_GUARD_BASE_REF" 2>/dev/null) || base=
   [ -n "$base" ] || { MERGE_REFS_REASON="the current tip of $branch could not be read"; return 1; }
-  [ -n "$head" ] || { MERGE_REFS_REASON='the PR head commit could not be read'; return 1; }
+  # Recorded ahead of the head check below so a caller can tell "this project's
+  # base branch was genuinely reachable, but its head specifically was not" (a
+  # real, actionable gap) apart from "nothing here could be checked at all" (an
+  # unrelated, already-accepted environmental unguarded state).
   MERGE_REFS_BASE=$base
+  [ -n "$head" ] || { MERGE_REFS_REASON='the PR head commit could not be read'; return 1; }
   MERGE_REFS_HEAD=$head
 }
 
@@ -414,7 +512,7 @@ merge_guard_evaluate() {
       ;;
     red)
       MERGE_GUARD_VERDICT=red
-      MERGE_GUARD_NOTE="the squash result of this PR onto $branch@${base:0:12} fails ${FM_STATIC_GUARD_DETAIL}"
+      MERGE_GUARD_NOTE="the merge result of this PR onto $branch@${base:0:12} fails ${FM_STATIC_GUARD_DETAIL}"
       ;;
     timeout)
       MERGE_GUARD_VERDICT=timeout
@@ -427,12 +525,22 @@ merge_guard_evaluate() {
 }
 
 # The merge method this invocation will actually use: the caller's explicit
-# choice, or the squash default when it passes none. A --method with no value,
-# or one naming something this script does not recognise, reads as empty, which
-# the upstream-history guard treats as rewriting - so a malformed method can
-# never slip past it as though it were --merge.
+# choice, or the forge default when it passes none. A --method with no value, or
+# one naming something this script does not recognise, reads as empty, which the
+# upstream-history guard treats as rewriting - so a malformed method can never
+# slip past it as though it were --merge. GitLab's unnamed default is the
+# project's own setting, which nothing here can read, so it reads as rewriting
+# for the same reason rather than being assumed safe.
 resolved_merge_method() {
-  local arg method=squash want_value=
+  local arg method want_value=
+  # GitLab applies the project's own merge method and takes no flag for it, so
+  # no argument on this command can prove the result will keep shared history.
+  # That reads as rewriting rather than being assumed safe.
+  if [ "$PROVIDER" = gitlab ]; then
+    printf '\n'
+    return 0
+  fi
+  method=squash
   for arg in "$@"; do
     if [ -n "$want_value" ]; then
       method=$arg
@@ -450,11 +558,14 @@ resolved_merge_method() {
   printf '%s\n' "$method"
 }
 
-# <owner>/<repo> for a remote URL that names a host, and nothing for one that
-# does not. A local path is deliberately not a slug: another tool's private
-# mirror of this same repository must never read as a separate upstream.
+# The hosted project path a remote URL names - <owner>/<repo> on GitHub and the
+# full namespace path on GitLab - and nothing for a URL that names no host. The
+# whole path is kept rather than its last two segments so this compares equal to
+# the parsed PR_PATH on a forge whose namespaces nest. A local path is
+# deliberately not a slug: another tool's private mirror of this same repository
+# must never read as a separate upstream.
 upstream_remote_slug() {  # <url>
-  local url=${1-} path owner repo
+  local url=${1-} path
   url=${url%/}
   url=${url%.git}
   case "$url" in
@@ -475,14 +586,11 @@ upstream_remote_slug() {  # <url>
     */*) ;;
     *) return 1 ;;
   esac
-  repo=${path##*/}
-  owner=${path%/*}
-  owner=${owner##*/}
-  [ -n "$owner" ] && [ -n "$repo" ] || return 1
-  # Lowercased because a forge that treats <owner>/<repo> case-insensitively
+  [ "${path%/*}" != "" ] && [ "${path##*/}" != "" ] || return 1
+  # Lowercased because a forge that treats project paths case-insensitively
   # would otherwise let a differently-cased origin URL read as a second,
   # foreign repository and make every ordinary PR look like shared history.
-  printf '%s/%s\n' "$owner" "$repo" | tr '[:upper:]' '[:lower:]'
+  printf '%s\n' "$path" | tr '[:upper:]' '[:lower:]'
 }
 
 # Remotes of the local copy that serve a hosted repository other than the one
@@ -490,7 +598,7 @@ upstream_remote_slug() {  # <url>
 # the repository already keeps for its own reasons.
 upstream_remote_names() {  # <source-repo>
   local src=$1 name url slug self
-  self=$(printf '%s/%s' "$PR_OWNER" "$PR_REPO" | tr '[:upper:]' '[:lower:]')
+  self=$(printf '%s' "$PR_PATH" | tr '[:upper:]' '[:lower:]')
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     url=$(git -C "$src" remote get-url "$name" 2>/dev/null) || continue
@@ -654,6 +762,107 @@ required_ancestor_assert() {
   esac
 }
 
+# Pre-merge conditions for a GitLab merge request, read from one live view of
+# the merge request. Sets FM_PR_MERGE_HEAD to the verified head on success and
+# returns non-zero after reporting every condition that failed.
+FM_PR_MERGE_HEAD=
+gitlab_verify_mergeable() {
+  local json fields line
+  local total=0 named=0 refusals=''
+  local state='' detail='' conflicts='' discussions=''
+  local live_head='' pipeline_sha='' pipeline_status=''
+
+  # GITLAB_HOST is set to the same host the project URL already carries, so the
+  # instance is taken from the parsed URL by both signals and never from the
+  # operator's configured default.
+  if ! json=$(GITLAB_HOST="$FM_PR_HOST" glab mr view "$PR_NUMBER" -R "$PROJECT_URL" -F json 2>/dev/null) \
+    || [ -z "$json" ]; then
+    echo "error: could not read the GitLab merge request state before merging" >&2
+    return 1
+  fi
+  # One named field per line. The names keep a trailing empty value readable
+  # after command substitution strips blank lines, and an absent or null field
+  # becomes an empty string or the literal "null", neither of which satisfies any
+  # check below, so an unreadable field refuses the merge instead of passing it.
+  if ! fields=$(printf '%s' "$json" | jq -r '
+      if type == "object" then
+        "state=" + ((.state // "") | tostring),
+        "detail=" + ((.detailed_merge_status // "") | tostring),
+        "conflicts=" + (.has_conflicts | tostring),
+        "discussions=" + (.blocking_discussions_resolved | tostring),
+        "head=" + ((.sha // "") | tostring),
+        "pipeline_sha=" + ((.head_pipeline.sha // "") | tostring),
+        "pipeline_status=" + ((.head_pipeline.status // "") | tostring)
+      else
+        error("merge request payload is not an object")
+      end' 2>/dev/null); then
+    echo "error: could not read the GitLab merge request state before merging" >&2
+    return 1
+  fi
+  while IFS= read -r line; do
+    total=$((total + 1))
+    case "$line" in
+      state=*) state=${line#state=} ;;
+      detail=*) detail=${line#detail=} ;;
+      conflicts=*) conflicts=${line#conflicts=} ;;
+      discussions=*) discussions=${line#discussions=} ;;
+      head=*) live_head=${line#head=} ;;
+      pipeline_sha=*) pipeline_sha=${line#pipeline_sha=} ;;
+      pipeline_status=*) pipeline_status=${line#pipeline_status=} ;;
+      *) continue ;;
+    esac
+    named=$((named + 1))
+  done <<FIELDS
+$fields
+FIELDS
+  # Every field named exactly once and no unnamed line: a value carrying a
+  # newline would split into a line no name matches, so it is refused here
+  # rather than silently truncated into a value a check could accept.
+  if [ "$named" -ne 7 ] || [ "$total" -ne 7 ]; then
+    echo "error: could not read the GitLab merge request state before merging" >&2
+    return 1
+  fi
+
+  if ! fm_pr_head_valid "$live_head"; then
+    echo "error: could not read the GitLab merge request head commit before merging" >&2
+    return 1
+  fi
+  # A rebase moves the head and leaves the recorded value behind, so the
+  # disagreement is reported and the live head is what gets verified and merged.
+  if [ -n "$RECORDED_HEAD" ] && [ "$RECORDED_HEAD" != "$live_head" ]; then
+    printf 'notice: recorded head %s disagrees with the live head %s; verifying the live head\n' \
+      "$RECORDED_HEAD" "$live_head" >&2
+  fi
+
+  [ "$state" = opened ] \
+    || refusals="$refusals  - state is \"${state:-unreadable}\", not open
+"
+  [ "$detail" = mergeable ] \
+    || refusals="$refusals  - detailed_merge_status is \"${detail:-unreadable}\", not mergeable
+"
+  [ "$conflicts" = false ] \
+    || refusals="$refusals  - has_conflicts is \"${conflicts:-unreadable}\", not false
+"
+  [ "$discussions" = true ] \
+    || refusals="$refusals  - blocking_discussions_resolved is \"${discussions:-unreadable}\", not true
+"
+  [ "$pipeline_status" = success ] \
+    || refusals="$refusals  - the head pipeline status is \"${pipeline_status:-none}\", not success
+"
+  [ "$pipeline_sha" = "$live_head" ] \
+    || refusals="$refusals  - the head pipeline ran at \"${pipeline_sha:-none}\", not at the current head $live_head
+"
+
+  if [ -n "$refusals" ]; then
+    printf 'error: refusing to merge %s\n' "$URL" >&2
+    printf '%s' "$refusals" >&2
+    return 1
+  fi
+  printf 'verified: %s is open and mergeable, with a successful pipeline at head %s\n' \
+    "$URL" "$live_head" >&2
+  FM_PR_MERGE_HEAD=$live_head
+}
+
 trap 'fm_static_guard_cleanup' EXIT
 
 if [ -n "$REQUIRED_ANCESTOR" ]; then
@@ -681,7 +890,11 @@ if [ "$MERGE_METHOD" != merge ]; then
       echo "error: merge refused - $UPSTREAM_GUARD_NOTE" >&2
       upstream_guard_print_erased >&2
       echo "squash and rebase both rewrite those commits out of ${MERGE_REFS_BRANCH}'s ancestry, so the next sync computes its merge base against a waypoint that is gone and replays history ${MERGE_REFS_BRANCH} already carries" >&2
-      echo "merge this PR with --merge, the only method that keeps them reachable" >&2
+      if [ "$PROVIDER" = gitlab ]; then
+        echo "GitLab applies the project's own merge method, which this path can neither read nor override, so land this merge request in GitLab with the project set to create a merge commit" >&2
+      else
+        echo "merge this PR with --merge, the only method that keeps them reachable" >&2
+      fi
       exit 1
       ;;
   esac
@@ -732,9 +945,38 @@ else
   }
 fi
 
-merge_args=()
-if ! caller_has_merge_method "$@"; then
-  merge_args=(--squash)
-fi
-
-gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
+case "$PROVIDER" in
+  github)
+    merge_args=()
+    if ! caller_has_merge_method "$@"; then
+      merge_args=(--squash)
+    fi
+    gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
+    ;;
+  gitlab)
+    gitlab_verify_mergeable || exit 1
+    # The guards above judged MERGE_REFS_HEAD, fetched before this live
+    # verification ran. If the merge request moved in between - or its head
+    # specifically could not be resolved even though its base branch could -
+    # FM_PR_MERGE_HEAD names a commit none of the guards evaluated, and merging
+    # it would be exactly the erased-history outcome they exist to prevent,
+    # just unmeasured. MERGE_REFS_BASE gates this: an empty one means nothing
+    # here was reachable at all, the same already-accepted unguarded state
+    # every other environmentally-unreachable case in this script degrades to.
+    if [ -n "$MERGE_REFS_BASE" ] && [ "$MERGE_REFS_HEAD" != "$FM_PR_MERGE_HEAD" ]; then
+      printf 'error: merge refused - the guards measured head %s, but the verified mergeable head is %s; merging would land a commit none of them evaluated\n' \
+        "${MERGE_REFS_HEAD:-<none: the guards could not resolve the head>}" "$FM_PR_MERGE_HEAD" >&2
+      exit 1
+    fi
+    # --sha binds the merge to the head this run verified, so a push that lands
+    # in between is refused by GitLab instead of merged unverified. --yes only
+    # skips the interactive confirmation, which no supervised run can answer;
+    # the conditions above are what authorize the merge.
+    GITLAB_HOST="$FM_PR_HOST" glab mr merge "$PR_NUMBER" -R "$PROJECT_URL" \
+      --sha "$FM_PR_MERGE_HEAD" --yes "$@"
+    ;;
+  *)
+    echo "error: invalid PR merge request" >&2
+    exit 2
+    ;;
+esac

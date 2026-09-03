@@ -44,6 +44,15 @@
 #   (n) --require-ancestor '' is refused as a malformed value, not treated as
 #       the flag being absent
 #   (o) --require-ancestor= is refused the same way
+#   (p) a GitLab merge request carrying upstream history is refused too, and
+#       names the remedy that forge actually has
+#   (q) non-vacuity and the positive GitLab path: an ordinary merge request with
+#       a reachable waypoint passes both guards and merges through glab
+#   (r) --merge does not excuse a GitLab merge request the way it does a pull
+#       request, because that forge takes no merge-method flag at all
+#   (s) a GitLab merge request whose live head (read moments before merging)
+#       differs from the head the guards actually measured is refused, naming
+#       both commits, rather than merging a commit none of them evaluated
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -130,6 +139,7 @@ wp_make_project() {  # <case_dir> <sync|flattened|ordinary|no-upstream|unfetched
       printf '%s\n' "$(wp_git "$work" rev-parse feat)" > "$case_dir/head.sha"
       ;;
   esac
+  git -C "$origin" update-ref refs/merge_requests/7/head "$(cat "$case_dir/head.sha")"
   wp_git "$work" checkout -q main
 }
 
@@ -159,8 +169,26 @@ case "\$*" in
 esac
 exit 0
 SH
-  chmod +x "$fakebin/gh-axi" "$fakebin/gh"
+  # glab answers the one merge request view the GitLab path reads, with every
+  # pre-merge condition satisfied, so a refusal in these cases can only come
+  # from a guard rather than from the merge request's own state.
+  cat > "$fakebin/glab" <<'SH'
+#!/usr/bin/env bash
+printf 'GITLAB_HOST=%s %s\n' "${GITLAB_HOST-<unset>}" "$*" >> "$FM_TEST_GLAB_LOG"
+case "${1:-} ${2:-}" in
+  "mr view") cat "$FM_TEST_GLAB_JSON" ; exit 0 ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/gh-axi" "$fakebin/gh" "$fakebin/glab"
+  printf '{"iid":7,"state":"opened","detailed_merge_status":"mergeable",' \
+    > "$case_dir/mr.json"
+  printf '"has_conflicts":false,"blocking_discussions_resolved":true,' \
+    >> "$case_dir/mr.json"
+  printf '"target_branch":"main","sha":"%s","head_pipeline":{"sha":"%s","status":"success"}}\n' \
+    "$head" "$head" >> "$case_dir/mr.json"
   : > "$case_dir/gh-axi.log"
+  : > "$case_dir/glab.log"
   printf '%s\n' "$case_dir"
 }
 
@@ -169,8 +197,26 @@ run_pr_merge() {  # <case_dir> <args...>
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
   FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
+  FM_TEST_GLAB_LOG="$case_dir/glab.log" \
+  FM_TEST_GLAB_JSON="$case_dir/mr.json" \
   PATH="$case_dir/fakebin:$PATH" \
     "$PR_MERGE" "$@"
+}
+
+# The GitLab fixture's identity: a namespace deeper than one group, because a
+# GitLab project has no owner/repository pair for a guard to compare against.
+MR_PROJECT_URL=https://gitlab.example/group/subgroup/project
+MR_URL="$MR_PROJECT_URL/-/merge_requests/7"
+
+# The same fixture with the GitHub head ref removed, because a GitLab origin
+# publishes a request head under refs/merge_requests/<n>/head and nothing else.
+# Leaving refs/pull/<n>/head in place would let the GitHub refspec resolve the
+# head and prove nothing about the GitLab one.
+make_gitlab_case() {  # <name> <variant>
+  local case_dir
+  case_dir=$(make_case "$1" "$2")
+  git -C "$case_dir/origin.git" update-ref -d refs/pull/7/head
+  printf '%s\n' "$case_dir"
 }
 
 test_squash_default_refused_for_upstream_history() {
@@ -481,6 +527,121 @@ test_empty_require_ancestor_equals_form_refuses() {
   pass "--require-ancestor= is refused as a malformed value rather than treated as the flag being absent"
 }
 
+# A merge request can carry shared upstream history exactly as a pull request
+# can, and GitLab applies the project's own merge method rather than one this
+# command can name, so nothing here can prove the history survives.
+test_gitlab_upstream_history_refused() {
+  local case_dir rc
+  case_dir=$(make_gitlab_case gitlab-upstream-history sync)
+
+  set +e
+  run_pr_merge "$case_dir" task-w1 "$MR_URL" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "gitlab-upstream-history: a merge request carrying upstream history should be refused"
+  assert_grep 'merge refused' "$case_dir/stderr" \
+    "gitlab-upstream-history: refusal did not say the merge was refused"
+  assert_grep 'upstream: second waypoint' "$case_dir/stderr" \
+    "gitlab-upstream-history: refusal did not name the upstream commits it would erase"
+  assert_grep 'land this merge request in GitLab' "$case_dir/stderr" \
+    "gitlab-upstream-history: refusal did not name a remedy this forge actually has"
+  assert_no_grep ' mr merge ' "$case_dir/glab.log" \
+    "gitlab-upstream-history: the merge request was merged despite erasing upstream history"
+  pass "a GitLab merge request carrying upstream history is refused with a GitLab remedy"
+}
+
+# --merge is the GitHub remedy and cannot be the GitLab one: glab takes no
+# merge-method flag, so passing it proves nothing about what GitLab will do and
+# must not buy a pass the way it does on a pull request.
+test_gitlab_merge_flag_does_not_excuse_upstream_history() {
+  local case_dir rc
+  case_dir=$(make_gitlab_case gitlab-merge-flag sync)
+
+  set +e
+  run_pr_merge "$case_dir" task-w1 "$MR_URL" -- --merge \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "gitlab-merge-flag: --merge must not excuse a GitLab merge request carrying upstream history"
+  assert_grep 'upstream: second waypoint' "$case_dir/stderr" \
+    "gitlab-merge-flag: refusal did not name the upstream commits it would erase"
+  assert_no_grep ' mr merge ' "$case_dir/glab.log" \
+    "gitlab-merge-flag: the merge request merged because --merge was passed"
+  pass "--merge does not excuse a GitLab merge request the way it does a pull request"
+}
+
+# Non-vacuity for the case above and the positive GitLab path in one: the same
+# fixture and the same fetched upstream remote, an ordinary merge request, and a
+# waypoint the guard must resolve from GitLab's own head ref to call reachable.
+test_gitlab_ordinary_mr_merges_after_waypoint_assertion() {
+  local case_dir waypoint head
+  case_dir=$(make_gitlab_case gitlab-ordinary-merges ordinary)
+  head=$(cat "$case_dir/head.sha")
+  waypoint=$(wp_git "$case_dir/work" rev-parse main)
+
+  run_pr_merge "$case_dir" task-w1 "$MR_URL" --require-ancestor "$waypoint" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "gitlab-ordinary-merges: an ordinary merge request with a reachable waypoint should merge"
+
+  assert_grep "upstream-waypoint: green - $waypoint is an ancestor of PR head $head" "$case_dir/stdout" \
+    "gitlab-ordinary-merges: the waypoint assertion did not resolve the GitLab merge request head"
+  assert_no_grep 'upstream-history' "$case_dir/stderr" \
+    "gitlab-ordinary-merges: the guard spoke about a merge request that carries no upstream history"
+  grep -qF "mr merge 7 -R $MR_PROJECT_URL --sha $head --yes" "$case_dir/glab.log" \
+    || fail "gitlab-ordinary-merges: the merge request did not merge through glab at its verified head"
+  pass "an ordinary GitLab merge request passes both guards and merges through glab"
+}
+
+# The fork's three guards all read MERGE_REFS_HEAD, fetched from GitLab's own
+# refs/merge_requests/<n>/head before the guards run. gitlab_verify_mergeable
+# separately re-reads the live head from glab's own view moments before
+# merging. If a push lands in that window the two heads diverge, and merging
+# the live one anyway would land a commit none of the guards ever measured -
+# exactly the erased-history outcome they exist to prevent, just unmeasured.
+test_gitlab_guard_head_mismatch_refuses() {
+  local case_dir rc clean_head diverged_head upstream_tip
+  case_dir=$(make_gitlab_case gitlab-guard-head-mismatch ordinary)
+  clean_head=$(cat "$case_dir/head.sha")
+  upstream_tip=$(cat "$case_dir/upstream-tip.sha")
+
+  # A second, real commit that DOES carry upstream history, built in the same
+  # repo but never published at refs/merge_requests/7/head - the ref the
+  # guards actually fetch and measure.
+  wp_git "$case_dir/work" checkout -q -b diverged main
+  wp_git "$case_dir/work" merge -q --no-ff -m 'merge: bring in upstream waypoints' "$upstream_tip"
+  wp_git "$case_dir/work" push -q origin diverged
+  diverged_head=$(wp_git "$case_dir/work" rev-parse diverged)
+
+  # Drive glab's live view to the diverged commit, as though the merge
+  # request moved after the guards already fetched and measured clean_head.
+  printf '{"iid":7,"state":"opened","detailed_merge_status":"mergeable",' \
+    > "$case_dir/mr.json"
+  printf '"has_conflicts":false,"blocking_discussions_resolved":true,' \
+    >> "$case_dir/mr.json"
+  printf '"target_branch":"main","sha":"%s","head_pipeline":{"sha":"%s","status":"success"}}\n' \
+    "$diverged_head" "$diverged_head" >> "$case_dir/mr.json"
+
+  set +e
+  run_pr_merge "$case_dir" task-w1 "$MR_URL" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "gitlab-guard-head-mismatch: a live head diverging from the guarded head must be refused"
+  assert_grep 'merge refused' "$case_dir/stderr" \
+    "gitlab-guard-head-mismatch: refusal did not say the merge was refused"
+  assert_grep "$clean_head" "$case_dir/stderr" \
+    "gitlab-guard-head-mismatch: refusal did not name the head the guards measured"
+  assert_grep "$diverged_head" "$case_dir/stderr" \
+    "gitlab-guard-head-mismatch: refusal did not name the verified live head"
+  assert_no_grep ' mr merge ' "$case_dir/glab.log" \
+    "gitlab-guard-head-mismatch: the merge request was merged despite the head mismatch"
+  pass "a GitLab merge request whose live head diverges from the guarded head is refused before merging"
+}
+
 test_squash_default_refused_for_upstream_history
 test_ordinary_pr_still_squashes
 test_merge_method_is_allowed_and_forwarded
@@ -497,3 +658,7 @@ test_recorded_waypoint_refuses_flattened_without_flag
 test_flag_and_recorded_waypoint_disagreement_refuses
 test_empty_require_ancestor_space_form_refuses
 test_empty_require_ancestor_equals_form_refuses
+test_gitlab_upstream_history_refused
+test_gitlab_ordinary_mr_merges_after_waypoint_assertion
+test_gitlab_merge_flag_does_not_excuse_upstream_history
+test_gitlab_guard_head_mismatch_refuses
