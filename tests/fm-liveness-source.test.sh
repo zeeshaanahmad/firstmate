@@ -623,6 +623,20 @@ WEDGE_DIR=; WEDGE_STATE=; WEDGE_FAKEBIN=; WEDGE_WINDOW=; WEDGE_KEY=; WEDGE_PID=
 # is the loudest tier by construction rather than by a copied literal.
 FM_WEDGE_DEMAND_INSPECT_COUNT_SEED=${FM_WEDGE_DEMAND_INSPECT_COUNT:-3}
 
+# Push every file under <dir> behind the idle-window anchor these fixtures
+# declare. bin/fm-watch.sh defers ONE wedge escalation whenever any file in the
+# recorded worktree is newer than that anchor, and these cases build the
+# worktree moments before starting the watcher, so without ageing it the verdict
+# would come from write evidence rather than from the declared-work liveness
+# claim each case exists to test - silently, and in both directions.
+age_worktree() {  # <dir> <seconds-back>
+  local dir=$1 back=$2 epoch stamp
+  epoch=$(( $(date +%s) - back ))
+  if stamp=$(date -r "$epoch" +%Y%m%d%H%M.%S 2>/dev/null); then :
+  else stamp=$(date -d "@$epoch" +%Y%m%d%H%M.%S); fi
+  find "$dir" -exec touch -t "$stamp" {} +
+}
+
 make_wedge_case() {  # <name> - sets the WEDGE_* globals
   WEDGE_DIR=$(make_case "$1")
   WEDGE_STATE="$WEDGE_DIR/state"
@@ -758,6 +772,7 @@ test_silent_executing_step_is_not_declared_stale() {
   wt="$dir/wt"
   make_repo "$wt" fm/quiet
   head=$(git -C "$wt" rev-parse HEAD)
+  age_worktree "$wt" 900
   fm_write_meta "$WEDGE_STATE/quiet.meta" "window=$WEDGE_WINDOW" "worktree=$wt" \
     "kind=ship" "mode=no-mistakes"
   make_fake_no_mistakes "$WEDGE_FAKEBIN"
@@ -787,6 +802,7 @@ test_finished_run_on_a_silent_step_still_escalates() {
   wt="$WEDGE_DIR/wt"
   make_repo "$wt" fm/quiet
   head=$(git -C "$wt" rev-parse HEAD)
+  age_worktree "$wt" 900
   fm_write_meta "$WEDGE_STATE/quiet.meta" "window=$WEDGE_WINDOW" "worktree=$wt" \
     "kind=ship" "mode=no-mistakes"
   make_fake_no_mistakes "$WEDGE_FAKEBIN"
