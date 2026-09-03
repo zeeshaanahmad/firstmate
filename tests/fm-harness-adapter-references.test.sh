@@ -3,7 +3,7 @@
 set -u
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 
 ROUTER="$ROOT/.agents/skills/harness-adapters/SKILL.md"
 TMP_ROOT=$(fm_test_tmproot fm-harness-adapter-references)

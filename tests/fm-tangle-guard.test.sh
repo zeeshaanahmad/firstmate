@@ -16,7 +16,7 @@
 set -u
 
 # shellcheck source=tests/fixtures.sh
-. "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh" || exit 1
 
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-tangle-lib.sh"

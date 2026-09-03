@@ -10,7 +10,7 @@
 set -u
 
 # shellcheck source=tests/secondmate-helpers.sh disable=SC1091
-. "$(dirname "${BASH_SOURCE[0]}")/secondmate-helpers.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/secondmate-helpers.sh" || exit 1
 
 RECONCILE="$ROOT/bin/fm-secondmate-reconcile.sh"
 TMP_ROOT=$(fm_test_tmproot fm-secondmate-reconcile)

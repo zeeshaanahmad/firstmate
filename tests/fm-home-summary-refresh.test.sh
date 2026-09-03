@@ -5,7 +5,7 @@ set -u
 
 # shellcheck source=tests/lib.sh
 # shellcheck disable=SC1091
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 
 WRITER="$ROOT/bin/fm-home-summary-refresh.sh"
 SNAPSHOT="$ROOT/bin/fm-fleet-snapshot.sh"

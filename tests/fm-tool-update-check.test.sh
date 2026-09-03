@@ -19,7 +19,7 @@
 set -u
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 
 CHECK="$ROOT/bin/fm-tool-update-check.sh"
 CHECKPOINT="$ROOT/bin/fm-watch-checkpoint.sh"

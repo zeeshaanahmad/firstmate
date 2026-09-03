@@ -16,7 +16,7 @@
 # rather than editing a stub body.
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 
 if [ -n "${FM_TEST_FIXTURES_SOURCED:-}" ]; then
   return 0

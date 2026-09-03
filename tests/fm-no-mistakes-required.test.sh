@@ -3,7 +3,7 @@
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 
 ACTION_REF=32d396ac0f29135daf7fcb9964aba9d5f4e796d6
 TMP_ROOT=$(fm_test_tmproot fm-no-mistakes-required)

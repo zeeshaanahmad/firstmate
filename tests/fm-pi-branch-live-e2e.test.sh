@@ -31,7 +31,7 @@ if [ "${FM_PI_BRANCH_LIVE_E2E:-0}" != 1 ]; then
 fi
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 export NODE_NO_WARNINGS=1
 
 PI_PACKAGE_DIR=${FM_PI_PACKAGE_DIR:-"$(npm root -g)/@earendil-works/pi-coding-agent"}
