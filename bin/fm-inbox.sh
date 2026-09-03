@@ -169,9 +169,14 @@ queue_note() {
   mkdir -p "$INBOX"
 
   local tmp id summary
+  # The staging name is what makes the id unique, so it is resolved before the
+  # record is written and the id goes in directly. Rewriting a placeholder
+  # afterwards would need sed -i, whose in-place flag takes a mandatory suffix
+  # argument on BSD and none on GNU, so there is no portable spelling of it.
   tmp=$(mktemp "$INBOX/.staging-XXXXXX")
+  id="$(date +%s)-$(basename "$tmp" | sed 's/^\.staging-//')"
   {
-    printf 'id=PENDING\n'
+    printf 'id=%s\n' "$id"
     printf 'at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'source=%s\n' "$source"
     [ -z "$extra" ] || printf '%s\n' "$extra"
@@ -179,9 +184,7 @@ queue_note() {
     printf '%s\n' "$body"
   } >"$tmp"
 
-  id="$(date +%s)-$(basename "$tmp" | sed 's/^\.staging-//')"
-  # Rewrite the id line now that we know it, then publish atomically.
-  sed -i "s/^id=PENDING$/id=$id/" "$tmp"
+  # Published atomically now that the record already carries its own id.
   mv "$tmp" "$INBOX/$id.note"
 
   # One-line summary for the wake payload; the full body stays in the file.

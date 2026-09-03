@@ -160,16 +160,27 @@ seed_commitment() {
     || fail "could not register the public commitment"
 }
 
+# The window these fixtures promise a public reply inside, anchored a week ahead
+# of the run rather than written down. An absolute date stops being a future
+# window the moment the calendar passes it, and every case below needs the
+# thread still reachable; the one case that asserts what happens after expiry
+# drives its own clock with FMX_NOW_OVERRIDE off this same anchor rather than a
+# second constant that could drift from it.
+FIXTURE_EXPIRES_EPOCH=$(( $(date -u +%s) + 7 * 24 * 3600 ))
+FIXTURE_EXPIRES_AT=$(date -u -r "$FIXTURE_EXPIRES_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+  || date -u -d "@$FIXTURE_EXPIRES_EPOCH" +%Y-%m-%dT%H:%M:%SZ)
+[ -n "$FIXTURE_EXPIRES_AT" ] || fail "neither date flavour could format the fixture expiry"
+
 # The pi-rearm shape: a report-ready promised-final bound to a secondmate.
 seed_repro_commitment() {   # <home> <obligation> <request> <work-home> <work-id>
   local home=$1 obligation=$2 request=$3 work_home=$4 work_id=$5
-  jq -n --arg r "$request" \
+  jq -n --arg r "$request" --arg e "$FIXTURE_EXPIRES_AT" \
     '{request_id:$r, platform:"discord",
       context_binding:{version:"ctx1", value:("ctx1_" + $r)},
       public_safe_summary:"reproduce a Pi recovery notification loop",
       received_at:"2026-08-21T01:12:00Z",
-      followup_expires_at:"2026-08-28T01:12:00Z",
-      reservation_expires_at:"2026-08-28T01:12:00Z"}' > "$home/request.json"
+      followup_expires_at:$e,
+      reservation_expires_at:$e}' > "$home/request.json"
   jq -n '{type:"report-ready", project:"firstmate",
           required_deliverables:["report_path"], completion_policy:"all-required"}' \
     > "$home/expected.json"
@@ -1412,6 +1423,7 @@ test_dropped_baton_now_surfaces_open_loop() {
   fm_write_meta "$child/state/pi-rearm-loop-fix-r1.meta" \
     "window=firstmate:fm-pi-rearm-loop-fix-r1" "endpoint_task_id=pi-rearm-loop-fix-r1" \
     "worktree=$child" "project=$child" "kind=ship" "mode=local-only"
+  write_completion_report "$child/data" pi-rearm-loop-fix-r1
 
   PATH="$parent/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$parent" \
     FM_STATE_OVERRIDE="$parent/state" "$PF" guard-work secondmate:mate pi-rearm-loop-fix-r1 \
@@ -1448,6 +1460,7 @@ test_control_registered_followon_is_guarded() {
   fm_write_meta "$child/state/pi-rearm-loop-fix-r1.meta" \
     "window=firstmate:fm-pi-rearm-loop-fix-r1" "endpoint_task_id=pi-rearm-loop-fix-r1" \
     "worktree=$child" "project=$child" "kind=ship" "mode=local-only"
+  write_completion_report "$child/data" pi-rearm-loop-fix-r1
   PATH="$child/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$child" \
     FM_STATE_OVERRIDE="$child/state" FM_DATA_OVERRIDE="$child/data" \
     expect_failure "registered follow-on must be guarded" "$TEARDOWN" pi-rearm-loop-fix-r1
@@ -1456,7 +1469,7 @@ test_control_registered_followon_is_guarded() {
 }
 
 test_rechain_delivers_second_post_on_same_thread() {
-  local parent log out posts command command_log
+  local parent log out posts command command_log emit_path record_path
   parent=$(make_home rechain-parent)
   log="$parent/curl.log"; : > "$log"
   seed_repro_commitment "$parent" public-final-a req-rechain main scout-a
@@ -1487,7 +1500,12 @@ SH
   ')
   assert_contains "$command" "--outcome-text" \
     "the exact rechain command must remain continuous through outcome text"
-  command=${command/"$ROOT/bin/fm-public-followup-emit.sh"/"$parent/fakebin/record-emit"}
+  # Both halves are bound first: bash 3.2 still splits ${var/a/b} on a slash
+  # written inside the pattern's own quotes, so an inline path pattern is torn
+  # apart there and silently substituted in the wrong place.
+  emit_path="$ROOT/bin/fm-public-followup-emit.sh"
+  record_path="$parent/fakebin/record-emit"
+  command=${command/"$emit_path"/"$record_path"}
   command=${command//<value>/https://github.com/example/repo/pull/99}
   RECORD_ARGS="$command_log" bash -c "$command" \
     || fail "the exact rechain command must execute after filling its deliverable value"
@@ -1853,7 +1871,7 @@ test_rechain_refuses_unclaimed_existing_destination() {
   tasks_in "$home" public-followup add public-final-existing-b \
     --request-context-file "$home/request.json" --purpose promised-final \
     --expected-final-file "$home/collision-expected.json" \
-    --expires-at 2026-08-28T01:12:00Z >/dev/null || fail "could not seed destination collision"
+    --expires-at "$FIXTURE_EXPIRES_AT" >/dev/null || fail "could not seed destination collision"
 
   expect_failure "a first rechain must not adopt an unrelated existing obligation" \
     run_pf "$home" rechain public-final-existing-b --from public-final-existing-a \
@@ -1992,6 +2010,7 @@ test_retention_creates_no_false_teardown_refusal() {
     "harness=codex" \
     "kind=ship" \
     "mode=no-mistakes"
+  write_completion_report "$home/data" ship-retain
   emit_terminal "$home" "$home" pf-retain main ship-retain >/dev/null || fail "emit failed"
   run_pf "$home" consume >/dev/null || fail "consume failed"
   FAKE_CURL_LOG="$home/curl.log" run_pf "$home" deliver pf-retain >/dev/null || fail "delivery failed"
@@ -2031,8 +2050,7 @@ test_expiry_escalation_uses_now_override() {
   local home out exp now_closing now_expired registry tmp
   home=$(make_home expiry-window)
   seed_repro_commitment "$home" pf-exp req-exp main work-exp
-  exp=$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' '2026-08-28T01:12:00Z' +%s 2>/dev/null) \
-    || exp=$(date -u -d '2026-08-28T01:12:00Z' +%s)
+  exp=$FIXTURE_EXPIRES_EPOCH
   now_closing=$((exp - 3600))
   now_expired=$((exp + 60))
   out=$(FMX_NOW_OVERRIDE="$now_expired" run_pf "$home" pending)
@@ -2147,6 +2165,7 @@ test_x_request_teardown_warns_when_final_unposted() {
     "kind=ship" \
     "mode=local-only" \
     "x_request=req-legacy-final"
+  write_completion_report "$home/data" linked-task
   rc=0
   PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
