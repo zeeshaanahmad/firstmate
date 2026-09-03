@@ -979,7 +979,8 @@ else
     case "$ring_rc" in
       1) echo "fm-send: doorbell skipped (composer visibly holds pending text); the steer is durably recorded at $INBOX_RECORD and the watcher will re-ring" >&2 ;;
       2) echo "fm-send: doorbell did not reach $T; the steer is durably recorded at $INBOX_RECORD and the watcher will re-ring" >&2 ;;
-      3) echo "fm-send: no live agent at $T - its terminal is held by a shell, so the worker's agent has exited and nothing was typed there. The steer is durably recorded at $INBOX_RECORD and waits for a live agent; the watcher re-rings and escalates it. Recover the worker rather than resending, or the record is duplicated." >&2 ;;
+      3) echo "fm-send: no live agent at $T - its terminal is held by a shell, so the worker's agent has exited and the doorbell line was NOT typed there. The steer is durably recorded at $INBOX_RECORD and waits for a live agent; the watcher re-rings and escalates it. Recover the worker rather than resending, or the record is duplicated." >&2 ;;
+      4) echo "fm-send: no live agent at $T - the doorbell line was typed there but its agent exited to a shell before the submission could be confirmed, so no agent received it. The steer is durably recorded at $INBOX_RECORD and waits for a live agent; the watcher re-rings and escalates it. Recover the worker rather than resending, or the record is duplicated." >&2 ;;
     esac
     exit 0
   fi

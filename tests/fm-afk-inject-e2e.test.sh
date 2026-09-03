@@ -584,10 +584,19 @@ test_scenario_e() {
   # The two terminal states are: something reached the pane (LOG_FILE), or the
   # daemon refused the send and said so ("refused undelivered", the message
   # inject_msg logs when it turns an oversized digest into a preserved buffer).
+  # The daemon log is shared and append-only across every scenario in this
+  # file, so the grep below is scoped to bytes appended after this scenario's
+  # own start - otherwise a match left behind by an earlier scenario would
+  # satisfy it immediately and collapse this wait to the settle sleep.
+  local _daemon_log="$STATE_DIR/.supervise-daemon.log"
+  local _daemon_log_start
+  _daemon_log_start=$(wc -c < "$_daemon_log" 2>/dev/null | tr -d ' ')
+  [ -n "$_daemon_log_start" ] || _daemon_log_start=0
   _w=0
   while [ "$_w" -lt 90 ]; do
     [ -s "$LOG_FILE" ] && break
-    grep -q 'refused undelivered' "$STATE_DIR/.supervise-daemon.log" 2>/dev/null && break
+    tail -c "+$((_daemon_log_start + 1))" "$_daemon_log" 2>/dev/null \
+      | grep -q 'refused undelivered' && break
     sleep 1
     _w=$((_w + 1))
   done
@@ -624,7 +633,8 @@ test_scenario_e() {
     # Refused: loudly, with the buffer preserved so nothing is lost.
     [ -s "$STATE_DIR/.subsuper-escalations" ] \
       || fail "Scenario E: nothing delivered and no buffered escalation preserved"
-    grep -q 'delivery bound' "$STATE_DIR/.supervise-daemon.log" \
+    tail -c "+$((_daemon_log_start + 1))" "$_daemon_log" 2>/dev/null \
+      | grep -q 'delivery bound' \
       || fail "Scenario E: nothing delivered and the daemon log says nothing about why"
   fi
 

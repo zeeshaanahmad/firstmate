@@ -255,28 +255,55 @@ fm_task_inbox_doorbell_line() {  # <record-path>
     "$abs" "$abs"
 }
 
-# Ring the doorbell, best-effort: one advisory composer pre-check, then the
-# backend's submit machinery with a minimal retry budget, verdict discarded.
-# Returns 0 rang, 1 skipped because the composer PROVENLY holds pending text
-# (the watcher re-rings later), 2 the backend send failed, 3 the endpoint has no
-# live agent so nothing was rung. No return value is delivery proof; the
+# Ring the doorbell, best-effort: one authoritative agent-state read, one
+# advisory composer pre-check, then the backend's submit machinery with a
+# minimal retry budget, verdict discarded. Returns 0 rang, 1 skipped because
+# the composer PROVENLY holds pending text (the watcher re-rings later), 2 the
+# backend send failed, 3 the endpoint had no live agent before anything was
+# typed, 4 the endpoint's agent exited to a shell between typing the doorbell
+# line and confirming submission. No return value is delivery proof; the
 # acknowledgement move is the only delivery signal.
 #
-# 3 is separated from 0 because it is the one ring outcome a reader would
-# otherwise misread as success: the submit core answers `no-agent` (and
-# `agent-lost` for an agent that exited mid-submit) as a VERDICT with exit 0, so
-# folding it into "rang" reports a doorbell that provably reached nobody. The
-# record is still durable and the ladder still escalates it - the caller's job
-# is only to say the agent was absent, never to fail the send.
-# The skip is deliberately narrow: only an exact `pending` verdict defers,
-# because there our Enter could submit someone's real half-typed content.
-# `pending-unproven` and `unknown` still ring - the worst outcome is a garbled
-# CONSTANT line the worker recovers semantically, while skipping on ambiguous
-# verdicts would starve a harness whose idle screen the classifier cannot
-# positively identify (that classifier is advisory here by design).
+# 3 and 4 are separated from 0 because they are the ring outcomes a reader
+# would otherwise misread as success: the submit core answers `no-agent` and
+# `agent-lost` as VERDICTs with exit 0, so folding either into "rang" reports a
+# doorbell that provably reached nobody. The record is still durable and the
+# ladder still escalates it - the caller's job is only to say the agent was
+# absent, never to fail the send. They are also separated from EACH OTHER
+# because they disagree on whether the doorbell line was typed: `no-agent`
+# means it was not, `agent-lost` means it was typed and Enter was sent before
+# the agent exited - collapsing them into one outcome would force a message
+# that is false for one of the two.
+#
+# The authoritative agent-state read runs BEFORE the composer pre-check, not
+# after: a dead pane's rendered composer can still classify as `pending` (a
+# shell prompt is byte-identical to claude's empty-composer glyph, but a
+# leftover buffer under it can still read as held text), and if the composer
+# check ran first it would return 1 and never reach the no-agent verdict,
+# silently swallowing the required absent-agent messaging. It reads
+# fm_backend_pane_agent_state rather than the inventory-checked
+# fm_backend_agent_state deliberately: this caller's target is exactly what the
+# backend's own submit core is about to act on (fm_backend_tmux_send_text_submit
+# gates its typing on the same pane-evidence primitive), so hoisting that exact
+# check earlier is a faithful reordering, not a stricter one - a target whose
+# session inventory is momentarily unreadable stays `ambiguous`/`unreadable`
+# here exactly as it would inside the submit core, instead of being
+# misreported `missing`. Only a confident `dead`/`missing` verdict
+# short-circuits here; `ambiguous`, `unreadable`, and `unverified` fall through
+# to the composer check and the submit core exactly as before, so a live or
+# unclassifiable pane's behavior is unchanged.
+# The composer skip is deliberately narrow: only an exact `pending` verdict
+# defers, because there our Enter could submit someone's real half-typed
+# content. `pending-unproven` and `unknown` still ring - the worst outcome is a
+# garbled CONSTANT line the worker recovers semantically, while skipping on
+# ambiguous verdicts would starve a harness whose idle screen the classifier
+# cannot positively identify (that classifier is advisory here by design).
 fm_task_inbox_ring() {  # <backend> <target> <record-path> [expected-label]
   local backend=$1 target=$2 rec=$3 label=${4:-} line cstate verdict
   line=$(fm_task_inbox_doorbell_line "$rec")
+  case "$(fm_backend_pane_agent_state "$backend" "$target" 2>/dev/null)" in
+    dead|missing) return 3 ;;
+  esac
   cstate=$(fm_backend_composer_state "$backend" "$target" "$label" 2>/dev/null) || cstate=unknown
   case "$cstate" in
     pending) return 1 ;;
@@ -289,7 +316,8 @@ fm_task_inbox_ring() {  # <backend> <target> <record-path> [expected-label]
   # deliberately ignored, never proof.
   [ "$verdict" != send-failed ] || return 2
   case "$verdict" in
-    no-agent|agent-lost) return 3 ;;
+    no-agent) return 3 ;;
+    agent-lost) return 4 ;;
   esac
   return 0
 }
