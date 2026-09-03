@@ -26,8 +26,14 @@
 #   1. The shell pane still classifies `empty` by RENDERED shape while the
 #      foreground-process facts read `dead`. Asserting both pins the fact that
 #      the rendered verdict is not, and must not become, the safeguard here.
-#   2. A steer to that pane is refused, exits nonzero, and never types the
-#      instruction into the shell.
+#   2. An ORDINARY steer to that pane rides the durable steering inbox
+#      (bin/fm-task-inbox-lib.sh): it is recorded rather than typed, so it
+#      exits 0 - the record is the delivery. Neither the instruction nor the
+#      doorbell line reaches the shell, and because the exit status no longer
+#      carries the warning, the RESULT TEXT must say the endpoint has no live
+#      agent and the record is waiting for one. A HARNESS-NATIVE steer ("/...")
+#      has no record substitute - it must reach the harness's own parser - so
+#      it stays on the typed plane and is still refused nonzero, untyped.
 #   3. The identical pane shape with a real agent-named process in the
 #      foreground still receives the steer and still exits 0, so the refusal is
 #      a discrimination, not a blanket block.
@@ -189,22 +195,61 @@ test_shell_pane_steer_is_refused() {
   [ "$agent_state" = dead ] || fail \
     "a bare interactive shell should read 'dead' from the foreground process group, got '$agent_state'"
 
+  # ORDINARY STEER - the inbox plane. The durable record IS the delivery, so
+  # this exits 0 and the instruction is never typed anywhere; the doorbell that
+  # WOULD have been typed is refused by the same no-agent verdict. What the
+  # exit status no longer carries, the output must: firstmate reading this
+  # result must not be left believing a dead worker read the instruction.
   send_steer deadmate 'rebase onto main and re-run the gate' || rc=$?
-  [ "$rc" -ne 0 ] || fail \
-    "fm-send reported a steer into a bare shell pane as delivered (exit 0): $SEND_OUT"
+  [ "$rc" -eq 0 ] || fail \
+    "an ordinary steer is durably recorded, so it must not fail (exit $rc): $SEND_OUT"
 
   # Assert on SUBMITTED CONTENT, not pane appearance: nothing reached the shell.
+  # Neither the instruction nor the doorbell line may be typed into a dead shell.
   [ ! -s "$SHELL_LOG" ] || fail \
-    "the steer was typed into the shell pane: $(cat "$SHELL_LOG")"
+    "something was typed into the shell pane: $(cat "$SHELL_LOG")"
 
-  # The refusal must say what is actually wrong, because the next move is
-  # recovering the worker, not resending.
+  # The steer is not lost: it is durably recorded for whatever agent comes back.
+  [ -s "$HOME_DIR/state/deadmate.inbox/001.msg" ] || fail \
+    "the steer was neither typed nor durably recorded, so it is simply gone"
+  grep -F 'rebase onto main' "$HOME_DIR/state/deadmate.inbox/001.msg" >/dev/null || fail \
+    "the durable record does not carry the steer text"
+
+  # The report must say the agent was ABSENT and that the record is waiting,
+  # because the next move is recovering the worker, not resending.
+  case "$SEND_OUT" in
+    *"no live agent"*) ;;
+    *) fail "the result did not say the endpoint has no live agent: $SEND_OUT" ;;
+  esac
+  case "$SEND_OUT" in
+    *"waits for a live agent"*) ;;
+    *) fail "the result did not say the record is waiting for a live agent: $SEND_OUT" ;;
+  esac
+
+  pass "an ordinary steer to a shell-held endpoint is recorded, never typed, and reported as reaching no live agent"
+}
+
+# --- 2: the TYPED plane still refuses outright ------------------------------
+# A harness-native invocation must reach the harness's own parser, so it has no
+# durable-record substitute: it is typed or it is nothing. That is where the
+# no-agent verdict still decides delivery, and where a nonzero exit is the only
+# honest answer.
+test_shell_pane_typed_plane_is_refused() {
+  local rc=0
+
+  send_steer deadmate '/status' || rc=$?
+  [ "$rc" -ne 0 ] || fail \
+    "fm-send reported a harness-native steer into a bare shell pane as delivered (exit 0): $SEND_OUT"
+
+  [ ! -s "$SHELL_LOG" ] || fail \
+    "the harness-native steer was typed into the shell pane: $(cat "$SHELL_LOG")"
+
   case "$SEND_OUT" in
     *no-agent*) ;;
     *) fail "the refusal did not name the shell-held endpoint: $SEND_OUT" ;;
   esac
 
-  pass "a steer to a pane whose agent exited to a shell is refused and never typed"
+  pass "a harness-native steer to that same pane is refused outright and never typed"
 }
 
 # --- 3: the refusal discriminates, it does not blanket-block -----------------
@@ -217,10 +262,22 @@ test_agent_pane_steer_is_delivered() {
   send_steer livemate 'rebase onto main and re-run the gate' || fail \
     "fm-send refused a steer to a pane with a live agent in the foreground: $SEND_OUT"
 
-  grep -F 'rebase onto main' "$AGENT_LOG" >/dev/null || fail \
-    "the steer never reached the agent pane: $(cat "$AGENT_LOG")"
+  # The discriminating fact, on the plane the steer now rides: the DOORBELL
+  # reaches this pane, where the identical shape holding a shell got nothing at
+  # all. Both endpoints record the steer; only this one is rung.
+  [ -s "$AGENT_LOG" ] || fail \
+    "the doorbell never reached the agent pane, so the refusal is a blanket block rather than a discrimination"
+  grep -F 'Firstmate instruction waiting' "$AGENT_LOG" >/dev/null || fail \
+    "what reached the agent pane was not the doorbell line: $(cat "$AGENT_LOG")"
+  grep -F 'rebase onto main' "$HOME_DIR/state/livemate.inbox/001.msg" >/dev/null || fail \
+    "the steer was rung but not durably recorded for the live agent"
 
-  pass "the same pane shape with a live agent in the foreground still receives the steer"
+  # And the report carries no absent-agent warning, so that line stays a signal.
+  case "$SEND_OUT" in
+    *"no live agent"*) fail "a live agent pane was reported as having no live agent: $SEND_OUT" ;;
+  esac
+
+  pass "the same pane shape with a live agent in the foreground is rung, not refused"
 }
 
 # --- 4: the agent dies between the typing and the read-back -----------------
@@ -231,8 +288,11 @@ test_agent_lost_during_send_is_not_reported_delivered() {
 
   # The trailing `~` is the handoff trigger: the pane's agent process re-execs
   # as a shell the moment it arrives, i.e. after the steer is typed and before
-  # Enter is read back.
-  send_steer lossmate 'rebase onto main and re-run the gate~' || rc=$?
+  # Enter is read back. This is a HARNESS-NATIVE steer on purpose: the read-back
+  # window only exists where text is actually typed, and an ordinary steer now
+  # rides the durable record instead, so sending one here would never type the
+  # trigger and the case would go vacuous.
+  send_steer lossmate '/status~' || rc=$?
 
   # The window this case owns, asserted so it cannot go vacuous: at read-back
   # time the pane renders a cleared composer and the process facts say shell.
@@ -247,7 +307,7 @@ test_agent_lost_during_send_is_not_reported_delivered() {
     "fm-send reported delivery after the agent exited to a shell mid-send: $SEND_OUT"
   # The Enter itself still reaches the pane - it was already in flight - so the
   # claim under test is that the INSTRUCTION was never submitted to anything.
-  ! grep -F 'rebase onto main' "$LOSS_LOG" >/dev/null || fail \
+  ! grep -F '/status' "$LOSS_LOG" >/dev/null || fail \
     "the steer was submitted into the pane after its agent exited: $(cat "$LOSS_LOG")"
   case "$SEND_OUT" in
     *agent-lost*) ;;
@@ -258,6 +318,7 @@ test_agent_lost_during_send_is_not_reported_delivered() {
 }
 
 test_shell_pane_steer_is_refused
+test_shell_pane_typed_plane_is_refused
 test_agent_pane_steer_is_delivered
 test_agent_lost_during_send_is_not_reported_delivered
 

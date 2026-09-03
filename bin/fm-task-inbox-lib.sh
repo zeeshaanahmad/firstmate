@@ -258,8 +258,16 @@ fm_task_inbox_doorbell_line() {  # <record-path>
 # Ring the doorbell, best-effort: one advisory composer pre-check, then the
 # backend's submit machinery with a minimal retry budget, verdict discarded.
 # Returns 0 rang, 1 skipped because the composer PROVENLY holds pending text
-# (the watcher re-rings later), 2 the backend send failed. No return value is
-# delivery proof; the acknowledgement move is the only delivery signal.
+# (the watcher re-rings later), 2 the backend send failed, 3 the endpoint has no
+# live agent so nothing was rung. No return value is delivery proof; the
+# acknowledgement move is the only delivery signal.
+#
+# 3 is separated from 0 because it is the one ring outcome a reader would
+# otherwise misread as success: the submit core answers `no-agent` (and
+# `agent-lost` for an agent that exited mid-submit) as a VERDICT with exit 0, so
+# folding it into "rang" reports a doorbell that provably reached nobody. The
+# record is still durable and the ladder still escalates it - the caller's job
+# is only to say the agent was absent, never to fail the send.
 # The skip is deliberately narrow: only an exact `pending` verdict defers,
 # because there our Enter could submit someone's real half-typed content.
 # `pending-unproven` and `unknown` still ring - the worst outcome is a garbled
@@ -276,9 +284,13 @@ fm_task_inbox_ring() {  # <backend> <target> <record-path> [expected-label]
   if ! verdict=$(fm_backend_send_text_submit "$backend" "$target" "$line" 1 0.4 0.3 "$label" 2>/dev/null); then
     return 2
   fi
-  # The verdict is read only to report a failed keystroke; every other value
-  # (empty, pending, unknown, ...) is deliberately ignored, never proof.
+  # The verdict is read only to report a failed keystroke and an endpoint with
+  # no live agent; every other value (empty, pending, unknown, ...) is
+  # deliberately ignored, never proof.
   [ "$verdict" != send-failed ] || return 2
+  case "$verdict" in
+    no-agent|agent-lost) return 3 ;;
+  esac
   return 0
 }
 
