@@ -158,13 +158,36 @@ test_guard_warnings() {
   queue_line=$(grep -n 'queued wakes pending - drain them' "$err" | head -1 | cut -d: -f1)
   [ "$banner_line" -lt "$queue_line" ] || fail "queued-wakes warning printed before the no-watcher banner"
 
+  # Relay cadence in the repair line, both ways round. FM_HOME is pinned to the
+  # fixture on purpose: fm-guard.sh resolves CONFIG from FM_HOME before it falls
+  # back to FM_ROOT_OVERRIDE, so an ambient FM_HOME - which every
+  # firstmate-spawned shell exports - would point the x-mode probe at a real
+  # home and quietly decide these cases from outside the fixture.
+  #
+  # (a) The Claude Stop-hook adapter hands the model no watcher-launching
+  # command; bin/fm-claude-stop-autoarm.sh sources the cadence config in its own
+  # launch path, so the banner must state that contract and must NOT tell the
+  # model to source a config it has nothing to source into.
   dir=$(make_case guard-xmode)
   state="$dir/state"
   err="$dir/guard.err"
   mkdir -p "$dir/config"
   printf 'project=x\n' > "$state/task.meta"
   : > "$dir/config/x-mode.env"
-  CLAUDECODE=1 PI_CODING_AGENT='' GROK_AGENT='' FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=1 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null || fail "guard failed"
+  CLAUDECODE=1 PI_CODING_AGENT='' GROK_AGENT='' FM_HOME="$dir" FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=1 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null || fail "guard failed"
+  grep -F 'watcher supervision needs Stop-owned automatic recovery' "$err" >/dev/null || fail "guard repair line lost the Stop-owned recovery contract under X mode"
+  ! grep -F "source '$dir/config/x-mode.env' first" "$err" >/dev/null || fail "guard told the Stop-owned adapter to source the cadence config it cannot act on"
+
+  # (b) The adapter whose repair line DOES emit a watcher-launching command must
+  # still carry the cadence config, or an X-mode repair arms at the default poll.
+  dir=$(make_case guard-xmode-arm)
+  state="$dir/state"
+  err="$dir/guard.err"
+  mkdir -p "$dir/config"
+  printf 'project=x\n' > "$state/task.meta"
+  : > "$dir/config/x-mode.env"
+  CLAUDECODE='' PI_CODING_AGENT='' GROK_AGENT=1 FM_HOME="$dir" FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=1 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null || fail "guard failed"
+  grep -F 'bin/fm-watch-arm.sh as its own Grok tracked background task' "$err" >/dev/null || fail "guard did not reach the arm-emitting adapter's repair line"
   grep -F "source '$dir/config/x-mode.env' first" "$err" >/dev/null || fail "guard repair line did not source the X-mode cadence config"
 
   # (2) live watcher plus fresh beacon, empty queue -> silence.
