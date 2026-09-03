@@ -8,9 +8,8 @@
 # or blocked and the crew resumes (responds to the gate, the pipeline fixes, it
 # re-validates), the log's last line stays stale. This helper never infers the
 # current state from a tail of the log: it reads the authoritative source (a
-# no-mistakes run-step attributed to this crew's branch and current code
-# identity, else the pane busy-signature) and reconciles the possibly-stale log
-# against it.
+# no-mistakes run-step attributed under bin/fm-nm-run-lib.sh's contract, else
+# the pane busy-signature) and reconciles the possibly-stale log against it.
 #
 # The determinism lives entirely here - only run-step / pane / log reads plus
 # fixed mapping logic, no heuristics and no LLM. Output is one stable, parseable,
@@ -27,16 +26,8 @@
 #      to the routed status log; dead/missing report the remote verdict; an
 #      unreachable or unreadable remote reports unknown-remote, never a false
 #      gone/dead.
-#   2. Matching no-mistakes run for this crew's branch AND current code identity,
-#      active or terminal (from `axi status`, or the coarse `no-mistakes runs`
-#      fallback)? Branch name alone is not enough: a historical run on a reused
-#      branch whose head was rewritten or diverged must not be attributed, so
-#      fm_nm_head_binds_run (bin/fm-nm-run-lib.sh, the ONE owner) decides. Note
-#      that an IN-FLIGHT run's head is routinely unresolvable in this worktree -
-#      the pipeline commits its fixes in its own gate repository and does not
-#      push them until the push step - and that owner explains why demanding
-#      otherwise loses the run for the whole review..lint window, which is
-#      exactly where it parks at a gate.
+#   2. Attribute an active or terminal no-mistakes run under the branch, head,
+#      pipeline-custody, and newest-first rules owned by bin/fm-nm-run-lib.sh.
 #      The run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
 #      awaiting_approval/fix_review -> parked (with the gate and its findings),
 #      terminal checks-passed -> done, failed -> failed. A parked detail also
@@ -143,7 +134,7 @@ fi
 
 # --- status log ------------------------------------------------------------
 
-# Last non-empty status line, and its leading verb (the word before the colon).
+# Last non-empty status line; fm-classify-lib.sh owns leading-verb normalization.
 log_last_line() {
   [ -f "$LOG" ] || return 1
   grep -v '^[[:space:]]*$' "$LOG" 2>/dev/null | tail -1
@@ -242,7 +233,7 @@ crew_busy_verdict() {  # <target>
 
 # --- no-mistakes run lookup (authoritative when a run matches this branch) --
 # trim, strip_quotes, the bounded nm_run call, nm_field's TOON parse, and the
-# branch+head attribution rule below are thin wrappers over the ONE owner in
+# attribution helpers below are thin wrappers over the ONE owner in
 # bin/fm-nm-run-lib.sh, shared with fm-teardown.sh's pre-teardown run abort.
 
 trim() { fm_nm_trim "$@"; }
@@ -529,6 +520,10 @@ nm_runs_status_for_branch() {  # <branch>
       # Same code-identity rule as axi status: skip a same-branch row whose
       # short-sha does not match this worktree (rewritten or advanced tip).
       if ! nm_coarse_head_matches_worktree "$sha"; then
+        # An UNRESOLVABLE head is unknown attribution, not a proven
+        # mismatch. Stop instead of surfacing an older, superseded row;
+        # the caller's pane/log fallback can answer without misattribution.
+        fm_nm_head_resolvable "$WT" "$sha" || return 0
         continue
       fi
       printf '%s' "$st"
@@ -542,28 +537,27 @@ nm_runs_status_for_branch() {  # <branch>
 # scratch worktree); with no branch there is no run to attribute to this crew.
 CREW_BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
 
-# 0 if the active axi-status run binds to this worktree's code identity. Branch
-# match is a precondition (caller). Rule owned by fm_nm_head_binds_run in
-# bin/fm-nm-run-lib.sh, which reads the run's own state to decide whether an
-# unresolvable head is a pipeline commit not yet pushed (in-flight) or evidence
-# that this is not our run (terminal).
+# 0 if the active axi-status run's head field matches this worktree's code
+# identity. Branch match is a precondition (caller). Rule owned by
+# fm_nm_head_matches_worktree in bin/fm-nm-run-lib.sh.
 #
 # Getting this wrong is what produced the parked-gate misreport this path exists
 # to prevent: the run object is the ONLY source with gate detail, so a rejected
 # in-flight run does not degrade to a coarser verdict, it degrades to the pane -
-# where a crew waiting at a gate looks busy, or looks like nothing at all.
-nm_run_binds_worktree() {
-  fm_nm_head_binds_run "$WT" \
-    "$(strip_quotes "$(nm_field head)")" \
-    "$(strip_quotes "$(nm_field status)")" \
-    "$(strip_quotes "$(nm_field outcome)")"
+# where a crew waiting at a gate looks busy, or looks like nothing at all. That
+# is why the caller pairs this with the pipeline-custody exemption rather than
+# demanding a resolvable head from a run whose fixes are not pushed yet.
+nm_run_head_matches_worktree() {
+  local run_head
+  run_head=$(strip_quotes "$(nm_field head)")
+  fm_nm_head_matches_worktree "$WT" "$run_head"
 }
 
 # Coarse runs-list rows are "<status> <branch> <short-sha> ...". 0 if the short
 # sha for this branch row matches the worktree head under the STRICT rule
 # (equal, or local is ancestor of run tip).
 #
-# Deliberately strict where nm_run_binds_worktree is not. A coarse row carries no
+# Deliberately strict where the run-object path is not. A coarse row carries no
 # step or gate detail at all, so attributing an in-flight run from one could only
 # ever publish a bare "validating" - asserting the very working/parked confusion
 # the run-object path exists to resolve, on a row that cannot tell them apart. A
@@ -590,12 +584,17 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
   fi
   if [ -n "$RUN_OUT" ]; then
     run_branch=$(strip_quotes "$(nm_field branch)")
-    if [ -n "$run_branch" ] && [ "$run_branch" = "$CREW_BRANCH" ] && nm_run_binds_worktree; then
+    # Head equality, or the pipeline-owned-active exemption: while the
+    # pipeline owns this branch, the daemon's own branch attribution is
+    # authoritative and the lane head need not be a git object here
+    # (fm_nm_run_is_pipeline_owned_active in bin/fm-nm-run-lib.sh).
+    if [ -n "$run_branch" ] && [ "$run_branch" = "$CREW_BRANCH" ] \
+      && { nm_run_head_matches_worktree || fm_nm_run_is_pipeline_owned_active "$RUN_OUT"; }; then
       HAVE_RUN=1
     else
-      # The active-or-most-recent run is for another branch, or same branch with
-      # a rewritten/diverged head (the CLI is alive and answered; only the
-      # attribution missed) - try the coarse fallback.
+      # The active-or-most-recent run is for another branch, or its same-branch
+      # attribution failed (the CLI is alive and answered) - try the coarse
+      # fallback.
       # Deliberately nested inside `[ -n "$RUN_OUT" ]`: an empty/timed-out
       # primary call means the CLI itself did not respond, so retrying it
       # immediately with a second bounded call would just double the wait
@@ -625,8 +624,9 @@ if [ "$HAVE_RUN" = 1 ]; then
     # gets full detail once `axi status` reports its own branch again (e.g.
     # once its own step is the most-recently-touched one), and its own
     # needs-decision/blocked status-log append (a captain-relevant VERB) is
-    # surfaced through signal_reason_is_actionable regardless of this
-    # coarse-vs-full distinction, so a real gate is never silently missed.
+    # surfaced by each supervisor's span classification (fm-classify-lib.sh's
+    # status_span_first_actionable) regardless of this coarse-vs-full
+    # distinction, so a real gate is never silently missed.
     case "$COARSE_STATUS" in
       running)   RUN_STATE=working; RUN_DETAIL="validating (background run)" ;;
       completed) RUN_STATE="done";  RUN_DETAIL="run completed" ;;
