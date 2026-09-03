@@ -10,7 +10,7 @@ Firstmate owns both halves because both are merge-path concerns, and both are ch
 ## The two halves
 
 **Prevention** lives in `bin/fm-pr-merge.sh`, immediately before its merge call.
-It computes the exact squash result of the PR head onto the current default-branch tip with `git merge-tree --write-tree`, writes that tree out, and runs the project's own pinned static check against it.
+It computes the exact merge result of the request head onto the current tip of the branch it targets with `git merge-tree --write-tree`, writes that tree out, and runs the project's own pinned static check against it.
 A red result refuses the merge and tells the lane to rebase onto current main and re-gate.
 A merge that conflicts is refused on the same ground, because a conflicted merge is not a mergeable PR.
 The guard runs unconditionally rather than behind a staleness probe: it was measured at a 1.0s median across 106 merges of a project whose checker is a fast linter, which does not pay for the extra branch.
