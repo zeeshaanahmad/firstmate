@@ -694,12 +694,15 @@ _fm_open_decisions_cursor_path() {  # <status-file>
 # 4: verb parsing ends at the first "[name=value]" tag rather than only at a
 # "[key=...]" one, so lines carrying another bracketed tag first became opens
 # and closes.
-# 5: status_line_verb now also reads through an UNBRACKETED correlation token,
-# so lines that previously folded as ordinary status become opens and closes.
-# Version 4 was already spent on the bracketed-tag parser change above, and a
-# cursor persisted under that reading predates this one, so it must still be
-# discarded and rebuilt from byte 0 under the new reading.
-FM_OPEN_DECISIONS_FOLD_VERSION=5
+# 5: two independent changes each claimed this number, on the fork (every
+# [key=...] token before the colon opens and closes, not only the first) and
+# upstream (status_line_verb reads through an UNBRACKETED correlation token).
+# Version 4 was already spent on the bracketed-tag parser change above.
+# 6: the reconciliation of those two. The fold now reads BOTH, so a cursor
+# persisted under either version-5 reading predates this one and must be
+# discarded and rebuilt from byte 0 - which a matching version number would
+# not have done.
+FM_OPEN_DECISIONS_FOLD_VERSION=6
 
 # Portable device:inode identity for the rotation/recreation check below.
 _fm_open_decisions_file_ident() {  # <file> -> strongest available identity
