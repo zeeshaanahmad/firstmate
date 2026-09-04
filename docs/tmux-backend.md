@@ -50,6 +50,9 @@ A target-existence check proves only that the pane exists.
 The deeper tmux agent-liveness probe first verifies exact window membership, then reads process names to distinguish a running harness from a bare idle shell.
 It classifies recognized Claude, Codex, OpenCode, Pi, pi-signed, Grok, Kimi, Cursor, and Muse process identities as `alive`, common shells as `dead`, an authoritatively absent window as `missing`, unreadable state as `unreadable`, and every other process as `ambiguous`.
 Only `dead` and `missing` authorize recovery because a false dead result could launch a duplicate agent.
+A caller that has pinned an explicit tmux server with `fm_backend_tmux_bind_socket` (`bin/backends/tmux.sh`) - every caller that has resolved a task's recorded endpoint binds to that endpoint's own server before reading or acting on it, through the shared `fm_tmux_bin` seam in `bin/fm-tmux-lib.sh` - additionally verifies the target exists on that exact server before any other read, and reports `unresolvable` instead of any verdict above when it does not.
+A wrong or absent server is not the same fact as a dead agent: collapsing it into `dead`/`missing` would authorize recovery, or a doorbell/keystroke, against an endpoint nothing here has actually proven to exist on the bound server.
+An unbound caller never takes this check and keeps its unconditional prior behavior, because a raw single-target tmux read can silently answer from the client's current pane instead of erroring when the named target is absent.
 
 For positive attribution, the probe combines two independent name sources rather than making either one load-bearing.
 `#{pane_current_command}` and the pane tty foreground process group's kernel `comm` values expose different name fields, and which one retains executable identity is platform-dependent.
@@ -87,7 +90,7 @@ It types a message once and retries Enter only until the composer clears.
 Only a proven empty composer is a positive delivery acknowledgement.
 Text left in established structure remains `pending`, text in ambiguous structure remains unproven, and unreadable or unsafe state remains unknown.
 An ordinary local `fm-send.sh` text steer and every remote text steer no longer ride this verified submit at all: they become durable steering-inbox records plus best-effort constant doorbell lines (`bin/fm-task-inbox-lib.sh`).
-`fm_backend_tmux_send_text_submit` (`bin/backends/tmux.sh`) owns the acting-caller corroboration above for the local typed plane: it refuses to type into a pane already proven agent-free (`no-agent`) and refuses to read a cleared composer as delivery once the pane has become one (`agent-lost`).
+`fm_backend_tmux_send_text_submit` (`bin/backends/tmux.sh`) owns the acting-caller corroboration above for the local typed plane: it refuses to type into a pane already proven agent-free (`no-agent`), refuses to read a cleared composer as delivery once the pane has become one (`agent-lost`), and, for a caller bound to an explicit server, refuses to type at all when the target cannot be proven to exist on that server (`unresolvable`, see [Agent liveness probe](#agent-liveness-probe)).
 The verdicts above are delivery-critical only for that typed plane - harness-native invocations and explicit backend targets - where `fm-send.sh` still never retypes or assumes a confirmed submit for an unconfirmed verdict; its header owns the distinct delivered-unconfirmed exit status and operator response.
 
 OpenCode 1.18.4 has one busy-queue exception.
