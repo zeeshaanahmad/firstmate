@@ -52,8 +52,13 @@
 # fm_backend_tmux_bind_socket, bin/backends/tmux.sh) talks ONLY to that
 # server's socket, never to whatever the ambient PATH/environment would
 # otherwise resolve. Unbound - every caller that has not opted in, and the
-# common case for every backend besides tmux - is byte-identical to a bare
-# `tmux` call, so the default path is untouched.
+# common case for every backend besides tmux - resolves `tmux` via PATH
+# exactly like a bare `tmux` call, so the default path is untouched; both
+# branches use `command tmux`, which intentionally bypasses any shell
+# function or alias named `tmux` (builtins are never in play - there is no
+# `tmux` builtin) in favor of the real PATH binary. A test that stubs tmux
+# as a shell function is not observed by this seam; stub with a PATH
+# executable instead.
 #
 # This closes the wrong-server doorbell defect (2026-09-04): a target
 # recorded against one tmux server (e.g. a task's own dedicated/private
