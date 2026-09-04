@@ -577,17 +577,28 @@ SH
 }
 
 test_kimi_busy_signature_is_scoped_to_spinner_lines() {
-  local capture
+  local capture fakebin old_path
   # shellcheck source=/dev/null
   . "$ROOT/bin/fm-tmux-lib.sh"
   unset FM_BUSY_REGEX
   capture="$TMP_ROOT/busy-pane"
-  tmux() {
-    case "${1:-}" in
-      capture-pane) cat "$capture" ;;
-      *) return 0 ;;
-    esac
-  }
+  # fm_pane_is_busy resolves tmux through fm_tmux_bin, which calls `command
+  # tmux` so a pinned socket is never shadowed by an ambient PATH/function
+  # tmux - but that also means a plain `tmux() { ... }` shell-function stub is
+  # invisible to it. Stub with a real executable ahead of it on PATH instead,
+  # the same shape tests/fixtures.sh's fm_test_fake_tmux_* helpers use.
+  fakebin="$TMP_ROOT/busy-spinner-fakebin"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/tmux" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  capture-pane) cat "$capture" ;;
+  *) exit 0 ;;
+esac
+SH
+  chmod +x "$fakebin/tmux"
+  old_path=$PATH
+  PATH="$fakebin:$PATH"
   # These fixtures reproduce the observed spinner shape rather than byte-exact
   # transcriptions. Leading whitespace is deliberately varied; separator whitespace
   # follows the captured contract.
@@ -620,6 +631,7 @@ test_kimi_busy_signature_is_scoped_to_spinner_lines() {
   if fm_pane_is_busy fake kimi; then
     fail "Kimi's idle thinking-effort status label was misread as busy"
   fi
+  PATH=$old_path
   pass "busy detection: real Kimi moon-plus-middot captures require its harness while idle labels stay idle"
 }
 
