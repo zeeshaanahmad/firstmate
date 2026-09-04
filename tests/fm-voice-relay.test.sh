@@ -21,7 +21,7 @@
 set -u
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 
 command -v python3 >/dev/null 2>&1 || { echo "skip: python3 not found"; exit 0; }
 

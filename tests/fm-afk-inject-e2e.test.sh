@@ -552,6 +552,7 @@ test_scenario_d() {
 # wedge alarm. What it must never be is an unmarked fragment.
 
 test_scenario_e() {
+  local _w
   reset_state
   afk_enter "$STATE_DIR"
   start_daemon
@@ -567,7 +568,40 @@ test_scenario_e() {
       > "$STATE_DIR/fake-c$i.status"
     i=$((i + 1))
   done
-  sleep 12
+  # Bounded condition wait, not a fixed sleep. This scenario's outcome is either
+  # a delivered digest or a preserved buffer, and how long the daemon needs to
+  # reach one scales with how much classification work the fleet's status logs
+  # cost: span classification against the shared presentation cursor made twelve
+  # simultaneous captain-relevant statuses measurably slower than the constant
+  # this scenario used to assume (8-9s before, 14s after, against a 12s sleep),
+  # so a constant here re-breaks the moment either side of that changes again.
+  # The bound still fails loudly - past it both assertions below run against the
+  # same empty log and empty buffer they always did.
+  # Wait on a TERMINAL outcome, not on the buffer. escalate_add fills the buffer
+  # before escalate_flush ever attempts delivery, so a buffered escalation is
+  # mid-flight, not a result - waiting on it races the flush and reads the log
+  # before the daemon has written anything about why.
+  # The two terminal states are: something reached the pane (LOG_FILE), or the
+  # daemon refused the send and said so ("refused undelivered", the message
+  # inject_msg logs when it turns an oversized digest into a preserved buffer).
+  # The daemon log is shared and append-only across every scenario in this
+  # file, so the grep below is scoped to bytes appended after this scenario's
+  # own start - otherwise a match left behind by an earlier scenario would
+  # satisfy it immediately and collapse this wait to the settle sleep.
+  local _daemon_log="$STATE_DIR/.supervise-daemon.log"
+  local _daemon_log_start
+  _daemon_log_start=$(wc -c < "$_daemon_log" 2>/dev/null | tr -d ' ')
+  [ -n "$_daemon_log_start" ] || _daemon_log_start=0
+  _w=0
+  while [ "$_w" -lt 90 ]; do
+    [ -s "$LOG_FILE" ] && break
+    tail -c "+$((_daemon_log_start + 1))" "$_daemon_log" 2>/dev/null \
+      | grep -q 'refused undelivered' && break
+    sleep 1
+    _w=$((_w + 1))
+  done
+  # Settle: let an in-flight inject finish writing before the log is read.
+  sleep 2
 
   local user_count
   user_count=$(grep -c $'\tuser$' "$LOG_FILE" || true)
@@ -599,7 +633,8 @@ test_scenario_e() {
     # Refused: loudly, with the buffer preserved so nothing is lost.
     [ -s "$STATE_DIR/.subsuper-escalations" ] \
       || fail "Scenario E: nothing delivered and no buffered escalation preserved"
-    grep -q 'delivery bound' "$STATE_DIR/.supervise-daemon.log" \
+    tail -c "+$((_daemon_log_start + 1))" "$_daemon_log" 2>/dev/null \
+      | grep -q 'delivery bound' \
       || fail "Scenario E: nothing delivered and the daemon log says nothing about why"
   fi
 

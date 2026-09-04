@@ -64,9 +64,18 @@ make_case() {
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 exit 0
 SH
+  # The outcome query is matched first: it also names baseRefName, and the
+  # merge-refs lookup below would otherwise answer it with a single field.
+  # bin/fm-pr-merge.sh reads this back after the forge command to confirm the
+  # pull request actually landed, so every case here that is expected to merge
+  # needs a landed outcome to read.
   cat > "$fakebin/gh" <<SH
 #!/usr/bin/env bash
 case "\$*" in
+  *isInMergeQueue*)
+    printf 'state=MERGED\nmerged=true\nqueued=false\nbase=main\n'
+    exit 0
+    ;;
   *headRefOid*) printf '%s\n' '$head' ; exit 0 ;;
   *baseRefName*) printf '%s\n' 'main' ; exit 0 ;;
 esac

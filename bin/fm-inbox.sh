@@ -168,13 +168,10 @@ queue_note() {
   [ -n "${body//[[:space:]]/}" ] || die "refusing to queue an empty note"
   mkdir -p "$INBOX"
 
-  local tmp id summary
-  # The staging name is what makes the id unique, so it is resolved before the
-  # record is written and the id goes in directly. Rewriting a placeholder
-  # afterwards would need sed -i, whose in-place flag takes a mandatory suffix
-  # argument on BSD and none on GNU, so there is no portable spelling of it.
+  local tmp id summary staging_name
   tmp=$(mktemp "$INBOX/.staging-XXXXXX")
-  id="$(date +%s)-$(basename "$tmp" | sed 's/^\.staging-//')"
+  staging_name=$(basename "$tmp")
+  id="$(date +%s)-${staging_name#.staging-}"
   {
     printf 'id=%s\n' "$id"
     printf 'at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -184,7 +181,7 @@ queue_note() {
     printf '%s\n' "$body"
   } >"$tmp"
 
-  # Published atomically now that the record already carries its own id.
+  # Publish the completed note atomically.
   mv "$tmp" "$INBOX/$id.note"
 
   # One-line summary for the wake payload; the full body stays in the file.

@@ -26,6 +26,16 @@ set -u
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-trace-context-lib.sh"
 
+# Hang tripwire for the three race fixtures below, in 10ms ticks. It is NOT an
+# expected duration: each wait is condition-based and returns as soon as its
+# file appears. The literal 200 (2s) it replaces was measured at 139-146 ticks
+# for the trace-delivery wait and 86-134 for the cwd race on an UNLOADED
+# machine, so both were inside 30% of a bound that a loaded serial lane then
+# crossed - reported as "relaunch did not reach trace delivery", a fixture
+# timeout dressed as a product defect. Sized to bound a genuine hang with real
+# margin instead; bin/fm-test-run.sh's per-script bound is the outer backstop.
+CONTROL_RACE_WAIT_TICKS=1000
+
 CONTROL="$ROOT/bin/fm-control.sh"
 SPAWN="$ROOT/bin/fm-spawn.sh"
 PROMOTE="$ROOT/bin/fm-promote.sh"
@@ -314,7 +324,7 @@ test_relaunch_serializes_concurrent_durable_metadata_publication() {
     FM_FAKE_TRACE_EXPORTED="$exported" \
     run_control "$dir" rl28 relaunch --note "continue after publication" > "$dir/control.out" &
   control_pid=$!
-  while [ ! -e "$prepare" ] && [ "$i" -lt 200 ]; do
+  while [ ! -e "$prepare" ] && [ "$i" -lt "$CONTROL_RACE_WAIT_TICKS" ]; do
     /bin/sleep 0.01
     i=$((i + 1))
   done
@@ -332,7 +342,7 @@ test_relaunch_serializes_concurrent_durable_metadata_publication() {
       --carry-platform x --carry-max 280 > "$dir/link.out" 2>&1 &
   link_pid=$!
   i=0
-  while { [ ! -e "$ready" ] || [ ! -e "$exported" ]; } && [ "$i" -lt 200 ]; do
+  while { [ ! -e "$ready" ] || [ ! -e "$exported" ]; } && [ "$i" -lt "$CONTROL_RACE_WAIT_TICKS" ]; do
     /bin/sleep 0.01
     i=$((i + 1))
   done
@@ -963,7 +973,7 @@ test_prepublication_failure_keeps_concurrent_durable_metadata() {
     run_control "$dir" rl30 relaunch --harness codex --note "preserve concurrent metadata" \
       > "$dir/control.out" &
   control_pid=$!
-  while [ ! -e "$dir/cwd-race-ready" ] && [ "$i" -lt 200 ]; do
+  while [ ! -e "$dir/cwd-race-ready" ] && [ "$i" -lt "$CONTROL_RACE_WAIT_TICKS" ]; do
     /bin/sleep 0.01
     i=$((i + 1))
   done
