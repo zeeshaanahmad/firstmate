@@ -152,7 +152,8 @@ SH
 # bin/fm-remote-secondmate-control.sh's own ring_rc=3 notice text can be
 # exercised end-to-end rather than asserted only by mocking the ring itself.
 make_herdr_noagent_stub() {  # <fakebin-dir> <log> -> writes <fakebin-dir>/herdr
-  local fb=$1 log=$2 script="$fb/herdr"
+  local fb=$1 log=$2
+  local script="$fb/herdr"
   cat > "$script" <<EOF
 #!/usr/bin/env bash
 set -u
