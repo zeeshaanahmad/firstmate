@@ -540,17 +540,39 @@ CREW_BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true
 # 0 if the active axi-status run's head field matches this worktree's code
 # identity. Branch match is a precondition (caller). Rule owned by
 # fm_nm_head_matches_worktree in bin/fm-nm-run-lib.sh.
-#
-# Getting this wrong is what produced the parked-gate misreport this path exists
-# to prevent: the run object is the ONLY source with gate detail, so a rejected
-# in-flight run does not degrade to a coarser verdict, it degrades to the pane -
-# where a crew waiting at a gate looks busy, or looks like nothing at all. That
-# is why the caller pairs this with the pipeline-custody exemption rather than
-# demanding a resolvable head from a run whose fixes are not pushed yet.
 nm_run_head_matches_worktree() {
   local run_head
   run_head=$(strip_quotes "$(nm_field head)")
   fm_nm_head_matches_worktree "$WT" "$run_head"
+}
+
+# 0 if the active axi-status run binds to this worktree's code identity, for a
+# run genuinely PARKED AT A GATE (awaiting_approval/fix_review). Branch match
+# is a precondition (caller).
+#
+# Getting this wrong is what produced the parked-gate misreport this path
+# exists to prevent: the run object is the ONLY source with gate detail, so a
+# rejected in-flight run does not degrade to a coarser verdict, it degrades to
+# the pane - where a crew waiting at a gate looks busy, or looks like nothing
+# at all. A parked run's head is routinely unresolvable here (no-mistakes
+# commits its fixes in its own gate repository and does not push them until
+# the push step), so fm_nm_head_binds_run's in-flight allowance is applied
+# unconditionally for these two states - unlike the caller's separate
+# pipeline-owned exemption (below), a gate state cannot be a same-status row
+# for some OTHER branch's run, because the branch match above already came
+# from `axi status` resolving THIS worktree's own directory.
+nm_run_parked_at_gate_binds_worktree() {
+  local status
+  status=$(strip_quotes "$(nm_field status)")
+  case "$status" in
+    awaiting_approval|fix_review)
+      fm_nm_head_binds_run "$WT" \
+        "$(strip_quotes "$(nm_field head)")" \
+        "$status" \
+        "$(strip_quotes "$(nm_field outcome)")"
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 # Coarse runs-list rows are "<status> <branch> <short-sha> ...". 0 if the short
@@ -584,12 +606,15 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
   fi
   if [ -n "$RUN_OUT" ]; then
     run_branch=$(strip_quotes "$(nm_field branch)")
-    # Head equality, or the pipeline-owned-active exemption: while the
-    # pipeline owns this branch, the daemon's own branch attribution is
-    # authoritative and the lane head need not be a git object here
-    # (fm_nm_run_is_pipeline_owned_active in bin/fm-nm-run-lib.sh).
+    # Head equality, a run genuinely parked at a gate (the head is routinely
+    # unresolvable for the whole review..lint window, see
+    # nm_run_parked_at_gate_binds_worktree), or the pipeline-owned-active
+    # exemption: while the pipeline owns this branch, the daemon's own branch
+    # attribution is authoritative and the lane head need not be a git object
+    # here (fm_nm_run_is_pipeline_owned_active in bin/fm-nm-run-lib.sh).
     if [ -n "$run_branch" ] && [ "$run_branch" = "$CREW_BRANCH" ] \
-      && { nm_run_head_matches_worktree || fm_nm_run_is_pipeline_owned_active "$RUN_OUT"; }; then
+      && { nm_run_head_matches_worktree || nm_run_parked_at_gate_binds_worktree \
+           || fm_nm_run_is_pipeline_owned_active "$RUN_OUT"; }; then
       HAVE_RUN=1
     else
       # The active-or-most-recent run is for another branch, or its same-branch
