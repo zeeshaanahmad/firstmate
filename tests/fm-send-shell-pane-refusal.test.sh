@@ -60,6 +60,7 @@ BASH_BIN=$(command -v bash) || { echo "skip: bash not found"; exit 0; }
 REAL_TMUX=$(command -v tmux)
 SOCKET="fm-sendshell-$$"
 RIGHT_SOCKET="fm-sendshell-right-$$"
+STALE_SOCKET="fm-sendshell-stale-$$"
 LAB=$(mktemp -d "${TMPDIR:-/tmp}/fm-sendshell.XXXXXX")
 ORIG_PATH=$PATH
 # A short, top-level tmp dir - NOT nested under $LAB - because a scoped
@@ -71,6 +72,7 @@ WRONG_TMPDIR=$(mktemp -d "/tmp/fm-wrongtmux.XXXXXX")
 cleanup_all() {
   "$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || true
   "$REAL_TMUX" -L "$RIGHT_SOCKET" kill-server >/dev/null 2>&1 || true
+  "$REAL_TMUX" -L "$STALE_SOCKET" kill-server >/dev/null 2>&1 || true
   TMUX_TMPDIR="$WRONG_TMPDIR" "$REAL_TMUX" kill-server >/dev/null 2>&1 || true
   [ -n "${LAB:-}" ] && rm -rf "$LAB"
   [ -n "${WRONG_TMPDIR:-}" ] && rm -rf "$WRONG_TMPDIR"
@@ -500,11 +502,76 @@ test_wrong_server_pane_is_never_touched() {
   pass "a doorbell bound to one tmux server never reaches a same-id pane on another"
 }
 
+# --- 7: the recorded endpoint's tmux SERVER has gone stale/dead -------------
+# Case 6 proves a LIVE server holding a same-id pane is never touched when it
+# is not the one recorded. This proves the OTHER half of ring outcome 5
+# (bin/fm-task-inbox-lib.sh fm_task_inbox_ring, bin/fm-send.sh case 5): a
+# recorded tmux_socket= naming a server that no longer exists AT ALL - killed
+# after being recorded, not merely the wrong one - so `tmux -S <path>` cannot
+# even connect. fm_backend_tmux_target_resolves's `list-panes` fails outright,
+# fm_backend_tmux_pane_agent_state answers `unresolvable` before anything is
+# typed, and the caller must not fall back to whatever the PATH-shimmed
+# AMBIENT server resolves just because that one is still reachable - the
+# decoy below is $SHELL_PANE itself (the stale server's only pane is
+# allocated %0, exactly like $SHELL_PANE was), so a caller that silently fell
+# back to ambient resolution instead of honoring the `unresolvable` verdict
+# would type the doorbell straight into it.
+test_unresolvable_server_endpoint_is_never_touched() {
+  local stale_pane stale_sock rc=0 i=0
+
+  "$REAL_TMUX" -L "$STALE_SOCKET" new-session -d -s stalepanes -x 80 -y 24
+  stale_pane=$("$REAL_TMUX" -L "$STALE_SOCKET" display-message -p -t stalepanes '#{pane_id}')
+  stale_sock=$("$REAL_TMUX" -L "$STALE_SOCKET" display-message -p -t stalepanes '#{socket_path}')
+
+  [ "$stale_pane" = "$SHELL_PANE" ] || fail \
+    "the stale server's first pane must collide on id with \$SHELL_PANE to exercise the ambient-fallback hazard (stale=$stale_pane shell=$SHELL_PANE)"
+
+  "$REAL_TMUX" -L "$STALE_SOCKET" kill-server >/dev/null 2>&1
+
+  # Confirm the recorded socket is genuinely unreachable before trusting it as
+  # the "stale" fixture - kill-server is not guaranteed instantaneous.
+  while [ "$i" -lt 50 ]; do
+    "$REAL_TMUX" -S "$stale_sock" list-panes -a >/dev/null 2>&1 || break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  "$REAL_TMUX" -S "$stale_sock" list-panes -a >/dev/null 2>&1 && fail \
+    "the stale server is still reachable at $stale_sock, so this fixture never exercises a dead socket"
+
+  printf 'window=%s\nbackend=tmux\ntmux_socket=%s\nkind=ship\nharness=claude\n' \
+    "$stale_pane" "$stale_sock" > "$HOME_DIR/state/unresolvablemate.meta"
+
+  send_steer unresolvablemate 'rebase onto main and re-run the gate' || rc=$?
+  [ "$rc" -eq 0 ] || fail \
+    "an ordinary steer is durably recorded, so it must not fail (exit $rc): $SEND_OUT"
+
+  grep -F 'rebase onto main' "$HOME_DIR/state/unresolvablemate.inbox/001.msg" >/dev/null || fail \
+    "the durable record does not carry the steer text"
+
+  [ ! -s "$SHELL_LOG" ] || fail \
+    "the doorbell reached the ambient same-id decoy pane instead of being refused: $(cat "$SHELL_LOG")"
+
+  # The report must name THIS exact outcome, distinct from outcome 3's
+  # never-typed-because-dead-agent wording and outcome 4's typed-then-lost
+  # wording: here the endpoint itself could never be proven to exist at all.
+  case "$SEND_OUT" in
+    *"could not be verified to exist on the expected tmux server"*) ;;
+    *) fail "the result did not report the unresolvable-endpoint outcome: $SEND_OUT" ;;
+  esac
+  case "$SEND_OUT" in
+    *"waits for a live agent"*) ;;
+    *) fail "the result did not say the record is waiting for a live agent: $SEND_OUT" ;;
+  esac
+
+  pass "a doorbell bound to a tmux server that no longer exists is refused, never rerouted to an ambient same-id pane"
+}
+
 test_shell_pane_steer_is_refused
 test_shell_pane_typed_plane_is_refused
 test_agent_pane_steer_is_delivered
 test_agent_lost_during_send_is_not_reported_delivered
 test_ring_agent_lost_during_doorbell_is_not_reported_delivered
 test_wrong_server_pane_is_never_touched
+test_unresolvable_server_endpoint_is_never_touched
 
 echo "all fm-send shell-pane refusal tests passed"
