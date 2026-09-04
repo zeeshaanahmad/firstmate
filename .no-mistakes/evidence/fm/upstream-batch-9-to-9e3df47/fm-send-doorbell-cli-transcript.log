@@ -1,0 +1,12 @@
+
+--- actual fm-send.sh CLI output (case 1: no live agent) ---
+fm-send: no live agent at %0 - its terminal is held by a shell, so the worker's agent has exited and the doorbell line was NOT typed there. The steer is durably recorded at /var/folders/3m/025g2l697z5gxqyzmlnt2w140000gn/T//fm-sendshell.nrnBW7/home/state/deadmate.inbox/001.msg and waits for a live agent; the watcher re-rings and escalates it. Recover the worker rather than resending, or the record is duplicated.
+ok - an ordinary steer to a shell-held endpoint is recorded, never typed, and reported as reaching no live agent
+ok - a harness-native steer to that same pane is refused outright and never typed
+ok - the same pane shape with a live agent in the foreground is rung, not refused
+
+--- actual fm-send.sh CLI output (case 4: agent-lost mid-send) ---
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+error: text was typed into %2 but its agent exited to a shell before the submission could be confirmed (verdict=agent-lost; tried meta=/var/folders/3m/025g2l697z5gxqyzmlnt2w140000gn/T//fm-sendshell.nrnBW7/home/state/lossmate.meta; backend=from-meta); no agent received it. Verify the pane with fm-peek.sh and recover the worker before resending.
+ok - an agent that exits to a shell mid-send is never reported as having received the steer
+all fm-send shell-pane refusal tests passed

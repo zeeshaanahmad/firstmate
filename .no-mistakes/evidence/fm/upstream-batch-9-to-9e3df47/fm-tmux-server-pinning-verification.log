@@ -1,0 +1,26 @@
+--- red-first proof: tests/fm-send-shell-pane-refusal.test.sh's new
+    "a doorbell bound to one tmux server never reaches a same-id pane on
+    another" case, run against the PRE-FIX tree (commit 9ff6f63, before the
+    tmux server-pinning fix in 6bc2e70) ---
+not ok - the doorbell reached a same-id pane on the WRONG tmux server: Firstmate instruction waiting: list .../home/state/wrongservermate.inbox/*.msg and, in numeric order, read and act on each, then mv each handled file to .../home/state/wrongservermate.inbox/handled/.
+
+This reproduces the real-world defect (2026-09-04): a task's window= endpoint
+recorded no tmux server identity, so a doorbell escaped a private/pinned tmux
+server and typed into a same-id pane on a different (ambient/default) server.
+
+--- same test, run against the FIXED tree (commit 6bc2e70, target commit) ---
+ok - a doorbell bound to one tmux server never reaches a same-id pane on another
+all fm-send shell-pane refusal tests passed (6/6, including the ring
+agent-lost-during-doorbell case)
+
+--- manual end-to-end verification: the new "unresolvable" ring outcome (5),
+    exercised via a real fm-send.sh call against a task whose recorded
+    tmux_socket= now points at a killed/stale tmux server (simulates a server
+    that died after the endpoint was recorded). No automated test in the
+    current suite drives this exact scenario, so this was verified by hand: ---
+exit=0
+fm-send: doorbell not sent to %0 - its recorded endpoint could not be verified to exist on the expected tmux server, so nothing was typed there. The steer is durably recorded at .../home/state/stalemate.inbox/001.msg and waits for a live agent; the watcher re-rings and escalates it. Recover or re-verify the worker's endpoint rather than resending, or the record is duplicated.
+
+Confirms: exit stays 0 (record is the delivery), nothing is typed into any
+pane, and the caller-visible message correctly names the unresolvable-server
+outcome distinctly from the no-agent/agent-lost wording.
