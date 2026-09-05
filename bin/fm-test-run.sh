@@ -287,6 +287,7 @@ family_for_basename() {
     fm-nm-status-shape-live-e2e.test.sh|\
     fm-herdr-version-floor-live-e2e.test.sh|\
     fm-opencode-primary-live-e2e.test.sh|fm-pi-branch-live-e2e.test.sh|\
+    fm-pi-branch-responsiveness-live-e2e.test.sh|\
     fm-pi-primary-live-e2e.test.sh|\
     fm-sessionstart-hook-live-e2e.test.sh|fm-sessionstart-instruction-refresh-live-e2e.test.sh|\
     fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh|\
@@ -618,6 +619,7 @@ tests/fm-peek-remote.test.sh 1018
 tests/fm-pending-reply.test.sh 24679
 tests/fm-pi-branch-extension.test.sh 22239
 tests/fm-pi-branch-live-e2e.test.sh 56
+tests/fm-pi-branch-responsiveness-live-e2e.test.sh 21
 tests/fm-pi-primary-live-e2e.test.sh 20
 tests/fm-pi-watch-extension.test.sh 42970
 tests/fm-pr-check-security.test.sh 160475
@@ -1259,6 +1261,35 @@ families_for_changed_path() {
       ;;
     bin/fm-quota-choose.sh)
       printf '%s\n' "__script__:fm-quota-choose.test.sh"
+      ;;
+    .pi/extensions/fm-branch-supervision.ts|.pi/extensions/lib/fm-async-exec.ts|\
+    .pi/extensions/lib/fm-branch-dispatch.ts)
+      # The portable suites that actually load these files, named one by one.
+      # Left unmapped, a Pi extension library resolves through the reference
+      # scan, which widens to each referencing suite's WHOLE family - and
+      # these suites sit in four different families, so that pulls in dozens
+      # of suites with nothing to do with Pi.
+      printf '%s\n' __script__:fm-pi-branch-extension.test.sh
+      printf '%s\n' __script__:fm-pi-watch-extension.test.sh
+      printf '%s\n' __script__:fm-calm-pi-extension.test.sh
+      printf '%s\n' __script__:fm-watch-recovery-loop.test.sh
+      printf '%s\n' __script__:fm-wake-queue.test.sh
+      printf '%s\n' __script__:fm-pi-primary-types.test.sh
+      # Whether an arriving outcome still lets the captain type is a fact only
+      # a real Pi TUI can answer, so the live guards are selected too.
+      printf '%s\n' live-harness-optin
+      ;;
+    .pi/extensions/lib/fm-operational-input.ts)
+      # The same rule for the operational-input library, whose reach is wider:
+      # every Pi extension that classifies or encodes operational text.
+      printf '%s\n' __script__:fm-pi-branch-extension.test.sh
+      printf '%s\n' __script__:fm-pi-watch-extension.test.sh
+      printf '%s\n' __script__:fm-calm-pi-extension.test.sh
+      printf '%s\n' __script__:fm-watch-recovery-loop.test.sh
+      printf '%s\n' __script__:fm-turnend-guard.test.sh
+      printf '%s\n' __script__:fm-sessionstart-nudge.test.sh
+      printf '%s\n' __script__:fm-pi-primary-types.test.sh
+      printf '%s\n' live-harness-optin
       ;;
     bin/fm-sessionstart-run.sh|.claude/settings.json|.codex/hooks.json|\
     .pi/extensions/fm-primary-turnend-guard.ts)

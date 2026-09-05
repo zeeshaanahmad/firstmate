@@ -1517,3 +1517,33 @@ The live probe loads the tracked watcher extension through Pi's real resource lo
 It proved that a follow-up the extension sends while main is streaming raises no `before_agent_start` at queue time or when the run reaches it, joins the run as a user `message_start` carrying the exact wake text in its own model turn, and is followed by a verified successor and delivery of the next close; a follow-up sent to the idle main raises `before_agent_start` with the exact text before its user `message_start`.
 The portable regression drives the same shape with a fake main that never raises `before_agent_start` while streaming, then proves a replacement replays only the follow-up Pi had not consumed and that an exhausted restoration delivers its typed failure without launching a further arm.
 A second regression holds a branch settlement open while the verified successor exits with a failure, and proves that failure takes the ordinary bounded retry once the delivery settles rather than leaving the generation with no watcher and no retry.
+
+### 2026-09-04 off-thread supervision outcome delivery
+
+The real-TUI responsiveness guard, focused extension suite, store suite, and strict typecheck were run on macOS 26.5.0 arm64, Node v24.13.1, tmux 3.6a, against the signed Pi launcher 0.82.0 for the TUI arms and the npm `@earendil-works/pi-coding-agent` 0.81.1 package for the typecheck.
+The lab used a scratch `FM_HOME`, a scratch project holding a copy of the tracked extension, a private tmux socket, a scratch session directory, and `--offline`; only `/new` was ever sent, so no model turn ran and no request left the machine, and the captain's own Pi session was not touched.
+
+```sh
+FM_PI_BRANCH_RESPONSIVENESS_E2E=1 bash tests/fm-pi-branch-responsiveness-live-e2e.test.sh
+bin/fm-test-run.sh tests/fm-pi-branch-extension.test.sh
+bin/fm-test-run.sh tests/fm-branch-supervision.test.sh
+npm exec --yes --package=typescript@5.9.3 -- bash tests/fm-pi-primary-types.test.sh
+```
+
+```text
+pi 0.82.0 keystroke echo, worst observed: floor 22.6 ms, extension idle 35.6 ms, extension delivering 36.8 ms
+ok - supervision outcome delivery keeps the real Pi 0.82.0 TUI echoing keystrokes at its unloaded floor
+ok - outcome delivery keeps the event loop running and interleaved reports stay ordered and exactly once
+ok - a session replaced mid-delivery cancels cleanly and the stored outcome still arrives exactly once
+ok - a failing store script surfaces to the branch and its outcome is neither lost nor delivered twice
+ok - a failed cursor write re-delivers a routine note exactly once more while a captain outcome stays deduplicated
+skip: installed Pi 0.81.1 predates the stock renderer contract 0.84.4 this case compares against
+ok - tracked Pi extensions pass strict no-emit typecheck against Pi 0.81.1
+```
+
+That skip is the renderer case declining to render a verdict on a Pi older than the contract it compares against: since 0.84.4 the stock renderer no longer supplies an implicit reset at multiline boundaries and the extension emits that reset itself, so an older installed Pi differs legitimately.
+It names the installed version and the floor rather than degrading quietly, and a package whose version cannot be read at all is still a failure.
+
+The same guard against the pre-change extension in the same lab measured a 676.9 ms worst keystroke echo while delivering two outcomes and a 295.3 ms worst echo with nothing to deliver, against a 49.2 ms extension-free floor, and failed as designed.
+Measured through the same real `fm_branch_report` tool and real `bin/` scripts with a 1 ms interval timer, the largest single block of the JavaScript thread fell from 273 ms to 2.0 ms for a routine outcome, from 286 ms to 2.0 ms for a captain outcome, and from 134 ms to 1.9 ms for main's acknowledgement, against a 1.3-2.2 ms idle-loop floor.
+Those absolute figures are specific to this host and Pi version; the guards assert the relationship (delivery must stay in the class of the same machine's own floor) rather than a remembered millisecond number.
