@@ -2107,7 +2107,13 @@ test_declared_pause_survives_benign_pane_repaint() {
   printf '1\n' > "$state/.count-$key"
   printf '%s' "$hash_a" > "$state/.stale-$key"
   : > "$state/.paused-$key"
-  date +%s > "$state/.paused-resurfaced-$key"
+  # The re-surface throttle is keyed to the DECLARATION, not to a timestamp: a
+  # marker holding some other declaration's scope must not suppress a new wait
+  # (bin/fm-watch.sh's resurface_absorbed). Prime it with the scope the watcher
+  # itself would have written for THIS declaration, which is what "already
+  # surfaced once" means under that rule.
+  printf 'declared:%s' "$(status_observed_signature "$statusf")" \
+    > "$state/.paused-resurfaced-$key"
 
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_FAKE_TMUX_CURRENT_COMMAND=grok \
@@ -2232,7 +2238,7 @@ test_live_declared_pause_gate_surfaces_once_per_declaration() {
     || fail "two benign repaints of an already-surfaced declaration queued $bare bare stale wakes, expected 0"
 
   # Part 2: same first-sight entry twice; the ONLY difference is whether the
-  # declaration marker predates the status file.
+  # declaration marker belongs to THIS declaration, by both mtime and scope.
   pane='idle at the gate'
   for round in already-surfaced new-declaration; do
     dir=$(make_case "paused-gate-$round"); state="$dir/state"; fakebin="$dir/fakebin"
@@ -2243,11 +2249,23 @@ test_live_declared_pause_gate_surfaces_once_per_declaration() {
     printf '%s' "$(hash_text "$pane")" > "$state/.hash-$key"
     printf '1\n' > "$state/.count-$key"
     : > "$state/.paused-$key"
-    : > "$state/.paused-resurfaced-$key"
     back=$(( $(date +%s) - 300 ))
+    # Two independent guards read this one marker and a round has to satisfy
+    # both: paused_gate_needs_surface compares its MTIME against the status file
+    # (a marker older than the status means a newer declaration landed), and
+    # resurface_absorbed compares its CONTENT against the declaration's own
+    # scope. Setting only one of the two makes the round test half the rule.
+    # Order matters: backdating a file changes the identity this signature is
+    # built from (macOS clamps birth time down to the new timestamp), so the
+    # declaration's scope has to be read AFTER the status file is aged, or the
+    # marker records a scope the watcher will never compute again.
     if [ "$round" = already-surfaced ]; then
       set_mtime "$back" "$statusf"          # declaration older than its marker
+      printf 'declared:%s' "$(status_observed_signature "$statusf")" \
+        > "$state/.paused-resurfaced-$key"
     else
+      printf 'declared:a-previous-and-now-superseded-declaration' \
+        > "$state/.paused-resurfaced-$key"
       set_mtime "$back" "$state/.paused-resurfaced-$key"   # a NEWER declaration
     fi
     printf '%s' "$(seen_sig "$statusf")" > "$state/.seen-gate_status"
@@ -2304,11 +2322,15 @@ test_live_pause_flag_absorbs_when_authoritative_state_falls_back() {
   printf '%s' "$pane_hash" > "$state/.hash-$key"
   printf '1\n' > "$state/.count-$key"
   # The recorded pause state: flag set, recheck fresh, declaration already
-  # surfaced (marker newer than the status file, so the live-gate one-shot is
-  # spent). No .stale-<key>, so this poll is FIRST SIGHT of this hash.
+  # surfaced. "Already surfaced" is both a newer marker than the status file,
+  # which spends the live-gate one-shot, and a marker naming THIS declaration's
+  # scope, which is what the re-surface throttle reads; the scope is taken after
+  # the status file is aged, because backdating changes the identity it is built
+  # from. No .stale-<key>, so this poll is FIRST SIGHT of this hash.
   : > "$state/.paused-$key"
   date +%s > "$state/.paused-rechecked-$key"
-  : > "$state/.paused-resurfaced-$key"
+  printf 'declared:%s' "$(status_observed_signature "$statusf")" \
+    > "$state/.paused-resurfaced-$key"
   [ ! -e "$state/.stale-$key" ] \
     || fail "fixture is vacuous: the stale suppressor must be absent for the first-sight path"
 
@@ -2325,8 +2347,13 @@ test_live_pause_flag_absorbs_when_authoritative_state_falls_back() {
     || { reap "$pid"; fail "the absorb did not advance the stale suppressor onto the parked hash"; }
   [ -e "$state/.paused-$key" ] \
     || { reap "$pid"; fail "a live agent read dropped the recorded pause flag"; }
-  [ -e "$state/.paused-rechecked-$key" ] \
-    || { reap "$pid"; fail "a live agent read cleared the fresh recheck marker, so the flag was vetoed"; }
+  # The recheck marker is deliberately NOT asserted here. A live agent read now
+  # promotes the verdict to `none` and clears it (bin/fm-watch.sh), and the
+  # absorption comes from the declaration-keyed re-surface throttle instead, so
+  # the marker is no longer the mechanism this case is about. What the case is
+  # about - the recorded flag is not vetoed by a live agent read - is asserted
+  # above (absorbed, suppressor advanced, flag retained) and below (nothing
+  # surfaced, nothing queued), all through the watcher's own behavior.
   reap "$pid"
   assert_reaped_on_term "declared pause with a fallen-back crew state"
 
