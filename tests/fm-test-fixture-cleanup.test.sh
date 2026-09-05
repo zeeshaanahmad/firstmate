@@ -360,6 +360,26 @@ test_lib_dependent_files_refuse_to_run_outside_tests() {
   pass "every tests/lib.sh-dependent file refuses to run outside tests/ ($checked files)"
 }
 
+test_orphan_sweep_reaps_read_only_package_tree() {
+  local stale_dir package_dir
+  stale_dir=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-cleanup-read-only.XXXXXX")
+  package_dir="$stale_dir/packages/extension"
+  mkdir -p "$package_dir"
+  printf '%s\n%s\n' "$$" reused-process-identity > "$stale_dir/.fm-test-fixture"
+  printf 'installed package\n' > "$package_dir/entrypoint.py"
+  chmod -R a-w "$stale_dir/packages"
+  touch -t 202001010000 "$stale_dir/.fm-test-fixture"
+
+  bash -c '
+    # shellcheck source=tests/lib.sh
+    . "$1"
+  ' _ "$LIB"
+
+  assert_absent "$stale_dir" \
+    "the orphan reaper left a stale fixture containing a read-only package tree"
+  pass "the orphan sweep reaps read-only package fixtures"
+}
+
 test_fixture_root_gone_after_normal_exit
 test_fixture_root_gone_after_sigterm
 test_cleanup_registry_resists_precreation
@@ -372,3 +392,4 @@ test_lib_dependent_files_refuse_to_run_outside_tests
 test_own_fixture_permits_a_declared_root_outside_the_temp_root
 test_own_fixture_refuses_the_working_directory_and_the_repo_root
 test_own_fixture_permits_a_tmp_rooted_fixture_while_tmpdir_is_elsewhere
+test_orphan_sweep_reaps_read_only_package_tree

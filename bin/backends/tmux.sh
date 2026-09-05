@@ -24,6 +24,8 @@
 . "$FM_BACKEND_LIB_DIR/fm-session-lock-lib.sh"
 # shellcheck source=bin/fm-cursor-lib.sh
 . "$FM_BACKEND_LIB_DIR/fm-cursor-lib.sh"
+# shellcheck source=bin/fm-gemini-lib.sh
+. "$FM_BACKEND_LIB_DIR/fm-gemini-lib.sh"
 
 # fm_backend_tmux_bind_socket: pin every subsequent fm_tmux_bin call (this
 # adapter and bin/fm-tmux-lib.sh's shared primitives) to the exact server at
@@ -350,6 +352,34 @@ fm_backend_tmux_foreground_comms() {  # <target>
       done
 }
 
+# The foreground group's full command lines. Needed because a node-bundle
+# harness carries its identity in argv[1] rather than in its command name or
+# argv[0]; bin/fm-gemini-lib.sh owns what counts as evidence inside one.
+fm_backend_tmux_foreground_args() {  # <target>
+  local target=$1 tty pid pgid tpgid comm args
+  tty=$(tmux display-message -p -t "$target" '#{pane_tty}' 2>/dev/null) || return 0
+  [ -n "$tty" ] || return 0
+  LC_ALL=C ps -t "${tty#/dev/}" -o pid=,pgid=,tpgid=,comm= 2>/dev/null \
+    | while read -r pid pgid tpgid comm; do
+        [ -n "$comm" ] || continue
+        [ "$pgid" = "$tpgid" ] || continue
+        args=$(LC_ALL=C ps -p "$pid" -o args= 2>/dev/null) || continue
+        [ -n "$args" ] && printf '%s\n' "$args"
+      done
+}
+
+fm_backend_tmux_foreground_pids() {  # <target>
+  local target=$1 tty pid pgid tpgid comm
+  tty=$(tmux display-message -p -t "$target" '#{pane_tty}' 2>/dev/null) || return 0
+  [ -n "$tty" ] || return 0
+  LC_ALL=C ps -t "${tty#/dev/}" -o pid=,pgid=,tpgid=,comm= 2>/dev/null \
+    | while read -r pid pgid tpgid comm; do
+        [ -n "$comm" ] || continue
+        [ "$pgid" = "$tpgid" ] || continue
+        printf '%s\n' "$pid"
+      done
+}
+
 fm_backend_tmux_foreground_argv0s() {  # <target>
   local target=$1 tty pid pgid tpgid comm args argv0
   tty=$(fm_tmux_bin display-message -p -t "$target" '#{pane_tty}' 2>/dev/null) || return 0
@@ -444,7 +474,7 @@ fm_backend_tmux_agent_state() {  # <target>
 # the negative verdicts, so only a group that is nothing but shells is
 # confidently agent-free.
 fm_backend_tmux_pane_agent_state() {  # <target>
-  local target=$1 comm foreground argv0s name fg_seen=0 fg_shell=0 fg_other=0
+  local target=$1 comm foreground argv0s name pid fg_seen=0 fg_shell=0 fg_other=0
   # The existence check is gated on an explicitly BOUND server: it is the
   # binding (fm_backend_tmux_bind_socket) that turns "does this target exist"
   # into an answerable question with a server to check against. An unbound
@@ -477,6 +507,31 @@ EOF
     fi
   done <<EOF
 $argv0s
+EOF
+
+  # Preserve argv boundaries where the platform exposes them. This is needed
+  # when the Gemini script path contains whitespace, which flattened ps output
+  # cannot represent unambiguously.
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    if fm_gemini_pid_is_gemini "$pid"; then
+      printf 'alive'
+      return 0
+    fi
+  done <<EOF
+$(fm_backend_tmux_foreground_pids "$target")
+EOF
+
+  # Fall back to flattened arguments on platforms without /proc. Positive
+  # evidence only - a bare interpreter still reaches the negative verdicts.
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    if fm_gemini_args_are_gemini "$name"; then
+      printf 'alive'
+      return 0
+    fi
+  done <<EOF
+$(fm_backend_tmux_foreground_args "$target")
 EOF
 
   comm=$(fm_backend_tmux_current_command "$target") || {

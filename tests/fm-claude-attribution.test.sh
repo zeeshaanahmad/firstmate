@@ -26,6 +26,8 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
+# shellcheck source=tests/fixtures.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh" || exit 1
 
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-claude-attribution)
@@ -94,8 +96,9 @@ make_spawn_case() {  # <name> [harness]
   fm_git_worktree "$proj" "$wt" "wt-$name"
   touch "$home/state/.last-watcher-beat"
   id=$name-z1
-  mkdir -p "$home/data/$id"
-  printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
+  # bin/fm-spawn.sh refuses a brief without both # Task subsections, so seed one
+  # through the shared fixture helper rather than a bare placeholder line.
+  fm_test_spawn_brief "$home" "$id"
   printf '%s\n' "$home|$proj|$wt|$fakebin|$launchlog|$id|$case_dir"
 }
 
