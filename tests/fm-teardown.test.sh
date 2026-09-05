@@ -184,12 +184,24 @@ SH
   printf '%s\n' "$case_dir"
 }
 
+# Seed the ship completion report bin/fm-teardown.sh requires before it will
+# tear a ship task down. Args: case_dir kind [no_report]
+# Every meta-writing helper here must call this, because the gate fires for any
+# kind that is not scout or secondmate, ahead of the landed-work, endpoint and
+# legacy-incarnation logic those fixtures actually exercise. A fixture that
+# skips it fails on the missing report instead of on the behavior under test.
+# test_ship_task_completion_report_required owns the coverage of the gate
+# itself; pass a truthy 3rd arg to opt out and exercise the missing-report path.
+seed_ship_completion_report() {
+  local case_dir=$1 kind=$2 no_report=${3:-}
+  [ "$kind" = ship ] || return 0
+  [ -z "$no_report" ] || return 0
+  mkdir -p "$case_dir/data/task-x1"
+  printf '%s\n' "1. SUMMARY - placeholder completion report for a fixture unrelated to the report contract." \
+    > "$case_dir/data/task-x1/completion-report.md"
+}
+
 # Write a meta file for the task. Args: case_dir mode kind [no_report]
-# A ship task also requires a completion report (bin/fm-teardown.sh; see
-# test_ship_task_completion_report_required for the dedicated coverage of that
-# requirement itself). Every other test case here is about landed-work logic,
-# not the report contract, so this seeds a placeholder report for kind=ship by
-# default; pass a truthy 4th arg to opt out and exercise the missing-report path.
 write_meta() {
   local case_dir=$1 mode=$2 kind=$3 no_report=${4:-}
   fm_write_meta "$case_dir/state/task-x1.meta" \
@@ -200,11 +212,7 @@ write_meta() {
     "kind=$kind" \
     "mode=$mode" \
     "spawn_gen=teardown-test-task-x1"
-  if [ "$kind" = ship ] && [ -z "$no_report" ]; then
-    mkdir -p "$case_dir/data/task-x1"
-    printf '%s\n' "1. SUMMARY - placeholder completion report for a fixture unrelated to the report contract." \
-      > "$case_dir/data/task-x1/completion-report.md"
-  fi
+  seed_ship_completion_report "$case_dir" "$kind" "$no_report"
 }
 
 # Commit something on the worktree's task branch. Args: case_dir [message]
@@ -1075,6 +1083,7 @@ write_legacy_meta() {
     "kind=$kind" \
     "mode=$mode" \
     "harness=codex"
+  seed_ship_completion_report "$case_dir" "$kind"
 }
 
 # Count spawn_gen fields in the task's meta, so a refusal can prove it left the
