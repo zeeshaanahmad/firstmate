@@ -486,6 +486,7 @@ test_scenario_c() {
 # the divergence is asserted so the case cannot pass vacuously.
 
 test_scenario_d() {
+  local _w
   reset_state
   afk_enter "$STATE_DIR"
 
@@ -500,7 +501,21 @@ test_scenario_d() {
   : > "$LOG_FILE"
 
   echo "needs-decision: retry policy A or B" > "$STATE_DIR/fake-c1.status"
-  sleep 8
+  # Bounded condition wait, not a fixed sleep, for the same reason Scenario E
+  # below carries one: how long the daemon needs to deliver scales with what
+  # classification costs, and that cost has now moved twice under this
+  # scenario's constant. This scenario's terminal outcome is the delivered
+  # escalation itself, identified by its terminator rather than its framing
+  # prose, because the front cut removes the framing. The bound still fails
+  # loudly - past it the same assertion runs against the same empty log.
+  _w=0
+  while [ "$_w" -lt 90 ]; do
+    grep -q 'FIRSTMATE_OP_END' "$LOG_FILE" 2>/dev/null && break
+    sleep 1
+    _w=$((_w + 1))
+  done
+  # Settle: let an in-flight inject finish writing before the log is read.
+  sleep 2
 
   # The digest is identified by the terminator, not by its framing prose: the
   # cut removes the framing, which is the whole point of the scenario.

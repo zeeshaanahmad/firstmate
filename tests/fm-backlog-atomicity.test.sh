@@ -389,6 +389,7 @@ write_task_meta() {  # <case-dir> <id> <kind> <mode> [extra-line...]
     "mode=$mode" \
     "yolo=off" \
     "$@"
+  [ "$kind" != ship ] || seed_ship_completion_report "$case_dir" "$id"
 }
 
 run_spawn() {  # <case-dir> <args...>
@@ -406,13 +407,46 @@ run_spawn() {  # <case-dir> <args...>
 }
 
 run_ship_spawn() {  # <case-dir> <id>
-  local case_dir=$1 id=$2
-  run_spawn "$case_dir" "$id" "$case_dir/project" --mode no-mistakes --yolo off
+  local case_dir=$1 id=$2 rc=0 out
+  out=$(run_spawn "$case_dir" "$id" "$case_dir/project" --mode no-mistakes --yolo off) || rc=$?
+  printf '%s\n' "$out"
+  # A spawned ship record reaches teardown the same way a written one does, so
+  # it needs the same placeholder completion report; without it teardown refuses
+  # before the step these cases are actually about.
+  [ "$rc" -ne 0 ] || seed_ship_completion_report "$case_dir" "$id"
+  return "$rc"
 }
 
 # Teardown against a recorded worktree that no longer exists: the landed-work and
 # worktree-return steps are then no-ops, which keeps these cases about the
 # backlog transition rather than re-testing tests/fm-teardown.test.sh's matrix.
+# bin/fm-teardown.sh refuses a ship task with no completion report, and
+# tests/fm-teardown.test.sh owns that contract's own coverage. Every case here
+# is about backlog-transition atomicity instead, so a ship record seeds a
+# placeholder report rather than exercising the report gate by accident.
+# A case may relocate its data directory before writing the record, so the
+# report is seeded into every data root the case currently has: the home's own,
+# and whichever directory holds its backlog. Seeding a directory the case never
+# reads is harmless; missing the one it does read is not.
+seed_report_into() {  # <data-dir> <id>
+  local data=$1 id=$2
+  [ -d "$data" ] || return 0
+  mkdir -p "$data/$id" 2>/dev/null || return 0
+  printf '1. SUMMARY - placeholder for a fixture unrelated to the report contract.\n' \
+    > "$data/$id/completion-report.md" 2>/dev/null || true
+}
+
+seed_ship_completion_report() {  # <case-dir> <id>
+  local case_dir=$1 id=$2 found
+  seed_report_into "$(home_of "$case_dir")/data" "$id"
+  while IFS= read -r found; do
+    [ -n "$found" ] || continue
+    seed_report_into "$(dirname "$found")" "$id"
+  done <<EOF
+$(find "$case_dir" -maxdepth 4 -name backlog.md 2>/dev/null)
+EOF
+}
+
 run_teardown() {  # <case-dir> <id> [args...]
   local case_dir=$1
   shift

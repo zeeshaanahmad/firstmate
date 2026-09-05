@@ -340,13 +340,13 @@ test_teardown_refuses_and_admits() {
   # no-regression: a normal session tears down the landed task.
   case_dir=$(make_teardown_case teardown-ok)
   # kind=ship teardown refuses without a completion report (bin/fm-teardown.sh).
-  # This scenario runs with no FM_HOME/FM_DATA_OVERRIDE, so the real default
-  # resolves DATA under $ROOT itself (FM_ROOT_OVERRIDE); satisfy that gate up
-  # front and remove the fixture afterward so the checkout stays clean.
-  mkdir -p "$ROOT/data/task-x1"
-  printf '1. SUMMARY - fixture.\n' > "$ROOT/data/task-x1/completion-report.md"
+  # The case's own home is the data root the teardown resolves, so the report is
+  # seeded there; this scenario is about the gate refusal, not the report
+  # contract, which tests/fm-teardown.test.sh owns. Seeding inside the case also
+  # keeps the fixture out of the checkout entirely.
+  mkdir -p "$case_dir/data/task-x1"
+  printf '1. SUMMARY - fixture.\n' > "$case_dir/data/task-x1/completion-report.md"
   out=$(run_teardown "$NORMAL_CWD" "$case_dir"); rc=$?
-  rm -rf "$ROOT/data/task-x1"
   expect_code 0 "$rc" "teardown: a normal session must still tear down landed work"
   assert_not_contains "$out" "$ENV_MSG" "teardown: normal teardown must not print the gate refusal"
   assert_not_contains "$out" "$PATH_MSG" "teardown: normal teardown must not print the backstop refusal"
