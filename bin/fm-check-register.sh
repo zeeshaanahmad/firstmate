@@ -6,6 +6,7 @@
 # exact bytes, and refuses again after any later edit, so re-run it whenever the
 # check changes. The binding rule itself lives in bin/fm-check-lib.sh, shared
 # with the liveness-source registrar.
+# Retire with fm-check-unregister.sh <id>; do not hand-compose an rm.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
