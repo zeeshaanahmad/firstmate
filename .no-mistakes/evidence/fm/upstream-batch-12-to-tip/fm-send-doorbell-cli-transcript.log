@@ -1,0 +1,65 @@
+Real end-to-end CLI transcript of `bin/fm-send.sh` steering a real tmux pane, captured by
+temporarily instrumenting a scratch (non-committed) copy of tests/fm-send-shell-pane-refusal.test.sh
+to print the literal captured stdout/stderr (SEND_OUT) that a captain running `fm-send` would see,
+in place of the test's normal string-match assertions. The tracked test file itself is unmodified;
+this transcript exists only to show the actual product-facing text behind those assertions.
+
+This exercises upstream #3823 ("stop ringing steering doorbells into dead panes"), merged in this
+batch, and the fork's follow-up fixture fix (commit 2b7875e) that re-aligned three assertions to the
+merged contract. Command: `bash tests/fm-send-shell-pane-refusal.test.sh` (run in place, unmodified,
+separately, to confirm pass/fail); transcript below from the instrumented scratch copy.
+
+[fm-send CLI transcript] exit=0
+fm-send: doorbell not typed because the agent in %0 has exited; the steer is durably recorded at .../home/state/deadmate.inbox/001.msg for recovery (stuck-crewmate-recovery), and the watcher will not re-ring a dead pane
+---
+ok - an ordinary steer to a shell-held endpoint is recorded, never typed, and reported as reaching an exited agent
+
+[fm-send CLI transcript] exit=1
+error: nothing was sent to %0: its terminal is held by a shell, not a live agent, so the worker's agent has exited (verdict=no-agent; ...). The text was NOT typed. Recover the worker before resending.
+---
+ok - a harness-native steer to that same pane is refused outright and never typed
+
+[fm-send CLI transcript] exit=0
+---
+ok - the same pane shape with a live agent in the foreground is rung, not refused
+
+[fm-send CLI transcript] exit=1
+error: text was typed into %2 but its agent exited to a shell before the submission could be confirmed (verdict=agent-lost; ...); no agent received it. Verify the pane with fm-peek.sh and recover the worker before resending.
+---
+ok - an agent that exits to a shell mid-send is never reported as having received the steer
+
+[fm-send CLI transcript] exit=0
+fm-send: no live agent at %3 - the doorbell line was typed there but its agent exited to a shell before the submission could be confirmed, so no agent received it. The steer is durably recorded at .../ringlossmate.inbox/001.msg and waits for a live agent; the watcher re-rings and escalates it. Recover the worker rather than resending, or the record is duplicated.
+---
+ok - an agent that exits to a shell during the ring itself is never reported as having received the doorbell
+
+[fm-send CLI transcript] exit=0
+---
+ok - a doorbell bound to one tmux server never reaches a same-id pane on another
+
+[fm-send CLI transcript] exit=0
+fm-send: doorbell not sent to %0 - its recorded endpoint could not be verified to exist on the expected tmux server, so nothing was typed there. The steer is durably recorded at .../unresolvablemate.inbox/001.msg and waits for a live agent; the watcher re-rings and escalates it. Recover or re-verify the worker's endpoint rather than resending, or the record is duplicated.
+---
+ok - a doorbell bound to a tmux server that no longer exists is refused, never rerouted to an ambient same-id pane
+
+ok - cleanup runs its tmux calls exactly once and never risks the default socket, even with the wrong-server directory already gone
+all fm-send shell-pane refusal tests passed
+
+---
+
+Remote-path counterpart, same instrumentation technique applied to
+tests/fm-send-remote-delivery.test.sh's `err` capture in
+test_remote_ring_no_agent_names_absent_endpoint, exercising bin/fm-remote-secondmate-control.sh
+cmd_send against a fake Herdr backend:
+
+[fm-send-remote CLI transcript] exit=0
+notice: doorbell not typed because the agent in fm-remote:p1 has exited; the steer is durably recorded at .../remote-no-agent-rhome/state/parent-route/rsm.inbox/001.msg for recovery
+---
+ok - fm-send remote: a doorbell to a no-agent Herdr endpoint reports absence and never fails the send
+all fm-send-remote-delivery tests passed
+
+Both transcripts match the merged upstream #3823 wording exactly ("agent ... has exited",
+"doorbell not typed", "for recovery", "will not re-ring a dead pane") rather than the fork's
+retired pre-merge wording ("no live agent", "waits for a live agent") that the prior review round's
+declined test finding had flagged as failing. The fork's fixture fix (2b7875e) is confirmed correct
+against real product output, not just against its own updated assertions.
