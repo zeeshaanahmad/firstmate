@@ -48,7 +48,7 @@ Verify setup by spawning a small task and confirming its `fm-<id>` window appear
 
 A target-existence check proves only that the pane exists.
 The deeper tmux agent-liveness probe first verifies exact window membership, then reads process names to distinguish a running harness from a bare idle shell.
-It classifies recognized Claude, Codex, OpenCode, Pi, pi-signed, Grok, Kimi, Cursor, Gemini, and Muse process identities as `alive`, common shells as `dead`, an authoritatively absent window as `missing`, unreadable state as `unreadable`, and every other process as `ambiguous`.
+It classifies recognized Claude, Codex, OpenCode, Pi, pi-signed, Grok, Kimi, Cursor, Gemini, Muse, and Rovo process identities as `alive`, common shells as `dead`, an authoritatively absent window as `missing`, unreadable state as `unreadable`, and every other process as `ambiguous`.
 Only `dead` and `missing` authorize recovery because a false dead result could launch a duplicate agent.
 A caller that has pinned an explicit tmux server with `fm_backend_tmux_bind_socket` (`bin/backends/tmux.sh`) - every caller that has resolved a task's recorded endpoint binds to that endpoint's own server before reading or acting on it, through the shared `fm_tmux_bin` seam in `bin/fm-tmux-lib.sh` - additionally verifies the target exists on that exact server before any other read, and reports `unresolvable` instead of any verdict above when it does not.
 A wrong or absent server is not the same fact as a dead agent: collapsing it into `dead`/`missing` would authorize recovery, or a doorbell/keystroke, against an endpoint nothing here has actually proven to exist on the bound server.
