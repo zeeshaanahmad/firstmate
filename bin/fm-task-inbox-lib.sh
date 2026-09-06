@@ -13,12 +13,14 @@
 #
 # Design (captain-adopted, data/fm-send-reliability-reframe-s1/report.md): the
 # payload moves to the filesystem, which is reliable; the terminal carries only
-# a short constant doorbell line, which does not need to be reliable because
-# ringing it again is free. A duplicated doorbell is a no-op by construction
-# (the worker finds the inbox empty or already handled), a swallowed doorbell
-# is detected by the absence of the worker's acknowledgement and re-rung on a
-# bounded schedule, and a worker that never acknowledges surfaces through the
-# ordinary stale wake into stuck-crewmate-recovery.
+# a short constant doorbell line. While the endpoint remains available, that
+# line does not need to be reliable because ringing it again is free. A
+# duplicated doorbell is a no-op by construction (the worker finds the inbox
+# empty or already handled), and a swallowed doorbell is detected by the
+# absence of the worker's acknowledgement and re-rung on a bounded schedule.
+# A positively dead or missing endpoint bypasses that schedule without being
+# typed into, and its unhandled record surfaces through the ordinary stale wake
+# into stuck-crewmate-recovery.
 #
 # Layout under <state-dir>:
 #   <task>.inbox/NNN.msg       one durable steer, numeric sequence, atomic rename
@@ -46,14 +48,18 @@
 # FM_TASK_INBOX_GRACE_SECS is due one delivery attempt per grace period; an
 # attempt may ring or be skipped to protect proven pending composer text. After
 # FM_TASK_INBOX_RING_MAX attempts without an acknowledgement it escalates. The
-# caller owns the busy check (a busy pane just waits - the record is durable and
-# the worker reaches a turn boundary) and the wake emission; this library owns
-# only the schedule. If attempt bookkeeping cannot be persisted while the record
-# remains unhandled, the caller surfaces that failure instead of retrying
-# silently; a concurrently removed inbox is a quiet no-op. Escalation
-# deliberately queues the wake before writing the
-# deduplication marker: normal polls surface a message once, while a crash or
-# marker failure may produce a rare duplicate rather than silently lose a wake.
+# caller owns the busy and recovery-grade endpoint checks: a busy pane waits,
+# while a positively dead or missing endpoint skips delivery and the ladder and
+# escalates directly. This library owns only the schedule and escalation marker.
+# If attempt bookkeeping cannot be persisted while the record remains unhandled,
+# the caller surfaces that failure instead of retrying silently; a concurrently
+# removed inbox is a quiet no-op. Escalation deliberately queues the wake before
+# writing the deduplication marker: normal polls surface a message once, while a
+# crash or marker failure may produce a rare duplicate rather than silently lose
+# a wake.
+#
+# Inbox paths containing bytes outside printable ASCII are unsupported. The
+# doorbell refuses them rather than sending terminal control bytes to a pane.
 #
 # fm_task_inbox_ring requires bin/fm-backend.sh's dispatch (sourced below); the
 # other helpers are dependency-light. Sourced by bin/fm-send.sh, bin/fm-watch.sh,
@@ -246,59 +252,56 @@ fm_task_inbox_body() {  # <record-path>
 
 # The constant self-describing doorbell line for the inbox containing a record.
 # Self-describing on purpose: a worker whose brief predates the inbox contract
-# still receives the complete instruction in the line itself.
+# still receives the complete instruction in the line itself. The leading `: `
+# is the POSIX shell no-op, so the same line typed into a pane whose agent has
+# exited (a bare shell) runs nothing; see the dead-pane note in the header.
+# A non-printable path fails without output so terminal controls never reach
+# the pane's line discipline.
 fm_task_inbox_doorbell_line() {  # <record-path>
-  local dir=${1%/*} abs
+  local dir=${1%/*} abs quoted LC_ALL=C
   abs=$(cd "$dir" 2>/dev/null && pwd) || abs=$dir
-  printf 'Firstmate instruction waiting: list %s/*.msg and, in numeric order, read and act on each, then mv each handled file to %s/handled/.' \
-    "$abs" "$abs"
+  case "$abs" in
+    *[![:print:]]*) return 1 ;;
+  esac
+  quoted=$(printf '%s' "$abs" | sed "s/'/'\\\\''/g")
+  printf ": Firstmate instruction waiting: list '%s'/*.msg and, in numeric order, read and act on each, then mv each handled file to '%s'/handled/." \
+    "$quoted" "$quoted"
 }
 
-# Ring the doorbell, best-effort: one authoritative agent-state read, one
-# advisory composer pre-check, then the backend's submit machinery with a
-# minimal retry budget, verdict discarded. Returns 0 rang, 1 skipped because
-# the composer PROVENLY holds pending text (the watcher re-rings later), 2 the
-# backend send failed, 3 the endpoint had no live agent before anything was
-# typed, 4 the endpoint's agent exited to a shell between typing the doorbell
+# Ring the doorbell, best-effort: one endpoint-liveness pre-check, one advisory
+# composer pre-check, then the backend's submit machinery with a minimal retry
+# budget, verdict discarded.
+# Returns 0 rang, 1 skipped because the composer PROVENLY holds pending text
+# (the watcher re-rings later), 2 the backend send failed, 3 skipped because
+# the endpoint is positively dead or missing (nothing typed; recovery owns the
+# record), 4 the endpoint's agent exited to a shell between typing the doorbell
 # line and confirming submission, 5 the endpoint's recorded target could not be
 # proven to exist on the server this call is bound to (see
 # fm_backend_tmux_target_resolves). No return value is delivery proof; the
 # acknowledgement move is the only delivery signal.
 #
-# 3, 4, and 5 are separated from 0 because they are the ring outcomes a reader
-# would otherwise misread as success: the submit core answers `no-agent`,
-# `agent-lost`, and `unresolvable` as VERDICTs with exit 0, so folding any of
-# them into "rang" reports a doorbell that provably reached nobody. The record
-# is still durable and the ladder still escalates it - the caller's job is
-# only to say the agent was absent (or the endpoint unverifiable), never to
-# fail the send. They are also separated from EACH OTHER because they
-# disagree on what is actually known: `no-agent` means the doorbell line was
-# not typed into a proven-dead pane, `agent-lost` means it was typed and Enter
-# was sent before the agent exited, and `unresolvable` means neither of those
-# facts could even be established - the recorded target does not resolve on
-# this call's bound server at all, so NOTHING was typed anywhere. Collapsing
-# any of these into another would force a message that is false for at least
-# one of them; a wrong or unresolvable server is not the same fact as a dead
-# agent; folding them would report a doorbell that provably reached nobody as
-# one that reached a dead worker.
+# 4 and 5 are separated from 0, and from 3, because they are the ring outcomes
+# a reader would otherwise misread as success: the submit core answers
+# `no-agent`, `agent-lost`, and `unresolvable` as VERDICTs with exit 0, so
+# folding any of them into "rang" reports a doorbell that provably reached
+# nobody. The record is still durable and the ladder still escalates it - the
+# caller's job is only to say the agent was absent (or the endpoint
+# unverifiable), never to fail the send. They stay separate from EACH OTHER
+# because they disagree on what is actually known: `no-agent` means the
+# doorbell line was not typed into a proven-dead pane, `agent-lost` means it
+# was typed and Enter was sent before the agent exited, and `unresolvable`
+# means neither of those facts could even be established - the recorded target
+# does not resolve on this call's bound server at all, so NOTHING was typed
+# anywhere. Collapsing any of these into another would force a message that is
+# false for at least one of them; a wrong or unresolvable server is not the
+# same fact as a dead agent.
 #
-# The authoritative agent-state read runs BEFORE the composer pre-check, not
-# after: a dead pane's rendered composer can still classify as `pending` (a
-# shell prompt is byte-identical to claude's empty-composer glyph, but a
-# leftover buffer under it can still read as held text), and if the composer
-# check ran first it would return 1 and never reach the no-agent verdict,
-# silently swallowing the required absent-agent messaging. It reads
-# fm_backend_pane_agent_state rather than the inventory-checked
-# fm_backend_agent_state deliberately: this caller's target is exactly what the
-# backend's own submit core is about to act on (fm_backend_tmux_send_text_submit
-# gates its typing on the same pane-evidence primitive), so hoisting that exact
-# check earlier is a faithful reordering, not a stricter one - a target whose
-# session inventory is momentarily unreadable stays `ambiguous`/`unreadable`
-# here exactly as it would inside the submit core, instead of being
-# misreported `missing`. Only a confident `dead`/`missing` verdict
-# short-circuits here; `ambiguous`, `unreadable`, and `unverified` fall through
-# to the composer check and the submit core exactly as before, so a live or
-# unclassifiable pane's behavior is unchanged.
+# The liveness pre-check runs BEFORE the composer pre-check, not after: a dead
+# pane's rendered composer can still classify as `pending` (a shell prompt is
+# byte-identical to claude's empty-composer glyph, but a leftover buffer under
+# it can still read as held text), and if the composer check ran first it would
+# return 1 and never reach the no-agent verdict, silently swallowing the
+# required absent-agent messaging.
 # The composer skip is deliberately narrow: only an exact `pending` verdict
 # defers, because there our Enter could submit someone's real half-typed
 # content. `pending-unproven` and `unknown` still ring - the worst outcome is a
@@ -307,15 +310,21 @@ fm_task_inbox_doorbell_line() {  # <record-path>
 # cannot positively identify (that classifier is advisory here by design).
 fm_task_inbox_ring() {  # <backend> <target> <record-path> [expected-label]
   local backend=$1 target=$2 rec=$3 label=${4:-} line cstate verdict
-  line=$(fm_task_inbox_doorbell_line "$rec")
-  case "$(fm_backend_pane_agent_state "$backend" "$target" 2>/dev/null)" in
+  case "$(fm_backend_agent_state "$backend" "$target" 2>/dev/null || true)" in
     unresolvable) return 5 ;;
     dead|missing) return 3 ;;
   esac
+  if ! line=$(fm_task_inbox_doorbell_line "$rec"); then
+    return 2
+  fi
   cstate=$(fm_backend_composer_state "$backend" "$target" "$label" 2>/dev/null) || cstate=unknown
   case "$cstate" in
     pending) return 1 ;;
   esac
+  # Accepted residual race: terminal input and Enter are separate delivery
+  # steps, so an agent exiting after the liveness check could leave a bare
+  # shell only a suffix; the `: ` prefix protects complete lines only. Do not
+  # add process-bound atomic delivery here unless an incident reopens this.
   if ! verdict=$(fm_backend_send_text_submit "$backend" "$target" "$line" 1 0.4 0.3 "$label" 2>/dev/null); then
     return 2
   fi
@@ -389,8 +398,11 @@ fm_task_inbox_due_action() {  # <state-dir> <task-id>
   IFS=$(printf '\t') read -r rec_base count last <<EOF
 $ladder
 EOF
-  if [ "$rec_base" != "$base" ]; then
-    # A different (or first) oldest message: the previous ladder is stale.
+  if [ -n "$rec_base" ] && [ "$rec_base" != "$base" ]; then
+    # A different oldest message: the previous ladder is stale. An absent
+    # ladder is left alone so a dead-pane escalation, which never rings and so
+    # never writes one, keeps its marker (the marker check below still ignores
+    # a marker naming some other message).
     count=0
     last=0
     rm -f "$dir/.escalated" 2>/dev/null || true
@@ -415,10 +427,12 @@ EOF
 }
 
 # Advance the ladder after a delivery attempt. A failed ring or a composer-
-# protected skip still consumes budget so neither a dead pane nor permanently
-# blocked composer can retry silently forever. A concurrently removed inbox is
-# a successful no-op; otherwise failure means the caller must surface the
-# unwritable ladder while the record remains unhandled.
+# protected skip still consumes budget so neither an unreadable pane nor a
+# permanently blocked composer can retry silently forever. A positively dead or
+# missing endpoint never enters the ladder: the watcher escalates it directly.
+# A concurrently removed inbox is a successful no-op; otherwise failure means
+# the caller must surface the unwritable ladder while the record remains
+# unhandled.
 fm_task_inbox_record_ring() {  # <state-dir> <task-id> <record-path>
   local dir base ladder rec_base count last
   dir=$(fm_task_inbox_dir "$1" "$2")
