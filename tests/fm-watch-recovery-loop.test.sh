@@ -226,6 +226,17 @@ test_handling_successor_does_not_go_blind() {
 # nothing, so minting a generation for it makes the NEXT arm announce
 # "check: rearm-resurface" over an empty queue - a recovery turn with nothing to
 # recover. Every silent watcher death cost one of those.
+#
+# The readiness wait below checks pid-identity, not just pid: fm_lock_claim
+# writes the lock's pid file the moment the lock is claimed, well before
+# bin/fm-watch.sh installs `trap watcher_cleanup EXIT` (it still has recovery-
+# marker reopen/arm-check and side-band publication to do first). pid-identity
+# is written right after that trap is installed. Waiting on pid alone races
+# that gap: a TERM landing in it hits no trap at all, so watcher_cleanup never
+# runs and .watcher-down is left exactly as this fixture seeded it - which
+# looks identical to "closed with nothing to recover" and made this fixture
+# flaky under load. Waiting for pid-identity ensures the TERM below always
+# lands after the trap is live, matching the mid-poll death this simulates.
 watcher_close_marker_after() {  # <state> <marker-token> [queue-row]
   local state=$1 token=$2 row=${3:-} pid i
   printf '%s\n' "$token" > "$state/.watcher-down"
@@ -239,11 +250,13 @@ watcher_close_marker_after() {  # <state> <marker-token> [queue-row]
   pid=$!
   i=0
   while [ "$i" -lt 60 ]; do
-    [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$pid" ] && break
+    [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$pid" ] \
+      && [ -s "$state/.watch.lock/pid-identity" ] && break
     sleep 0.1
     i=$((i + 1))
   done
-  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$pid" ] || {
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$pid" ] \
+    && [ -s "$state/.watch.lock/pid-identity" ] || {
     kill -TERM "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
     return 1
@@ -314,9 +327,14 @@ test_close_with_an_open_decision_still_recovers() {
   state="$dir/state"
   : > "$state/ios.meta"
   # An opened, unresolved captain call. Nothing else is pending: no delivery,
-  # and the durable queue stays empty for the whole fixture.
+  # and the durable queue stays empty for the whole fixture. Priming the seen
+  # marker declares the decision already surfaced (see the same idiom in
+  # tests/fm-watch-arm.test.sh), so a cold watcher does not treat it as a new
+  # signal and queue it - which would defeat this fixture's isolation.
   printf 'needs-decision [key=remote-signoff]: remote secondmate is held for captain sign-off\n' \
     > "$state/ios.status"
+  prime_status_seen "$state" "$state/ios.status" \
+    || fail "could not prime the open-decision fixture as already surfaced"
   watcher_close_marker_after "$state" 'acked:downtime:already.acked.gen' \
     || fail "the watcher did not take its lock in the open-decision fixture"
   [ ! -s "$state/.wake-queue" ] \
