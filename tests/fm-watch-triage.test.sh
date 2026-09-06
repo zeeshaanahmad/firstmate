@@ -1321,6 +1321,31 @@ test_turn_ended_second_churn_absorb_keeps_supervising() {
   pass "a second pane-churn absorb keeps supervising instead of killing the watcher"
 }
 
+# The behavioral test above is a genuine red-then-green regression pin, but only
+# on stock macOS Bash 3.2.57, where "${empty_array[@]}" is fatal under `set -u`.
+# Every CI lane that executes this suite runs on ubuntu-latest under Bash 5,
+# where expanding an empty array under `set -u` is legal and expands to
+# nothing, so that test cannot fail-before/pass-after in CI; the sole
+# macos-latest job (macos-stock-bash) only runs `bash -n` syntax parsing and
+# never executes the suite. This static pin is a deliberate, narrow exception
+# to the rule against asserting on implementation-source bytes: it is what
+# makes a later revert of the guard redden in the pipeline CI actually runs.
+test_turnend_churn_absorb_arrays_stay_guarded() {
+  local fn_body name plain_count guard_count
+  fn_body=$(sed -n '/^signal_turnend_panes_churned() {/,/^}/p' "$WATCH")
+  [ -n "$fn_body" ] || fail "could not locate signal_turnend_panes_churned in $WATCH"
+  # churned_keys is intentionally excluded: every expansion of it is reached
+  # only after a loop that either appended to it or returned, so it is provably
+  # non-empty there and a guard on it would be wrong.
+  for name in missing_keys created_keys; do
+    plain_count=$(printf '%s\n' "$fn_body" | grep -Fo "\${${name}[@]}" | wc -l | tr -d ' ')
+    guard_count=$(printf '%s\n' "$fn_body" | grep -Fo "\${${name}[@]+" | wc -l | tr -d ' ')
+    [ "$plain_count" = "$guard_count" ] \
+      || fail "signal_turnend_panes_churned expands \${$name[@]} unguarded (plain=$plain_count guard=$guard_count) - Bash 3.2 treats an empty array expansion under set -u as an unbound variable and kills the watcher"
+  done
+  pass "signal_turnend_panes_churned guards every possibly-empty array expansion (missing_keys, created_keys)"
+}
+
 test_turn_ended_churn_timer_write_failure_surfaced() {
   local dir state fakebin out drain_out capture_file window key pid
   dir=$(make_case turn-ended-churn-timer-write-failure); state="$dir/state"; fakebin="$dir/fakebin"
@@ -4512,6 +4537,7 @@ test_status_and_turn_end_batch_never_uses_churn_evidence
 test_turn_ended_churn_absorb_off_by_default
 test_turn_ended_churn_absorb_bounded
 test_turn_ended_second_churn_absorb_keeps_supervising
+test_turnend_churn_absorb_arrays_stay_guarded
 test_turn_ended_churn_timer_write_failure_surfaced
 test_turn_ended_invalid_churn_bound_surfaced
 test_turn_ended_oversized_churn_bound_surfaced
