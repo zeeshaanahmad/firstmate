@@ -27,6 +27,27 @@ DRAIN="$ROOT/bin/fm-wake-drain.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-watch-triage-tests)
 
+# Reset variant for fixtures that stop a watcher only to start a clean next
+# phase. A stop that delivered no wake and left no queued row opens no recovery
+# episode at all (bin/fm-watch.sh's watcher_close_has_nothing_to_recover), so
+# there is nothing to acknowledge and nothing carried forward - which is exactly
+# the clean slate those fixtures want. Where an episode DOES exist this still
+# demands the full generation-bound acknowledgement.
+ack_stopped_cycle_if_any() {  # <state>
+  local state=$1
+  if [ -s "$state/.wake-queue" ]; then
+    ack_stopped_cycle "$state"
+    return $?
+  fi
+  case "$(cat "$state/.watcher-down" 2>/dev/null || echo ABSENT)" in
+    pending:*|announced:*)
+      ack_stopped_cycle "$state"
+      return $?
+      ;;
+  esac
+  return 0
+}
+
 ack_stopped_cycle() {  # <state>
   local state=$1 err sequence generation
   err="$state/.test-cycle-drain.err"
@@ -1249,6 +1270,82 @@ test_turn_ended_churn_absorb_bounded() {
   pass "a perpetually churning pane surfaces once its bounded deferral window is spent"
 }
 
+# The SECOND churn absorb for the same pane, i.e. every absorb after the first.
+# The bound above covers a deferral window that has EXPIRED; this covers the far
+# more common one that is still open, where the pane already has a valid
+# .churn-since- marker and the pass therefore creates no new one.
+#
+# That leaves the function's missing_keys array empty, and under `set -u` stock
+# macOS Bash 3.2.57 - the shell every macOS firstmate home runs, enforced by the
+# macos-stock-bash CI job - treats "${empty[@]}" as an unbound variable and kills
+# the WHOLE shell with status 1 and a stderr-only message. The watcher died
+# mid-poll having printed no reason, written no triage line and queued no wake,
+# so supervision simply stopped and the next arm announced an empty recovery.
+#
+# Bash 4.4+ expands the bare form to nothing, so on a Linux CI runner this case
+# passes with or without the guard: it is a genuine red-green only under stock
+# 3.2, which is exactly the shell the affected homes run. The macos-stock-bash CI
+# job currently only parses the shell inventory, so nothing in CI executes this
+# path under 3.2 - running it there is the way to make that enforcement real.
+test_turn_ended_second_churn_absorb_keeps_supervising() {
+  local dir state fakebin out capture_file window key pid
+  dir=$(make_case turn-ended-second-churn); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  window="test:fm-codexer2"
+  : > "$state/codexer2.turn-ended"
+  printf 'window=%s\nkind=ship\nharness=codex\n' "$window" > "$state/codexer2.meta"
+  printf 'apply_patch: still writing bin/thing.sh' > "$capture_file"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  printf '%s' "$(hash_text 'the previous frame')" > "$state/.hash-$key"
+  printf '0\n' > "$state/.count-$key"
+  # An earlier poll already opened this pane's deferral window, well inside the
+  # bound: this absorb needs no new marker, so nothing is missing.
+  printf '%s' "$(( $(date +%s) - 30 ))" > "$state/.churn-since-$key"
+  export FM_FAKE_CREW_STATE='state: unknown · source: pane · harness state unavailable (unknown codex-unverified)'
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_CONFIG_OVERRIDE="$(churn_config "$dir")" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_POLL=3 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_absorbed "$state" "$pid" "absorbed benign signal:" \
+    || { reap "$pid"; fail "a second churn absorb killed the watcher instead of absorbing: $(cat "$out")"; }
+  # The real defect: the process was gone, not merely quiet.
+  kill -0 "$pid" 2>/dev/null \
+    || fail "the watcher died during a second churn absorb instead of continuing to supervise"
+  [ ! -s "$out" ] || fail "a second churn absorb printed a wake reason: $(cat "$out")"
+  [ ! -s "$state/.wake-queue" ] || fail "a second churn absorb enqueued a durable wake record"
+  [ "$(cat "$state/.churn-since-$key" 2>/dev/null)" != "" ] \
+    || fail "a second churn absorb discarded the open deferral window"
+  reap "$pid"
+  unset FM_FAKE_CREW_STATE
+  pass "a second pane-churn absorb keeps supervising instead of killing the watcher"
+}
+
+# The behavioral test above is a genuine red-then-green regression pin, but only
+# on stock macOS Bash 3.2.57, where "${empty_array[@]}" is fatal under `set -u`.
+# Every CI lane that executes this suite runs on ubuntu-latest under Bash 5,
+# where expanding an empty array under `set -u` is legal and expands to
+# nothing, so that test cannot fail-before/pass-after in CI; the sole
+# macos-latest job (macos-stock-bash) only runs `bash -n` syntax parsing and
+# never executes the suite. This static pin is a deliberate, narrow exception
+# to the rule against asserting on implementation-source bytes: it is what
+# makes a later revert of the guard redden in the pipeline CI actually runs.
+test_turnend_churn_absorb_arrays_stay_guarded() {
+  local fn_body name plain_count guard_count
+  fn_body=$(sed -n '/^signal_turnend_panes_churned() {/,/^}/p' "$WATCH")
+  [ -n "$fn_body" ] || fail "could not locate signal_turnend_panes_churned in $WATCH"
+  # churned_keys is intentionally excluded: every expansion of it is reached
+  # only after a loop that either appended to it or returned, so it is provably
+  # non-empty there and a guard on it would be wrong.
+  for name in missing_keys created_keys; do
+    plain_count=$(printf '%s\n' "$fn_body" | grep -Fo "\${${name}[@]}" | wc -l | tr -d ' ')
+    guard_count=$(printf '%s\n' "$fn_body" | grep -Fo "\${${name}[@]+" | wc -l | tr -d ' ')
+    [ "$plain_count" = "$guard_count" ] \
+      || fail "signal_turnend_panes_churned expands \${${name}[@]} unguarded (plain=$plain_count guard=$guard_count) - Bash 3.2 treats an empty array expansion under set -u as an unbound variable and kills the watcher"
+  done
+  pass "signal_turnend_panes_churned guards every possibly-empty array expansion (missing_keys, created_keys)"
+}
+
 test_turn_ended_churn_timer_write_failure_surfaced() {
   local dir state fakebin out drain_out capture_file window key pid
   dir=$(make_case turn-ended-churn-timer-write-failure); state="$dir/state"; fakebin="$dir/fakebin"
@@ -1715,7 +1812,7 @@ test_unreadable_status_reports_once_per_file_state() {
     || fail "the unreadable status report did not advance its wake signature"
   [ "$(status_presentation_marker_offset "$marker" "$status_file")" = 0 ] \
     || fail "the unreadable status report advanced its classification position"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the first unreadable-status wake"
+  ack_stopped_cycle_if_any "$state" || fail "could not acknowledge the first unreadable-status wake"
   touch "$state/.last-check" "$state/.last-heartbeat"
 
   watch_bg "$state" "$fakebin" "$out"
@@ -1732,7 +1829,7 @@ test_unreadable_status_reports_once_per_file_state() {
   wait_for_exit "$pid" 100 || { reap "$pid"; fail "a changed unreadable status did not report again"; }
   [ "$(status_presentation_marker_offset "$marker" "$status_file")" = 0 ] \
     || fail "a changed unreadable status advanced its classification position"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the changed unreadable-status wake"
+  ack_stopped_cycle_if_any "$state" || fail "could not acknowledge the changed unreadable-status wake"
 
   rm -f "$status_file"
   cp "$target" "$status_file"
@@ -1762,7 +1859,7 @@ test_permission_recovery_surfaces_preserved_status() {
   wait_for_exit "$pid" 100 || { reap "$pid"; chmod 600 "$status_file"; fail "an unreadable regular status was not reported"; }
   [ "$(status_presentation_marker_offset "$marker" "$status_file")" = 0 ] \
     || { chmod 600 "$status_file"; fail "an unreadable regular status advanced its classification position"; }
-  ack_stopped_cycle "$state" || { chmod 600 "$status_file"; fail "could not acknowledge the unreadable regular-status wake"; }
+  ack_stopped_cycle_if_any "$state" || { chmod 600 "$status_file"; fail "could not acknowledge the unreadable regular-status wake"; }
   touch "$state/.last-check" "$state/.last-heartbeat"
 
   watch_bg "$state" "$fakebin" "$out"
@@ -1846,7 +1943,7 @@ test_stale_terminal_status_overridden_by_active_run() {
   [ -s "$state/.stale-since-$key" ] || fail "stale-since escalation timer was not recorded on absorb"
   [ ! -e "$state/.hb-surfaced-validating" ] || fail "an absorbed wake must not mark the status line as surfaced"
   reap "$pid"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional phase-A watcher stop"
+  ack_stopped_cycle_if_any "$state" || fail "could not acknowledge the intentional phase-A watcher stop"
 
   # Phase B: backdate the idle timer past the threshold; the run genuinely
   # wedges and the next poll escalates exactly like the non-terminal case.
@@ -1898,7 +1995,7 @@ test_nonterminal_stale_provably_working_absorbed_then_escalated() {
   [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "$pane_hash" ] || fail "stale suppressor not advanced on absorb"
   [ -s "$state/.stale-since-$key" ] || fail "stale-since escalation timer was not recorded on absorb"
   reap "$pid"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional phase-A watcher stop"
+  ack_stopped_cycle_if_any "$state" || fail "could not acknowledge the intentional phase-A watcher stop"
 
   # Phase B: backdate the idle timer past the threshold; the next run escalates.
   # (The subsequent-sight timer path does not re-read the crew state.)
@@ -2004,7 +2101,7 @@ test_nonterminal_stale_paused_absorbed_then_resurfaced() {
   # it from every loop position, so this asserts rather than steps aside - phase B
   # below is only meaningful over a watcher that stopped cleanly.
   assert_reaped_on_term "declared-pause absorb/re-surface"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional paused phase-A stop"
+  ack_stopped_cycle_if_any "$state" || fail "could not acknowledge the intentional paused phase-A stop"
 
   # Phase B: age the pause past the (now normal) threshold by backdating its
   # status file, re-prime .seen-* to the new signature so the signal scan stays
@@ -2134,7 +2231,7 @@ test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
   pid=$!
   wait_for_exit "$pid" 100 || fail "live external-decision gate did not surface immediately"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the immediate external-decision surface"
+  ack_stopped_cycle_if_any "$state" || fail "could not acknowledge the immediate external-decision surface"
 
   # Re-arm with the stale timer already beyond the wedge threshold. This is the
   # exact unchanged-hash fallback after the immediate surface: it must retain
@@ -2320,7 +2417,7 @@ test_live_declared_pause_gate_surfaces_once_per_declaration() {
   bare=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w && $5 == "stale: " w { n++ } END { print n + 0 }' "$state/.wake-queue")
   [ "$bare" -eq 1 ] || fail "first sight of a live declared pause queued $bare bare stale wakes, expected 1"
   [ -e "$state/.paused-resurfaced-$key" ] || fail "the live-gate surface did not record its declaration marker"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional live-gate surface"
+  ack_stopped_cycle_if_any "$state" || fail "could not acknowledge the intentional live-gate surface"
 
   # Part 1b: the SAME declaration, two repaints under ONE watcher. No new wake.
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
@@ -2512,7 +2609,7 @@ test_absorbed_replacement_wait_does_not_inherit_the_old_throttle() {
       FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
     pid=$!
     wait_for_exit "$pid" 100 || fail "[$name] initial declared wait did not re-surface"
-    ack_stopped_cycle "$state" || fail "[$name] could not acknowledge the initial declared wait"
+    ack_stopped_cycle_if_any "$state" || fail "[$name] could not acknowledge the initial declared wait"
 
     printf '%s\n' "$replacement" >> "$statusf"
     sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-held_status"
@@ -2607,7 +2704,7 @@ test_live_declared_wait_churn_honors_the_resurface_throttle() {
     printf '1\n' > "$state/.count-$key"
     parked_watch_round "$state" "$fakebin" "$out" "$capture_file" "$window" exit \
       || fail "[$name] first sight of a parked live worker did not surface"
-    ack_stopped_cycle "$state" || fail "[$name] could not acknowledge the first surface"
+    ack_stopped_cycle_if_any "$state" || fail "[$name] could not acknowledge the first surface"
     [ -e "$throttle" ] || fail "[$name] the first surface recorded no re-surface throttle"
 
     # The pane now churns while the SAME declared wait stands, each round fully
@@ -2644,7 +2741,7 @@ test_live_declared_wait_churn_honors_the_resurface_throttle() {
       "$state/.wake-queue" 2>/dev/null || echo 0)
     [ "$wakes" -eq 1 ] || fail "[$name] replacement declared wait produced $wakes first wakes instead of one"
     [ "$bare" -eq 1 ] || fail "[$name] replacement declared wait changed the wake identity: $(cat "$state/.wake-queue")"
-    ack_stopped_cycle "$state" || fail "[$name] could not acknowledge the replacement wait's first surface"
+    ack_stopped_cycle_if_any "$state" || fail "[$name] could not acknowledge the replacement wait's first surface"
 
     printf 'replacement wait, elapsed 2s' > "$capture_file"
     parked_watch_round "$state" "$fakebin" "$out" "$capture_file" "$window" absorb \
@@ -2823,7 +2920,7 @@ test_nonterminal_stale_pause_transitions_reclassify_unchanged_hash() {
   [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "unchanged stale hash did not stay in paused mode"; }
   [ ! -e "$state/.stale-since-$key" ] || { reap "$pid"; fail "unchanged stale hash restarted its wedge timer"; }
   reap "$pid"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional entered-pause watcher stop"
+  ack_stopped_cycle_if_any "$state" || fail "could not acknowledge the intentional entered-pause watcher stop"
 
   printf 'working: upstream landed, resuming\n' > "$state/transition.status"
   sig=$(seen_sig "$state/transition.status"); printf '%s' "$sig" > "$state/.seen-transition_status"
@@ -2903,7 +3000,7 @@ test_paused_authoritative_working_preserves_wedge_timer() {
   [ "$(cat "$state/.stale-since-$key" 2>/dev/null || true)" = "$since" ] \
     || { reap "$pid"; fail "repeat authoritative working recheck reset the wedge timer"; }
   reap "$pid"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional authoritative-working stop"
+  ack_stopped_cycle_if_any "$state" || fail "could not acknowledge the intentional authoritative-working stop"
 
   echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
   : > "$out"
@@ -2955,7 +3052,7 @@ test_wedge_escalation_marks_demand_deep_inspection_after_threshold() {
   wait_stale_passes "$state" "$key" "$pid" 1 \
     || { reap "$pid"; fail "watcher exited on the priming round (should absorb): $(cat "$out")"; }
   reap "$pid"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional wedge priming stop"
+  ack_stopped_cycle_if_any "$state" || fail "could not acknowledge the intentional wedge priming stop"
 
   n=1
   while [ "$n" -le 3 ]; do
@@ -2975,7 +3072,7 @@ test_wedge_escalation_marks_demand_deep_inspection_after_threshold() {
     else
       grep -F "demand-deep-inspection" "$out" >/dev/null || fail "round $n (threshold) did not demand deep inspection: $(cat "$out")"
     fi
-    ack_stopped_cycle "$state" || fail "could not acknowledge wedge escalation round $n"
+    ack_stopped_cycle_if_any "$state" || fail "could not acknowledge wedge escalation round $n"
     n=$((n + 1))
   done
   [ "$(cat "$state/.wedge-escalations-$key" 2>/dev/null || echo 0)" = 3 ] || fail "escalation counter did not persist across consecutive rounds"
@@ -3079,7 +3176,7 @@ test_busy_pane_stable_hash_escalates_past_turn_age_bound() {
     || { reap "$pid"; fail "a stable-hash busy pane past the turn-age bound escalated before the wedge threshold: $(cat "$out")"; }
   [ -s "$state/.stale-since-$key" ] || fail "a stable-hash busy pane past the turn-age bound did not start a wedge timer"
   reap "$pid"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional stable-hash phase-A stop"
+  ack_stopped_cycle_if_any "$state" || fail "could not acknowledge the intentional stable-hash phase-A stop"
 
   # Phase B: backdate the wedge timer past the threshold; the next poll escalates.
   echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
@@ -3124,7 +3221,7 @@ test_busy_pane_changing_hash_escalates_past_turn_age_bound() {
     || { reap "$pid"; fail "a changing-hash busy pane past the turn-age bound escalated before the wedge threshold (watcher $(wait_fail_word)): $(cat "$out")"; }
   [ -s "$state/.stale-since-$key" ] || fail "a changing-hash busy pane past the turn-age bound did not start a wedge timer"
   reap "$pid"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional changing-hash phase-A stop"
+  ack_stopped_cycle_if_any "$state" || fail "could not acknowledge the intentional changing-hash phase-A stop"
 
   # Phase B: another tick (still a fresh, never-before-seen hash) plus a
   # backdated wedge timer escalates exactly as the stable-hash case does.
@@ -3199,7 +3296,7 @@ test_busy_pane_repeated_escalation_reaches_demand_deep_inspection() {
   wait_stale_passes "$state" "$key" "$pid" 1 \
     || { reap "$pid"; fail "priming round for busy turn-age escalation was not absorbed: $(cat "$out")"; }
   reap "$pid"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional busy-wedge priming stop"
+  ack_stopped_cycle_if_any "$state" || fail "could not acknowledge the intentional busy-wedge priming stop"
 
   n=1
   while [ "$n" -le 3 ]; do
@@ -3216,7 +3313,7 @@ test_busy_pane_repeated_escalation_reaches_demand_deep_inspection() {
     else
       grep -F "demand-deep-inspection" "$out" >/dev/null || fail "busy turn-age round $n (threshold) did not demand deep inspection: $(cat "$out")"
     fi
-    ack_stopped_cycle "$state" || fail "could not acknowledge busy turn-age escalation round $n"
+    ack_stopped_cycle_if_any "$state" || fail "could not acknowledge busy turn-age escalation round $n"
     n=$((n + 1))
   done
   [ "$(cat "$state/.wedge-escalations-$key" 2>/dev/null || echo 0)" = 3 ] || fail "busy turn-age escalation counter did not persist across consecutive rounds"
@@ -3264,7 +3361,7 @@ test_busy_declared_pause_is_rechecked_not_wedge_escalated() {
   [ -e "$state/.paused-$key" ] || fail "the busy-turn bound did not apply the declared-pause cadence"
   [ ! -e "$state/.stale-since-$key" ] || fail "a declared pause on a busy pane started the wedge timer"
   [ ! -e "$state/.wedge-escalations-$key" ] || fail "a declared pause on a busy pane incremented the escalation counter"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional declared-pause phase-A stop"
+  ack_stopped_cycle_if_any "$state" || fail "could not acknowledge the intentional declared-pause phase-A stop"
 
   # Phase B: age the pause past the (now normal) long cadence and let the pane
   # settle on one stable hash, so the still-busy pane takes the repeat-hash
@@ -3289,7 +3386,7 @@ test_busy_declared_pause_is_rechecked_not_wedge_escalated() {
   grep -F "possible wedge" "$out" >/dev/null && fail "a declared pause on a busy pane was mislabeled a possible wedge: $(cat "$out")"
   [ -e "$state/.paused-resurfaced-$key" ] || fail "the declared-pause re-surface throttle was cleared by the busy-turn bound"
   [ ! -e "$state/.stale-since-$key" ] || fail "a declared-pause recheck used the wedge timer"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the declared-pause recheck"
+  ack_stopped_cycle_if_any "$state" || fail "could not acknowledge the declared-pause recheck"
 
   # Phase C: the pause is lifted on the SAME busy, over-age pane. Nothing else
   # changes, so a still-absorbed pane here would mean the bound was silenced
@@ -3308,7 +3405,7 @@ test_busy_declared_pause_is_rechecked_not_wedge_escalated() {
   reap "$pid"
   [ -s "$state/.stale-since-$key" ] || fail "a lifted pause did not restore the busy-turn wedge timer"
   [ ! -e "$state/.paused-$key" ] || fail "a lifted pause left stale declared-pause bookkeeping behind"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional lifted-pause priming stop"
+  ack_stopped_cycle_if_any "$state" || fail "could not acknowledge the intentional lifted-pause priming stop"
 
   echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
   : > "$out"
@@ -3373,7 +3470,7 @@ test_afk_busy_declared_pause_hands_off_plain_stale() {
     || fail "the away-mode handoff incremented the wedge escalation count on a declared pause"
   [ ! -e "$state/.paused-$key" ] \
     || fail "the away-mode handoff recorded normal-mode pause tracking instead of leaving it to the daemon"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the away-mode declared-pause handoff"
+  ack_stopped_cycle_if_any "$state" || fail "could not acknowledge the away-mode declared-pause handoff"
 
   # Phase B: re-arm on the same unchanged pane. The bound has already handed this
   # stale hash off, so it must stay silent rather than re-waking the daemon - a
@@ -3391,7 +3488,7 @@ test_afk_busy_declared_pause_hands_off_plain_stale() {
   [ ! -s "$out" ] || fail "the away-mode bound re-surfaced an already-handed-off declared pause: $(cat "$out")"
   [ ! -e "$state/.wedge-escalations-$key" ] \
     || fail "re-arming on an unchanged declared pause started a wedge escalation ladder"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional away-mode re-arm stop"
+  ack_stopped_cycle_if_any "$state" || fail "could not acknowledge the intentional away-mode re-arm stop"
 
   # Phase C: lift the declaration on the SAME afk, busy, over-age pane. Nothing else
   # changes, so a wedge escalation here proves the declaration was the discriminator.
@@ -3485,7 +3582,7 @@ SH
     || fail "the away-mode handoff left the undeclared phase's write-deferral chain in place"
   [ ! -e "$state/.paused-$key" ] \
     || fail "the away-mode handoff recorded normal-mode pause tracking on a ticking pane"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the ticking declared-pause handoff"
+  ack_stopped_cycle_if_any "$state" || fail "could not acknowledge the ticking declared-pause handoff"
 
   # Rounds 2-6: five consecutive re-arms on the same standing declaration. Every
   # capture renders a new footer, so every poll lands on the changed-hash branch -
@@ -3517,7 +3614,7 @@ SH
       || fail "re-arm $round started the wedge timer on a standing declared pause"
     [ ! -e "$state/.wedge-escalations-$key" ] \
       || fail "re-arm $round climbed the wedge escalation ladder on a standing declared pause"
-    ack_stopped_cycle "$state" || fail "could not acknowledge the intentional re-arm $round stop"
+    ack_stopped_cycle_if_any "$state" || fail "could not acknowledge the intentional re-arm $round stop"
     round=$((round + 1))
   done
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || true
@@ -3554,7 +3651,7 @@ test_busy_pane_default_turn_age_bound_is_3600s() {
     || { reap "$pid"; fail "a 5-minute-old completed turn tripped the default busy-turn-age bound: $(cat "$out")"; }
   [ ! -e "$state/.stale-since-$key" ] || fail "a 5-minute-old completed turn started a wedge timer under the default bound"
   reap "$pid"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional five-minute-bound stop"
+  ack_stopped_cycle_if_any "$state" || fail "could not acknowledge the intentional five-minute-bound stop"
 
   set_mtime $(( $(date +%s) - 4000 )) "$state/busy-default.turn-ended"
   prime_turnend_seen "$state/busy-default.turn-ended"
@@ -3597,7 +3694,7 @@ test_nonterminal_stale_repairs_missing_or_corrupt_timer() {
   fi
   [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "missing stale-since repair enqueued a wake"; }
   reap "$pid"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional missing-timer repair stop"
+  ack_stopped_cycle_if_any "$state" || fail "could not acknowledge the intentional missing-timer repair stop"
 
   printf 'corrupt\n' > "$state/.stale-since-$key"
   : > "$out"
@@ -3666,7 +3763,7 @@ test_wedge_escalation_deferred_while_worktree_is_written() {
   [ "$(cat "$state/.stale-since-$key" 2>/dev/null || echo 0)" -gt "$back" ] \
     || { reap "$pid"; fail "a deferral did not restart the idle timer, so the next window cannot re-probe"; }
   reap "$pid"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional phase-A watcher stop"
+  ack_stopped_cycle_if_any "$state" || fail "could not acknowledge the intentional phase-A watcher stop"
 
   # Phase B: same fixture, same quiet pane, but nothing written during this idle
   # window (the crew really is stalled). The unchanged schedule must still fire.
@@ -3827,7 +3924,7 @@ test_timer_repair_drops_a_finished_write_deferral_chain() {
     || { reap "$pid"; fail "an idle-window timer repair kept a finished write-deferral chain"; }
   [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "the idle-window timer repair enqueued a wake"; }
   reap "$pid"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional timer-repair watcher stop"
+  ack_stopped_cycle_if_any "$state" || fail "could not acknowledge the intentional timer-repair watcher stop"
 
   # The new quiet window now crosses the escalation threshold while the crew writes
   # its worktree. That deferral must get a FRESH re-surface window rather than
@@ -3893,7 +3990,7 @@ test_terminal_first_sight_drops_a_finished_write_deferral_chain() {
   [ ! -e "$state/.writing-since-$key" ] \
     || { reap "$pid"; fail "the provably-working first-sight absorb kept a finished write-deferral chain"; }
   reap "$pid"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional first-sight absorb stop"
+  ack_stopped_cycle_if_any "$state" || fail "could not acknowledge the intentional first-sight absorb stop"
 
   # Same pane, first sight again, but nothing overrides the status line now, so it
   # surfaces. That path drops the idle-window timer, so it must drop the chain too.
@@ -4439,6 +4536,8 @@ test_turn_ended_mixed_positive_evidence_batch_default_off
 test_status_and_turn_end_batch_never_uses_churn_evidence
 test_turn_ended_churn_absorb_off_by_default
 test_turn_ended_churn_absorb_bounded
+test_turn_ended_second_churn_absorb_keeps_supervising
+test_turnend_churn_absorb_arrays_stay_guarded
 test_turn_ended_churn_timer_write_failure_surfaced
 test_turn_ended_invalid_churn_bound_surfaced
 test_turn_ended_oversized_churn_bound_surfaced

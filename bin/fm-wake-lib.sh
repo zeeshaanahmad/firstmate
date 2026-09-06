@@ -984,6 +984,27 @@ fm_recovery_transition() {
       fm_lock_release "$target"
       fm_lock_section_leave "$lock"
       ;;
+    release-lock-quiet)
+      # Release ownership WITHOUT publishing downtime, for a close that delivered
+      # no wake and left no queued row. Publishing there is what turned an
+      # `acked:` marker into a fresh `pending:downtime` generation, so the next
+      # arm announced `check: rearm-resurface` over an empty queue - a recovery
+      # presentation for a cycle with nothing to recover.
+      #
+      # Leaving the marker untouched is safe in every state, not just `acked:`:
+      # for a still-open `pending:`/`announced:` episode a downtime publication
+      # only ever REUSES the same generation and status, so skipping it changes
+      # nothing that acknowledgement depends on. The durable queue, not this
+      # marker, remains the authority for whether recovery is owed:
+      # _fm_recovery_marker_arm_check mints an episode from a non-empty queue
+      # even with the marker absent or already acknowledged, so a row appended by
+      # anyone between this release and the next arm is still recovered - and
+      # fm_wake_append publishes downtime itself on every append.
+      # Unlike release-lock-existing this tolerates an absent marker, because "no
+      # episode at all" is exactly the state it exists to preserve.
+      [ -n "$target" ] || return 1
+      fm_lock_release "$target"
+      ;;
     clear-stale-lock)
       [ -n "$target" ] || return 1
       _fm_recovery_marker_publish "$marker" "${value:-downtime}" || return 1

@@ -34,6 +34,22 @@ drain_and_ack() {  # <state>
     --recovery-generation "$generation"
 }
 
+# A watcher cycle that delivered no wake and left no queued row opens no
+# recovery episode: bin/fm-watch.sh's watcher_cleanup keeps an already
+# acknowledged marker instead of minting a fresh generation, so the next arm has
+# nothing to announce. Fixtures that force such a close therefore have nothing to
+# drain or acknowledge - assert that directly rather than acknowledging an
+# episode that must not exist.
+assert_quiet_cycle_left_nothing() {  # <state> <context>
+  local state=$1 context=$2
+  [ ! -s "$state/.wake-queue" ] \
+    || fail "$context left a durable wake row behind"
+  case "$(cat "$state/.watcher-down" 2>/dev/null || echo ABSENT)" in
+    acked:*|ABSENT) ;;
+    *) fail "$context opened a recovery episode with nothing to recover: $(cat "$state/.watcher-down" 2>/dev/null)" ;;
+  esac
+}
+
 test_singleton_start() {
   local dir state fakebin out1 out2 pid1 pid2 live i
   dir=$(make_case singleton)
@@ -976,11 +992,11 @@ SH
     || fail "predecessor ledger record was not linked to its verified successor"
   kill -HUP "$successor_arm" 2>/dev/null || true
   wait "$successor_arm" 2>/dev/null || true
-  # The forced interruption is a watcher-down interval. Consume the prior
-  # delivered wake before beginning independent ledger cycles, just as the
-  # recovery handling turn does, so this fixture does not intentionally carry a
-  # durable wake into the next arm.
-  drain_and_ack "$state" || fail "recovery drain after forced arm interruption failed"
+  # The forced interruption delivered no wake and left no queued row, so it is
+  # not a recovery-owing watcher-down interval and carries nothing into the next
+  # arm. That is the guarantee this fixture needs before its independent ledger
+  # cycles below.
+  assert_quiet_cycle_left_nothing "$state" "the interrupted successor cycle"
 
   # Produce enough short cycles to cross a deliberately small cap. The cap is
   # applied by the arm layer itself and keeps only complete ledger records.
@@ -998,8 +1014,7 @@ SH
     grep -qF 'watcher: started pid=' "$armout" || fail "bounded ledger cycle $iteration did not start"
     kill -HUP "$successor_arm" 2>/dev/null || true
     wait "$successor_arm" 2>/dev/null || true
-    drain_and_ack "$state" \
-      || fail "recovery drain after bounded ledger cycle $iteration failed"
+    assert_quiet_cycle_left_nothing "$state" "bounded ledger cycle $iteration"
     iteration=$((iteration + 1))
   done
   size=$(wc -c < "$state/.watch-cycle-exits.log" | tr -d '[:space:]')
@@ -1007,6 +1022,155 @@ SH
   ! grep -v '^arm_pid=.*watcher_pid=.*started_at=.*ended_at=.*exit_code=.*signal=.*reason=.*beacon_age=.*lock_before=.*lock_after=.*successor=' "$state/.watch-cycle-exits.log" | grep . >/dev/null \
     || fail "bounded lifecycle ledger contains a partial or malformed record"
   pass "cycle-exit ledger links a verified successor and remains size-capped"
+}
+
+# A watcher can die without ever printing a reason line - a fatal shell error
+# under `set -u`, a failed builtin, an interpreter abort - and every one of those
+# messages goes to stderr. The arm used to redirect only stdout, so that stderr
+# was inherited and then discarded by whichever adapter ran the arm, leaving an
+# exit-1 cycle recorded as a bare "nonzero-exit" with no way to tell WHY. The
+# lifecycle record now carries the watcher's last stderr lines.
+#
+# The fixture uses a real refusal path rather than a stub watcher: a live lock
+# holder with a stale beacon makes the child watcher print its diagnostic to
+# stderr and exit 1, which is exactly the shape of an unexplained close.
+test_cycle_ledger_records_watcher_stderr() {
+  local dir state fakebin out live pid i row
+  dir=$(make_case cycle-ledger-stderr)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/arm.out"
+  sleep 300 &
+  live=$!
+  mkdir "$state/.watch.lock"
+  printf '%s\n' "$live" > "$state/.watch.lock/pid"
+  printf '%s\n' "$dir" > "$state/.watch.lock/fm-home"
+  printf '%s\n' "$WATCH" > "$state/.watch.lock/watcher-path"
+  printf '%s\n' "stale watcher identity" > "$state/.watch.lock/pid-identity"
+  # A beacon far older than the stale grace: the child refuses to take over a
+  # live-but-frozen holder, says so on stderr, and exits 1.
+  touch -t 200001010000 "$state/.last-watcher-beat"
+
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" \
+    FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH_ARM" > "$out" 2>/dev/null &
+  pid=$!
+  i=0
+  while [ "$i" -lt "$ARM_FAIL_EXIT_POLLS" ] && is_live_non_zombie "$pid"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  is_live_non_zombie "$pid" && { reap "$pid"; fail "arm did not close after its watcher refused the stale live lock"; }
+  wait "$pid" 2>/dev/null || true
+  kill "$live" 2>/dev/null || true
+  wait "$live" 2>/dev/null || true
+
+  row=$(grep 'reason=nonzero-exit' "$state/.watch-cycle-exits.log" 2>/dev/null | tail -1)
+  [ -n "$row" ] || fail "no nonzero-exit lifecycle record was written: $(cat "$state/.watch-cycle-exits.log" 2>/dev/null)"
+  case "$row" in
+    *"stderr=watcher: lock held by live pid"*) ;;
+    *) fail "the lifecycle record did not carry the watcher's stderr: $row" ;;
+  esac
+  # successor= must remain the LAST field: cycle_mark_predecessor_successor
+  # rewrites it with a line-anchored substitution.
+  case "$row" in
+    *"	successor=none") ;;
+    *) fail "the stderr field displaced successor= from the end of the record: $row" ;;
+  esac
+  # The capture files are temporary; neither may be left behind.
+  [ -z "$(find "$state" -maxdepth 1 -name '.watch-arm-stderr.*' -print -quit)" ] \
+    || fail "the watcher stderr capture file leaked into state/"
+  [ -z "$(find "$state" -maxdepth 1 -name '.watch-arm-output.*' -print -quit)" ] \
+    || fail "the watcher stdout capture file leaked into state/"
+  pass "an unexplained watcher close records its stderr in the lifecycle ledger"
+}
+
+test_attached_successor_cycle_does_not_inherit_owned_childs_stderr() {
+  local dir state fakebin armout armpid peer identity sentinel i lock_pid err_file row
+  dir=$(make_case cycle-ledger-stderr-attach-handoff)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  armout="$dir/arm.out"
+  sentinel="SENTINEL: prior owned-child diagnostic $$"
+
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" \
+    FM_POLL=0.2 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    FM_ARM_ATTACH_POLL=0.1 "$WATCH_ARM" > "$armout" &
+  armpid=$!
+  i=0
+  while [ "$i" -lt 100 ]; do
+    grep -qF 'watcher: started pid=' "$armout" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -qF 'watcher: started pid=' "$armout" \
+    || { reap "$armpid"; fail "arm did not start an owned child watcher: $(cat "$armout")"; }
+  lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  grep -qF "watcher: started pid=$lock_pid" "$armout" >/dev/null \
+    || { reap "$armpid"; fail "arm's started line did not name the owned child"; }
+
+  # Seed the owned child's real stderr capture with distinguishing text before it
+  # exits - standing in for a production diagnostic (a check timeout, a crashed
+  # builtin) that lands in this same real file. The test only needs SOME content
+  # there for the arm's own cycle_capture_stderr to read, not a specific trigger.
+  i=0
+  err_file=
+  while [ "$i" -lt 50 ]; do
+    err_file=$(find "$state" -maxdepth 1 -name '.watch-arm-stderr.*' -print -quit 2>/dev/null)
+    [ -n "$err_file" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -n "$err_file" ] || { reap "$armpid"; fail "arm's stderr capture file was never created"; }
+  printf '%s\n' "$sentinel" >> "$err_file"
+
+  # A real, live, healthy successor: swap the lock to name it so the owned
+  # child self-evicts (clean rc=0, no wake) on its very next poll.
+  sleep 300 &
+  peer=$!
+  identity=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$peer") \
+    || { reap "$armpid"; kill "$peer" 2>/dev/null; fail "could not identify peer pid"; }
+  printf '%s\n' "$peer" > "$state/.watch.lock/pid"
+  printf '%s\n' "$identity" > "$state/.watch.lock/pid-identity"
+  touch "$state/.last-watcher-beat"
+
+  i=0
+  while [ "$i" -lt 100 ]; do
+    grep -qF "watcher: attached pid=$peer" "$armout" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -qF "watcher: attached pid=$peer" "$armout" >/dev/null || {
+    reap "$armpid"; kill "$peer" 2>/dev/null || true; wait "$peer" 2>/dev/null || true
+    fail "arm did not attach to the successor after the owned child's clean exit: $(cat "$armout")"
+  }
+
+  row=$(grep -F "watcher_pid=$lock_pid" "$state/.watch-cycle-exits.log" 2>/dev/null \
+    | grep 'reason=unexpected-clean-exit' | tail -1)
+  case "$row" in
+    *"stderr=$sentinel"*) ;;
+    *)
+      reap "$armpid"; kill "$peer" 2>/dev/null || true; wait "$peer" 2>/dev/null || true
+      fail "the owned child's own lifecycle record did not carry its stderr: $row"
+      ;;
+  esac
+
+  # Kill the peer with no successor of its own: the attached cycle must close and
+  # write ITS OWN lifecycle row - the one that must not inherit the dead owned
+  # child's stderr.
+  kill "$peer" 2>/dev/null || true
+  wait "$peer" 2>/dev/null || true
+  wait_for_exit "$armpid" "$ARM_FAIL_EXIT_POLLS"
+
+  row=$(grep -F "watcher_pid=$peer" "$state/.watch-cycle-exits.log" 2>/dev/null | tail -1)
+  [ -n "$row" ] || fail "no lifecycle record was written for the attached successor cycle"
+  case "$row" in
+    *"stderr=$sentinel"*)
+      fail "the attached successor's lifecycle record leaked the previous owned child's stderr: $row"
+      ;;
+    *) ;;
+  esac
+  pass "an attached successor cycle does not inherit the previous owned child's stale stderr"
 }
 
 test_stopped_watcher_is_live_but_stale_then_exit_is_classified() {
@@ -1234,4 +1398,6 @@ test_arm_propagates_immediate_wake_before_confirmation
 test_arm_waits_for_peer_beacon_after_child_stands_down
 test_arm_fails_loud_when_no_fresh_watcher_confirmable
 test_cycle_exit_ledger_links_successor_and_stays_bounded
+test_cycle_ledger_records_watcher_stderr
+test_attached_successor_cycle_does_not_inherit_owned_childs_stderr
 test_stopped_watcher_is_live_but_stale_then_exit_is_classified

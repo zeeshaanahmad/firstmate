@@ -380,6 +380,16 @@ test_marker_publish_failure_retains_recovery_evidence() {
   fakebin="$dir/fakebin"
   mkdir -p "$home/data"
 
+  # This cycle must have something to publish, or there is no publication to
+  # fail: a close with no delivery, no queued row and no open captain call
+  # deliberately publishes nothing at all (see watcher_close_has_nothing_to_recover
+  # in bin/fm-watch.sh). An already-surfaced captain call is the smallest way to
+  # own real recovery evidence while keeping the durable queue empty; priming its
+  # seen marker stops the watcher from surfacing it and ending the cycle early.
+  printf 'needs-decision [key=publish-failure]: held for the captain\n' > "$state/held.status"
+  prime_status_seen "$state" "$state/held.status" \
+    || fail "could not prime the marker-failure fixture decision as already surfaced"
+
   start_rearm_arm "$home" "$state" "$fakebin" "$dir/first-arm.out"
   first_arm=$ARM_PID
   is_live_non_zombie "$first_arm" || fail "marker-failure fixture watcher did not stay live"
@@ -791,6 +801,16 @@ test_downtime_marker_does_not_follow_symlink() {
   armout="$dir/arm.out"
   sentinel="$dir/sentinel"
   mkdir -p "$home/data"
+
+  # Publication is what this case tests, and a close with no delivery, no queued
+  # row and no open captain call deliberately publishes nothing (see
+  # watcher_close_has_nothing_to_recover in bin/fm-watch.sh). An already-surfaced
+  # captain call gives the cycle real recovery evidence to publish without
+  # queuing a row; priming its seen marker keeps the watcher from surfacing it
+  # and ending the cycle early.
+  printf 'needs-decision [key=symlink-guard]: held for the captain\n' > "$state/held.status"
+  prime_status_seen "$state" "$state/held.status" \
+    || fail "could not prime the symlink fixture decision as already surfaced"
 
   start_rearm_arm "$home" "$state" "$fakebin" "$armout"
   is_live_non_zombie "$ARM_PID" || fail "symlink fixture watcher did not stay live"
