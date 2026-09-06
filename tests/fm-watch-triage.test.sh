@@ -1341,7 +1341,7 @@ test_turnend_churn_absorb_arrays_stay_guarded() {
     plain_count=$(printf '%s\n' "$fn_body" | grep -Fo "\${${name}[@]}" | wc -l | tr -d ' ')
     guard_count=$(printf '%s\n' "$fn_body" | grep -Fo "\${${name}[@]+" | wc -l | tr -d ' ')
     [ "$plain_count" = "$guard_count" ] \
-      || fail "signal_turnend_panes_churned expands \${$name[@]} unguarded (plain=$plain_count guard=$guard_count) - Bash 3.2 treats an empty array expansion under set -u as an unbound variable and kills the watcher"
+      || fail "signal_turnend_panes_churned expands \${${name}[@]} unguarded (plain=$plain_count guard=$guard_count) - Bash 3.2 treats an empty array expansion under set -u as an unbound variable and kills the watcher"
   done
   pass "signal_turnend_panes_churned guards every possibly-empty array expansion (missing_keys, created_keys)"
 }
