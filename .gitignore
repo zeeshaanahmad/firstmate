@@ -11,3 +11,6 @@ __pycache__/
 *.pyc
 .env
 config/
+# tests/fm-lint.test.sh builds its lint parity fixture with mktemp under the repo root,
+# and a killed or timed-out run of that suite leaves the directory behind.
+.fm-lint-parity.*
