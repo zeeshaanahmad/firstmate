@@ -274,18 +274,26 @@ test_shell_pane_steer_is_refused() {
   grep -F 'rebase onto main' "$HOME_DIR/state/deadmate.inbox/001.msg" >/dev/null || fail \
     "the durable record does not carry the steer text"
 
-  # The report must say the agent was ABSENT and that the record is waiting,
-  # because the next move is recovering the worker, not resending.
+  # The report must name the ABSENT agent's endpoint and name recovery as the
+  # next move. Since upstream #3823 the record is NOT waiting for the ladder to
+  # re-ring it: the watcher surfaces a dead pane once for recovery and never
+  # rings it again, so the report must say that instead of promising a re-ring
+  # that will not happen. Outcomes 4 and 5 below still walk the ladder, and
+  # still say so - which is why they keep their own distinct wording.
   case "$SEND_OUT" in
-    *"no live agent"*) ;;
-    *) fail "the result did not say the endpoint has no live agent: $SEND_OUT" ;;
+    *"agent in $SHELL_PANE has exited"*) ;;
+    *) fail "the result did not name the endpoint whose agent has exited: $SEND_OUT" ;;
   esac
   case "$SEND_OUT" in
-    *"waits for a live agent"*) ;;
-    *) fail "the result did not say the record is waiting for a live agent: $SEND_OUT" ;;
+    *"for recovery"*) ;;
+    *) fail "the result did not name recovery as the next move: $SEND_OUT" ;;
+  esac
+  case "$SEND_OUT" in
+    *"will not re-ring a dead pane"*) ;;
+    *) fail "the result did not say the ladder stops for a proven-dead pane: $SEND_OUT" ;;
   esac
 
-  pass "an ordinary steer to a shell-held endpoint is recorded, never typed, and reported as reaching no live agent"
+  pass "an ordinary steer to a shell-held endpoint is recorded, never typed, and reported as reaching an exited agent"
 }
 
 # --- 2: the TYPED plane still refuses outright ------------------------------
@@ -414,7 +422,12 @@ test_ring_agent_lost_during_doorbell_is_not_reported_delivered() {
   # received nothing byte-for-byte. Asserting on the exact leading text (as
   # opposed to a completely empty log) is what keeps this equivalent to case
   # 4's `! grep -F '/status'` check rather than a stricter, more fragile one.
-  ! grep -F 'Firstmate instruction waiting' "$RING_LOSS_LOG" >/dev/null || fail \
+  # That leading text is the `: ` shell no-op upstream #3823 put in front of
+  # the doorbell, so it is the colon this race eats. The surviving suffix
+  # reaching a bare shell is the residual race fm_task_inbox_ring's own header
+  # accepts and documents ("the `: ` prefix protects complete lines only");
+  # this case pins the reporting contract for it, not its absence.
+  ! grep -F ': Firstmate instruction waiting' "$RING_LOSS_LOG" >/dev/null || fail \
     "the doorbell line was submitted into the pane after its agent exited: $(cat "$RING_LOSS_LOG")"
 
   # The report must name this exact outcome - typed, Enter sent, then lost -

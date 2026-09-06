@@ -848,12 +848,12 @@ test_remote_ring_no_agent_names_absent_endpoint() {
   # that verdict string (unlike tmux's fm_backend_tmux_send_text_submit,
   # covered by tests/fm-send-shell-pane-refusal.test.sh) - deliberately not
   # fabricated here.
-  assert_contains "$err" "no live agent at fm-remote:p1" \
+  assert_contains "$err" "agent in fm-remote:p1 has exited" \
     "the remote no-agent ring must name the absent endpoint"
-  assert_contains "$err" "doorbell line was NOT typed there" \
+  assert_contains "$err" "doorbell not typed" \
     "the remote no-agent ring must say the doorbell line was not typed"
-  assert_contains "$err" "waits for a live agent" \
-    "the remote no-agent ring must say the record waits for a live agent"
+  assert_contains "$err" "for recovery" \
+    "the remote no-agent ring must name recovery as the next move"
 
   grep -qF 'agent get' "$herdr_log" || fail "the fake herdr CLI's agent-liveness read was never exercised"
 
