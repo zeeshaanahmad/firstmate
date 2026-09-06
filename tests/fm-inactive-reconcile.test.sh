@@ -32,8 +32,6 @@ make_tools() { # <world>
   mkdir -p "$fake"
   cat > "$fake/fm-crew-state.sh" <<'SH'
 #!/usr/bin/env bash
-[ -n "${FM_CREW_STATE_SKIP_FORGE_CHECK_LOG:-}" ] && \
-  printf '%s\n' "${FM_CREW_STATE_SKIP_FORGE_CHECK:-}" >> "$FM_CREW_STATE_SKIP_FORGE_CHECK_LOG"
 printf 'state: %s · source: fake\n' "${FM_FAKE_CREW_STATE:-unknown}"
 SH
   cat > "$fake/tmux" <<'SH'
@@ -164,28 +162,6 @@ test_main_direct_terminal_presentation_receipt() {
   FM_HOME="$MAIN" FM_STATE_OVERRIDE="$MAIN/state" "$DRAIN" --ack-through "$seq" --recovery-generation "$generation"
   [ "$(outcome_count "$MAIN" presented)" = 1 ] || fail "acknowledged presentation did not receive its own receipt"
   pass "main direct terminal presentation has a durable receipt"
-}
-
-# fm-crew-state.sh can now shell out to gh for a forge-verified merge/failure
-# claim (see bin/fm-crew-state.sh's forge_pr_state). This reconciler's own
-# header documents that it "never invokes gh, gh-axi, curl, ..." and runs a
-# bounded scan even during a locked session start, so its crew-state
-# invocation must set FM_CREW_STATE_SKIP_FORGE_CHECK=1 to keep that contract
-# true (captain decision, ask-user finding document-1, run
-# 01KZWSPTVGH227SEC0TBZNW0H2). tests/fm-crew-state.test.sh proves the flag,
-# once set, actually suppresses the gh call in the real script; this proves
-# the OTHER half - that this call site actually sets it - so removing the
-# wiring at bin/fm-inactive-reconcile.sh's $CREW_STATE_BIN invocation fails
-# here even though this file's crew-state stub never calls gh itself.
-test_scan_sets_skip_forge_check_flag() {
-  make_world skip-forge-flag
-  write_child "$MAIN" child 'working: still going'
-  FM_CREW_STATE_SKIP_FORGE_CHECK_LOG="$WORLD/skip-forge.log" FM_FAKE_CREW_STATE='working' \
-    run_reconcile "$MAIN" --startup
-  [ -s "$WORLD/skip-forge.log" ] || fail "crew-state invocation did not run at all"
-  [ "$(cat "$WORLD/skip-forge.log")" = 1 ] || \
-    fail "reconciler's crew-state invocation did not set FM_CREW_STATE_SKIP_FORGE_CHECK=1 (got: $(cat "$WORLD/skip-forge.log"))"
-  pass "the reconciler's crew-state invocation sets FM_CREW_STATE_SKIP_FORGE_CHECK=1"
 }
 
 # A secondmate delivers a child's terminal ledger line to the parent on the
@@ -811,7 +787,6 @@ test_reconciliation_never_calls_forge() {
 }
 
 test_main_direct_terminal_presentation_receipt
-test_scan_sets_skip_forge_check_flag
 test_local_secondmate_delivers_terminal_ledger_line
 test_busy_child_does_not_starve_later_ledger_outcomes
 test_secondmate_ledger_delivery_carries_report_and_failure

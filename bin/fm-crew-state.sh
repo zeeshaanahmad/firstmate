@@ -45,29 +45,22 @@
 #      round never reads as an older failed run (rule owned by
 #      fm_nm_runs_status_for_worktree in bin/fm-nm-run-lib.sh).
 #      The run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
-#      awaiting_approval/fix_review -> parked (with the gate and its findings),
-#      terminal checks-passed -> done, failed -> failed. A parked detail also
-#      names WHICH SIDE MUST ACT, because the two kinds of park want opposite
-#      handling: an ask-user finding is firstmate's decision under the authority
-#      contract, and any other gate is the worker's to drive and wants a nudge
-#      rather than a recovery. EXCEPT: while the active step
-#      is ci, `axi status` alone cannot tell "still waiting on checks" from
-#      "checks green, waiting on merge" (see nm_ci_checks_state) - a ci-step
-#      log-tail check overrides working -> done once checks read green, so a
-#      green PR is never silently read as still-validating.
-#      A terminal outcome of passed or cancelled is no-mistakes' own judgment
-#      about ITS run, not a live read of GitHub, and two live incidents
-#      (2026-08-12: outcome=passed surfaced "PR merged/closed" while the forge
-#      still showed the PR open; 2026-08-13: a cancelled run surfaced
-#      `state: failed` while the PR was actually open and green) proved that
-#      judgment unreliable enough to assert on its own. Neither is ever
-#      asserted from the run record alone: passed and cancelled are both
-#      checked against the forge (see forge_pr_state) when a PR is on record,
-#      and report unknown - never a fabricated done or failed - when the
-#      forge cannot confirm what the run record implies. Cancellation in
-#      particular carries no failure judgment by itself (`no-mistakes axi
-#      abort --help`: purely administrative), so it never falls back to
-#      failed even when unverifiable.
+#      awaiting_approval/fix_review -> parked (with gate findings), terminal
+#      passed/checks-passed -> done, failed/cancelled -> failed. EXCEPT: while
+#      the active step is ci, `axi status` alone cannot tell "still waiting on
+#      checks" from "checks green, waiting on merge" (see nm_ci_checks_state) -
+#      a ci-step log-tail check overrides working -> done once checks read
+#      green, so a green PR is never silently read as still-validating. And a
+#      terminal FAILED run whose only failure is the ci monitor step, after
+#      every substantive step completed and the ci log's last marker reads
+#      checks green, also reads done (held-for-merge), never failed: a monitor
+#      whose only remaining job is to observe a human merge decision must not
+#      convert the absence of that decision into a failure verdict
+#      (nm_failed_run_is_green_held_ci; 2026-09-05 jr-voice incident). In the
+#      coarse runs-ledger fallback (no steps table, no ci log), a terminal
+#      FAILED record whose daemon an explicit probe proves down reads unknown,
+#      never failed: an instrument failure must not read as work failure
+#      (nm_daemon_probe_down).
 #   3. Reconcile the status log: if its last line says needs-decision/blocked but
 #      the run-step shows the run moved on, the log is deterministically stale and
 #      is flagged superseded. A genuinely parked run plus a needs-decision log
@@ -417,6 +410,24 @@ nm_active_steps_rows() {
   '
 }
 
+# Rows of the `steps[N]{step,status,findings,duration_ms}:` table in the
+# captured run output ($RUN_OUT) - the full per-step ledger, present on
+# terminal runs too, unlike active_steps[] which the pipeline emits only while
+# a step is actually running or fixing. Column order is deliberately not
+# assumed: the header's own indentation bounds the block, and callers below
+# read the table as text.
+nm_steps_rows() {
+  printf '%s\n' "$RUN_OUT" | awk '
+    /^[[:space:]]*steps\[[0-9]+\]\{/ { hdr = index($0, "steps"); inblock = 1; next }
+    inblock {
+      if ($0 ~ /^[[:space:]]*$/) { inblock = 0; next }
+      match($0, /[^ \t]/)
+      if (RSTART <= hdr) { inblock = 0; next }
+      print
+    }
+  '
+}
+
 # 0 when the pipeline itself reports RECENT activity on an actively running or
 # fixing step. The client prefixes a step's `last_activity` with `quiet` once no
 # step log or native-agent lifecycle event has arrived for longer than its
@@ -429,6 +440,66 @@ nm_run_activity_is_recent() {
   rows=$(nm_active_steps_rows)
   [ -n "$rows" ] || return 1
   ! printf '%s\n' "$rows" | grep -q 'quiet'
+}
+
+# 0 when a terminal FAILED run's only failure is the ci monitor step and the
+# ci log's last recognized marker reads checks green. Requires the exact
+# shape, all on positive evidence: a steps[] table where every step completed
+# except exactly `ci` failed (any other non-completed status, or a second
+# failed step, disqualifies), plus nm_ci_checks_state=green (a genuinely red
+# check, or an unreadable ci log, keeps the failure a failure). This is the
+# orphaned-CI-monitor gap (2026-09-05 jr-voice): a run held for a captain
+# merge decision polls until the shared daemon restarts under it and marks
+# the run failed, although GitHub's own check state - the actual shippability
+# authority - is green and every substantive step completed.
+nm_failed_run_is_green_held_ci() {
+  local rows row rest step status saw_ci_failed
+  rows=$(nm_steps_rows)
+  [ -n "$rows" ] || return 1
+  saw_ci_failed=0
+  while IFS= read -r row; do
+    row=$(trim "$row")
+    step=$(trim "${row%%,*}")
+    rest=${row#*,}
+    status=$(strip_quotes "$(trim "${rest%%,*}")")
+    case "$status" in
+      completed) continue ;;
+      failed)
+        [ "$step" = ci ] || return 1
+        saw_ci_failed=1
+        continue
+        ;;
+      *) return 1 ;;
+    esac
+  done <<EOF
+$rows
+EOF
+  [ "$saw_ci_failed" = 1 ] || return 1
+  [ "$(nm_ci_checks_state)" = green ]
+}
+
+# Reclassify a terminal failed run as done (held-for-merge) when
+# nm_failed_run_is_green_held_ci matches, surfacing the run's PR URL so the
+# supervisor reads the concrete review-ready outcome instead of a failure.
+nm_reclassify_failed_run_as_held_green() {
+  nm_failed_run_is_green_held_ci || return 1
+  RUN_STATE="done"
+  RUN_DETAIL="checks green: PR held for merge (ci monitor ended)"
+  local pr_url
+  pr_url=$(strip_quotes "$(nm_field pr)")
+  [ -n "$pr_url" ] && RUN_DETAIL="$RUN_DETAIL: $pr_url"
+  return 0
+}
+
+# 0 when an explicit probe proves the shared daemon down: `no-mistakes daemon
+# status` is the canonical down-probe (the same one fm-brief.sh hands crews
+# before a blocked append) and exits non-zero when the daemon is not running.
+# Bounded like every other CLI call; a probe that fails for any reason -
+# refused socket, timeout, non-zero answer - means the daemon is not provably
+# up, which is the only fact the coarse fallback needs.
+nm_daemon_probe_down() {
+  fm_nm_run_checked "$WT" "$NM_TIMEOUT" daemon status >/dev/null || return 0
+  return 1
 }
 
 nm_ci_step_status() {
@@ -486,75 +557,6 @@ nm_ci_checks_state() {
     *) printf 'unknown' ;;
   esac
 }
-
-# Bounded `gh pr view <url> --json state -q .state` (same call bin/fm-pr-poll.sh
-# and bin/fm-teardown.sh's pr_is_merged already use to read this exact field),
-# so a merge/close claim comes from the forge rather than from no-mistakes'
-# own outcome judgment. Echoes merged, closed, or open on a clean forge read;
-# unknown when there is no PR to check, `gh` is unavailable, or the bounded
-# call errored or timed out - anything short of a positive forge answer is
-# unknown, never inferred from the run record it exists to double-check.
-# FM_CREW_STATE_SKIP_FORGE_CHECK=1 skips the gh call entirely and returns
-# unknown immediately - not a new code path, just an early exit into the
-# same fail-closed verdict this already returns when gh is unavailable. Set
-# by bin/fm-inactive-reconcile.sh's crew-state invocation, whose documented
-# header contract (never invokes gh, bounded FM_INACTIVE_RECONCILE_BUDGET_SECS
-# scan, safe inside a locked session-start) predates this forge check and
-# must stay true rather than being loosened for it.
-forge_pr_state() {  # <pr-url>
-  local pr_url=$1 state
-  [ -n "$pr_url" ] || { printf 'unknown'; return; }
-  [ "${FM_CREW_STATE_SKIP_FORGE_CHECK:-0}" = 1 ] && { printf 'unknown'; return; }
-  command -v gh >/dev/null 2>&1 || { printf 'unknown'; return; }
-  state=$(fm_bounded_cmd "$WT" "$NM_TIMEOUT" gh pr view "$pr_url" --json state -q .state 2>/dev/null) || { printf 'unknown'; return; }
-  state=$(trim "$state")
-  case "$state" in
-    MERGED) printf 'merged' ;;
-    CLOSED) printf 'closed' ;;
-    OPEN)   printf 'open' ;;
-    *)      printf 'unknown' ;;
-  esac
-}
-
-# Sets RUN_STATE/RUN_DETAIL for a terminal `passed` outcome. Never asserts
-# "PR merged/closed" from the run record alone (root cause of the
-# 2026-08-12 incident): a PR on record is checked against the forge first,
-# and only a forge MERGED/CLOSED answer becomes a done claim. A PR-less
-# passed run (no forge fact was ever implied) still reports done plainly.
-apply_passed_run_state() {
-  local pr_url
-  pr_url=$(strip_quotes "$(nm_field pr)")
-  if [ -z "$pr_url" ]; then
-    RUN_STATE="done"; RUN_DETAIL="run passed"
-    return
-  fi
-  case "$(forge_pr_state "$pr_url")" in
-    merged) RUN_STATE="done"; RUN_DETAIL="run passed: PR merged (forge-verified)" ;;
-    closed) RUN_STATE="done"; RUN_DETAIL="run passed: PR closed without merge (forge-verified)" ;;
-    open)   RUN_STATE=unknown; RUN_DETAIL="cannot confirm landed: run reports passed but forge shows PR still open" ;;
-    *)      RUN_STATE=unknown; RUN_DETAIL="cannot confirm landed: run reports passed but PR state could not be verified against the forge" ;;
-  esac
-}
-
-# Sets RUN_STATE/RUN_DETAIL for a `cancelled` run/outcome. Cancellation is a
-# purely administrative stop (`no-mistakes axi abort --help`: "Cancel a
-# pipeline run") and carries no judgment about the underlying work, so it
-# must never read as a task failure by itself (root cause of the 2026-08-13
-# incident: a cancelled run read as `failed` while the PR was actually open
-# and green). A PR on record is checked against the forge for the most
-# honest available answer; otherwise, or when unverifiable, this fails
-# closed to unknown rather than failed.
-apply_cancelled_run_state() {
-  local pr_url
-  pr_url=$(strip_quotes "$(nm_field pr)")
-  case "$(forge_pr_state "$pr_url")" in
-    merged) RUN_STATE="done"; RUN_DETAIL="run cancelled but PR already merged (forge-verified)" ;;
-    open)   RUN_STATE=unknown; RUN_DETAIL="cannot confirm outcome: run cancelled, forge shows PR still open - not a task failure" ;;
-    closed) RUN_STATE=unknown; RUN_DETAIL="cannot confirm outcome: run cancelled, forge shows PR closed without merge" ;;
-    *)      RUN_STATE=unknown; RUN_DETAIL="cannot confirm outcome: run cancelled, PR state could not be verified against the forge" ;;
-  esac
-}
-
 # Coarse fallback when the bare `axi status` answer is not this branch's own
 # matching run: either it names another branch (routine once several crews
 # validate the same underlying repo concurrently - a worktree with its own
@@ -691,8 +693,18 @@ if [ "$HAVE_RUN" = 1 ]; then
     case "$COARSE_STATUS" in
       running)   RUN_STATE=working; RUN_DETAIL="validating (background run)" ;;
       completed) RUN_STATE="done";  RUN_DETAIL="run completed" ;;
-      failed)    RUN_STATE=failed;  RUN_DETAIL="run failed" ;;
-      cancelled) RUN_STATE=unknown; RUN_DETAIL="cannot confirm outcome: run cancelled (coarse cross-branch listing has no reliable PR to verify)" ;;
+      failed)
+        # The ledger row is terminal but the coarse path has no steps table
+        # and no ci log, so the orphaned-monitor shape cannot be recognized
+        # here. With the daemon provably down, the row is unverified evidence
+        # from a dead instrument and must not read as work failure.
+        if nm_daemon_probe_down; then
+          RUN_STATE=unknown
+          RUN_DETAIL="no-mistakes daemon unreachable; last ledger record failed - unverified"
+        else
+          RUN_STATE=failed; RUN_DETAIL="run failed"
+        fi ;;
+      cancelled) RUN_STATE=failed;  RUN_DETAIL="run cancelled" ;;
       *)         RUN_STATE=unknown; RUN_DETAIL="runs list status: $COARSE_STATUS" ;;
     esac
   else
@@ -706,10 +718,13 @@ if [ "$HAVE_RUN" = 1 ]; then
 
     if [ -n "$outcome" ]; then
       case "$outcome" in
-        passed)        apply_passed_run_state ;;
+        passed)        RUN_STATE="done"; RUN_DETAIL="run passed: PR merged/closed" ;;
         checks-passed) RUN_STATE="done"; RUN_DETAIL="checks green: PR ready for review" ;;
-        failed)        RUN_STATE=failed; RUN_DETAIL="run failed" ;;
-        cancelled)     apply_cancelled_run_state ;;
+        failed)
+          if nm_reclassify_failed_run_as_held_green; then :; else
+            RUN_STATE=failed; RUN_DETAIL="run failed"
+          fi ;;
+        cancelled)     RUN_STATE=failed; RUN_DETAIL="run cancelled" ;;
         *)             RUN_STATE=unknown; RUN_DETAIL="outcome: $outcome" ;;
       esac
     elif [ -n "$awaiting" ] || [ "$status" = awaiting_approval ] || [ "$status" = fix_review ] || [ -n "$gate_status" ] || [ "$has_gate" = 1 ]; then
@@ -740,8 +755,11 @@ if [ "$HAVE_RUN" = 1 ]; then
         ci)             RUN_STATE=working; RUN_DETAIL="ci running" ;;
         running|fixing) RUN_STATE=working; RUN_DETAIL="validating ($status)" ;;
         completed)      RUN_STATE="done"; RUN_DETAIL="run completed" ;;
-        failed)         RUN_STATE=failed;  RUN_DETAIL="run failed" ;;
-        cancelled)      apply_cancelled_run_state ;;
+        failed)
+          if nm_reclassify_failed_run_as_held_green; then :; else
+            RUN_STATE=failed; RUN_DETAIL="run failed"
+          fi ;;
+        cancelled)      RUN_STATE=failed;  RUN_DETAIL="run cancelled" ;;
         "")             RUN_STATE=working; RUN_DETAIL="run active" ;;
         *)              RUN_STATE=working; RUN_DETAIL="run active ($status)" ;;
       esac
