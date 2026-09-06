@@ -1492,6 +1492,14 @@ handle_wake() {  # <reason> <state>
   case "$reason" in
     signal:*) kind=signal; arg="${reason#signal: }"
               decision=$(FM_STATUS_SPAN_ENDPOINT_FILE="$capture" classify_signal "$arg" "$state") ;;
+    needs-decision:*)
+              # docs/pi-supervision-branch.md: signal_files_actionable marks a
+              # decision-owned row's queued payload "needs-decision:" (instead of
+              # "signal:") purely so the Pi branch dispatcher excludes it from
+              # what it may claim - main still owns and classifies it exactly
+              # like any other signal row.
+              kind=signal; arg="${reason#needs-decision: }"
+              decision=$(FM_STATUS_SPAN_ENDPOINT_FILE="$capture" classify_signal "$arg" "$state") ;;
     stale:*)  kind=stale; arg="${reason#stale: }"; stale_detail="${arg#"$arg"}"
               case "$arg" in *" ("*) stale_detail="${arg#*" ("}"; arg="${arg%% \(*}" ;; esac
               task=$(window_to_task "$arg" "$state")
