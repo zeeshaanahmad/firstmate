@@ -143,6 +143,7 @@ cycle_begin() {
   cycle_watcher_identity=$3
   cycle_started_at=$(date +%s)
   cycle_lock_before=$(lock_snapshot)
+  cycle_stderr_snapshot=
   cycle_active=1
 }
 
