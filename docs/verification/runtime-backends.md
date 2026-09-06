@@ -393,6 +393,9 @@ pi, pi-signed, grok, kimi, and muse are not installed there.
 
 The steering channel's one behavioral assumption - a real worker agent follows the constant self-describing doorbell line (list the inbox, read and act on its records in numeric order, then `mv` each into `handled/`) - was verified on 2026-08-23 against every installed verified harness, on tmux 3.6a, macOS arm64, on an isolated private socket, driving the REAL `bin/fm-send.sh` end to end (durable record plus doorbell, with one mid-wait re-ring playing the watcher's role).
 
+Known staleness: the line's own bytes changed after that run, because it now leads with the POSIX shell no-op `: ` and single-quotes the inbox path so a pane whose agent has already exited executes nothing (`bin/fm-task-inbox-lib.sh` owns the line).
+The instruction it carries is unchanged and `tests/fm-task-inbox.test.sh` pins the no-op in real shells, but whether each installed harness still reads the prefixed line as an instruction is a harness-dependent verdict this record has not re-observed, so the per-harness results below owe a refresh through the same guard.
+
 ```sh
 FM_SEND_INBOX_LIVE_E2E=1 tests/fm-send-inbox-doorbell-live-e2e.test.sh
 ```
