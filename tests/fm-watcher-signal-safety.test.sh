@@ -206,6 +206,17 @@ test_watcher_signalled_in_critical_section_exits_and_releases() {
   queue_lock="$state/.wake-queue.lock"
   flag="$dir/release-holder"
 
+  # The close must actually attempt to persist recovery state, or there is no
+  # contended publication to report on: a close with no delivery, no queued row
+  # and no open captain call publishes nothing at all (see
+  # watcher_close_has_nothing_to_recover in bin/fm-watch.sh). An already-surfaced
+  # captain call gives this cycle real recovery evidence to persist while keeping
+  # the durable queue empty; priming its seen marker stops the watcher from
+  # surfacing it and ending the cycle before it can be pinned.
+  printf 'needs-decision [key=pinned-section]: held for the captain\n' > "$state/held.status"
+  prime_status_seen "$state" "$state/held.status" \
+    || fail "could not prime the pinned-section fixture decision as already surfaced"
+
   PATH="$dir/fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" 2> "$err" &
   pid=$!
@@ -303,6 +314,16 @@ test_cleanup_is_bounded_against_a_permanent_lock_holder() {
   mkdir -p "$dir/state" "$dir/fakebin"
   state="$dir/state"; out="$dir/watch.out"; err="$dir/watch.err"
   flag="$dir/never-released"
+
+  # Cleanup only reaches the marker lock when the close has recovery state to
+  # persist; a close with no delivery, no queued row and no open captain call
+  # publishes nothing and would never exercise the bound (see
+  # watcher_close_has_nothing_to_recover in bin/fm-watch.sh). An already-surfaced
+  # captain call supplies that state without queuing a row, and priming its seen
+  # marker keeps the watcher from surfacing it and closing early.
+  printf 'needs-decision [key=cleanup-bound]: held for the captain\n' > "$state/held.status"
+  prime_status_seen "$state" "$state/held.status" \
+    || fail "could not prime the cleanup-bound fixture decision as already surfaced"
 
   # A long poll keeps the watcher asleep between cycles, so the TERM below lands
   # outside every critical section.

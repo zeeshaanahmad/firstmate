@@ -221,5 +221,118 @@ test_handling_successor_does_not_go_blind() {
   pass "a resurfacing handling successor stays alive and supervises instead of going blind"
 }
 
+# A recovery episode exists so a wake buried by watcher downtime is presented
+# once more. A cycle that delivered no wake and left no queued row buried
+# nothing, so minting a generation for it makes the NEXT arm announce
+# "check: rearm-resurface" over an empty queue - a recovery turn with nothing to
+# recover. Every silent watcher death cost one of those.
+watcher_close_marker_after() {  # <state> <marker-token> [queue-row]
+  local state=$1 token=$2 row=${3:-} pid i
+  printf '%s\n' "$token" > "$state/.watcher-down"
+  chmod 600 "$state/.watcher-down"
+  if [ -n "$row" ]; then
+    printf '%s\n' "$row" > "$state/.wake-queue"
+    printf '1\n' > "$state/.wake-queue.seq"
+  fi
+  FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=0 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$state/../watch.out" 2>&1 &
+  pid=$!
+  i=0
+  while [ "$i" -lt 60 ]; do
+    [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$pid" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$pid" ] || {
+    kill -TERM "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    return 1
+  }
+  sleep 0.5
+  # Stop it without a delivery: the shape of a silent mid-poll death.
+  kill -TERM "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+}
+
+# What the NEXT non-successor arm would do, through the real startup sequence
+# (reopen an announced-but-unacked episode, then arm-check).
+next_arm_action() {  # <state>
+  local state=$1
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1/bin/fm-wake-lib.sh"
+    fm_recovery_marker_reopen_announced "$2" >/dev/null 2>&1
+    fm_recovery_marker_arm_check "$2" >/dev/null 2>&1
+    printf "%s\n" "$FM_RECOVERY_MARKER_ACTION"
+  ' _ "$ROOT" "$state/.watcher-down"
+}
+
+test_quiet_watcher_close_mints_no_recovery_generation() {
+  local dir state marker action
+  dir=$(make_case quiet-close-no-generation)
+  state="$dir/state"
+  : > "$state/crew.meta"
+  watcher_close_marker_after "$state" 'acked:downtime:already.acked.gen' \
+    || fail "the watcher did not take its lock in the quiet-close fixture"
+  marker=$(cat "$state/.watcher-down" 2>/dev/null || echo ABSENT)
+  case "$marker" in
+    acked:downtime:already.acked.gen) ;;
+    *) fail "a close that delivered nothing and queued nothing republished the recovery marker as '$marker'" ;;
+  esac
+  action=$(next_arm_action "$state")
+  [ "$action" = none ] \
+    || fail "the next arm would announce recovery ('$action') after a close with nothing to recover"
+  pass "a watcher close that delivered nothing and queued nothing mints no recovery generation"
+}
+
+# The other half, which must NOT change: a close leaving an undrained row is
+# exactly the gap recovery exists for, so that arm must still be told.
+test_close_with_queued_rows_still_recovers() {
+  local dir state action
+  dir=$(make_case quiet-close-with-rows)
+  state="$dir/state"
+  : > "$state/crew.meta"
+  watcher_close_marker_after "$state" 'acked:downtime:already.acked.gen' \
+    "$(date +%s)$(printf '\t')1$(printf '\t')signal$(printf '\t')crew.status$(printf '\t')signal: crew.status" \
+    || fail "the watcher did not take its lock in the queued-row fixture"
+  case "$(cat "$state/.watcher-down" 2>/dev/null || echo ABSENT)" in
+    pending:*|announced:*) ;;
+    *) fail "a close leaving an undrained row did not open a recovery episode" ;;
+  esac
+  action=$(next_arm_action "$state")
+  [ "$action" = recover ] \
+    || fail "an undrained queued row lost its recovery announcement (action '$action')"
+  pass "a watcher close that leaves rows queued still opens the recovery episode"
+}
+
+# The third thing a drain presents, and the one an empty-queue test alone would
+# miss: a captain call that is still open. Such a down interval legitimately has
+# no queue rows at all, so "queue is empty" must never be read as "nothing to
+# recover" - otherwise an unanswered decision silently stops being re-presented.
+test_close_with_an_open_decision_still_recovers() {
+  local dir state action
+  dir=$(make_case quiet-close-open-decision)
+  state="$dir/state"
+  : > "$state/ios.meta"
+  # An opened, unresolved captain call. Nothing else is pending: no delivery,
+  # and the durable queue stays empty for the whole fixture.
+  printf 'needs-decision [key=remote-signoff]: remote secondmate is held for captain sign-off\n' \
+    > "$state/ios.status"
+  watcher_close_marker_after "$state" 'acked:downtime:already.acked.gen' \
+    || fail "the watcher did not take its lock in the open-decision fixture"
+  [ ! -s "$state/.wake-queue" ] \
+    || fail "the open-decision fixture queued a row and no longer isolates the decision path"
+  case "$(cat "$state/.watcher-down" 2>/dev/null || echo ABSENT)" in
+    pending:*|announced:*) ;;
+    *) fail "a close with an open captain call did not open a recovery episode" ;;
+  esac
+  action=$(next_arm_action "$state")
+  [ "$action" = recover ] \
+    || fail "an open captain call lost its recovery announcement (action '$action')"
+  pass "a watcher close with an open captain call still opens the recovery episode"
+}
+
 test_handling_successor_does_not_go_blind
 test_unacknowledged_recovery_is_announced_once_per_generation
+test_quiet_watcher_close_mints_no_recovery_generation
+test_close_with_queued_rows_still_recovers
+test_close_with_an_open_decision_still_recovers

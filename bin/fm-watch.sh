@@ -604,20 +604,35 @@ signal_turnend_panes_churned() {  # <file> ...
       return 1
     fi
   done
-  for key in "${missing_keys[@]}"; do
+  # missing_keys and created_keys are legitimately empty on an ordinary pass,
+  # unlike churned_keys below, which is provably non-empty wherever it expands.
+  # missing_keys is empty on the common path where every churn-proven pane
+  # already opened its deferral window on an earlier poll, and created_keys is
+  # empty whenever the first key needs no new window.
+  # Under `set -u`, stock macOS Bash 3.2 treats "${empty[@]}" as an UNBOUND
+  # VARIABLE and kills the whole shell - not just the function - with a
+  # stderr-only "unbound variable" message and status 1.
+  # That is fatal here because this runs inside the watcher's poll loop: the
+  # watcher dies mid-cycle having printed no reason, logged no triage line and
+  # queued no wake, leaving only the EXIT trap to run.
+  # Bash 4.4+ (every Linux CI runner) expands the bare form to nothing, so the
+  # defect is invisible outside stock 3.2.
+  # Use the repo's guarded expansion, as in bin/fm-test-run.sh and
+  # bin/fm-backlog-transition-lib.sh.
+  for key in "${missing_keys[@]+"${missing_keys[@]}"}"; do
     marker="$STATE/.churn-since-$key"
     if (set -C; printf '%s' "$now_s" > "$marker") 2>/dev/null; then
       created_keys+=("$key")
       continue
     fi
-    for created in "${created_keys[@]}"; do
+    for created in "${created_keys[@]+"${created_keys[@]}"}"; do
       rm -f "$STATE/.churn-since-$created"
     done
     return 1
   done
   for key in "${churned_keys[@]}"; do
     if ! rm -f "$STATE/.stale-$key" "$STATE/.wedge-escalations-$key"; then
-      for created in "${created_keys[@]}"; do
+      for created in "${created_keys[@]+"${created_keys[@]}"}"; do
         rm -f "$STATE/.churn-since-$created"
       done
       return 1
@@ -1593,6 +1608,44 @@ reconcile_requests_detached() {
   RECONCILE_REQUEST_PID=$!
 }
 
+# True when this cycle is ending with nothing for the NEXT DRAIN to present.
+# A recovery episode exists so something buried by watcher downtime is surfaced
+# once more, and the drain surfaces exactly three things, so all three are
+# checked here:
+#   - the wake this cycle delivered, whose handling turn may have been cut short;
+#   - the rows still sitting in the durable queue;
+#   - the fleet-wide OPEN DECISIONS fold, which carries a captain call that is
+#     still open even when the queue is completely empty. That last one is why
+#     an empty-queue test is not sufficient on its own: a decision-only down
+#     interval legitimately recovers with `--ack-through 0`
+#     (tests/fm-watch-arm.test.sh pins it), and dropping it would quietly stop
+#     re-presenting a captain call nobody has answered.
+# With none of the three present the next arm would announce a recovery turn
+# with literally nothing in it, which is the noise this predicate removes.
+#
+# The queue read needs no lock. The file only grows under its producers, so it
+# can never be seen as empty while a row is durably present, and any producer
+# that appends after this read has already published downtime itself inside
+# fm_wake_append - so the recovery obligation is created by whoever creates the
+# row, never lost by this check.
+#
+# scan_open_decisions is the whole-file fold, deliberately NOT the cursor-backed
+# scan_open_decisions_incremental: the incremental one persists per-file byte
+# cursors that bin/fm-wake-drain.sh owns, and advancing them from here would
+# consume fold positions the next drain still needs. The whole-file fold is a
+# pure read. It costs one pass over the status logs, paid once per watcher
+# close rather than per poll, and only after the two cheap checks above have
+# already failed to find anything.
+watcher_close_has_nothing_to_recover() {
+  local open_decisions
+  [ -z "${FM_WATCH_DELIVERED_REASON:-}" ] || return 1
+  [ ! -s "$FM_WAKE_QUEUE" ] || return 1
+  # A fold that cannot be read is not evidence of "nothing open": keep the
+  # episode rather than risk silencing a captain call.
+  open_decisions=$(scan_open_decisions "$STATE") || return 1
+  [ -z "$open_decisions" ] || return 1
+}
+
 watcher_cleanup() {
   local cleanup_status=0 owns_lock=0 transition=release-lock
   if [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" = "${WATCHER_PID:-}" ]; then
@@ -1600,6 +1653,12 @@ watcher_cleanup() {
     if [ "${WATCHER_RECOVERY_PENDING:-0}" -eq 1 ] \
       && [ "${FM_WATCH_DELIVERED_REASON:-}" = "check: rearm-resurface" ]; then
       transition=release-lock-existing
+    elif watcher_close_has_nothing_to_recover; then
+      # A cycle with nothing for the next drain to present - an ordinary
+      # stand-down, or a crash mid-poll - must not mint a recovery generation.
+      # Doing so made the next arm announce `check: rearm-resurface` against an
+      # empty queue, one empty supervision turn per silent death.
+      transition=release-lock-quiet
     fi
   fi
   fm_active_check_stop || cleanup_status=1
