@@ -24,7 +24,7 @@
 set -u
 
 # shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
 
 fm_live_gate default-on FM_HARNESS_LIVENESS_DRIFT tmux
 
