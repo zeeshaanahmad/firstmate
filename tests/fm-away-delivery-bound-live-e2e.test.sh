@@ -32,13 +32,10 @@ set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-if [ "${FM_AWAY_BOUND_LIVE:-0}" != 1 ]; then
-  echo "skip: set FM_AWAY_BOUND_LIVE=1 to run the live away-delivery-bound guard"
-  exit 0
-fi
+# shellcheck source=tests/lib.sh
+. "$ROOT/tests/lib.sh" || exit 1
 
-command -v tmux >/dev/null 2>&1 \
-  || { echo "not ok - FM_AWAY_BOUND_LIVE=1 but tmux is not installed" >&2; exit 1; }
+fm_live_gate opt-in FM_AWAY_BOUND_LIVE tmux
 
 # The bound comes from its owner, so this guard cannot drift from the shipped
 # default.

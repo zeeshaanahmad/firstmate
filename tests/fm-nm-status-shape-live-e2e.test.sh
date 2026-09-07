@@ -22,12 +22,13 @@
 # upgrade and before trusting refreshed evidence.
 set -u
 
-if [ "${FM_NM_STATUS_SHAPE_DRIFT:-0}" != 1 ]; then
-  echo "skip: set FM_NM_STATUS_SHAPE_DRIFT=1 to run the installed no-mistakes status-shape drift guard"
-  exit 0
-fi
-
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=tests/lib.sh
+. "$ROOT/tests/lib.sh" || exit 1
+
+fm_live_gate opt-in FM_NM_STATUS_SHAPE_DRIFT no-mistakes
+
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$ROOT/bin/fm-nm-run-lib.sh"
 # shellcheck source=bin/fm-liveness-lib.sh
@@ -41,8 +42,6 @@ fail() { printf 'not ok - %s\n' "$1" >&2; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
 note() { printf '# %s\n' "$1"; }
 
-command -v no-mistakes >/dev/null 2>&1 \
-  || fail "no-mistakes not found; this guard needs the real binary"
 NM_VERSION=$(no-mistakes --version 2>&1 | head -1)
 note "no-mistakes: $NM_VERSION"
 
