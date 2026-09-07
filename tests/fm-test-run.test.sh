@@ -182,8 +182,7 @@ init_primary_and_linked_worktree() {
   git -C "$repo" worktree add --quiet -b linked-probe "$linked"
   for tree in "$repo" "$linked"; do
     mkdir -p "$tree/bin" "$tree/tests"
-    cp "$RUNNER" "$tree/bin/fm-test-run.sh"
-    chmod +x "$tree/bin/fm-test-run.sh"
+    install_runner "$tree/bin"
     cat >"$tree/tests/probe.test.sh" <<PROBE
 #!/usr/bin/env bash
 echo "ok - probe suite"
