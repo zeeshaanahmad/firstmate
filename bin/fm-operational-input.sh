@@ -142,7 +142,13 @@ fm_operational_input_kind() {  # <message> <result-var>
       ;;
   esac
   # Front-truncated current envelope: the terminal marker is the only surviving
-  # proof of machine origin, and it still names the kind.
+  # proof of machine origin, and it still names the kind. A message that still
+  # carries its own header did not lose its head - it is a complete envelope
+  # with captain prose stuck to the front, and the terminator alone must not
+  # be trusted to call that operational input.
+  case "$message" in
+    *"$FM_OPERATIONAL_HEADER_PREFIX"*) return 1 ;;
+  esac
   if fm_operational_terminator_kind "$message" current_kind; then
     printf -v "$result_var" '%s' "$current_kind"
     return 0
