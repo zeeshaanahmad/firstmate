@@ -31,15 +31,12 @@
 # shellcheck disable=SC2016 # the model, not this test shell, reads the prompt text
 set -u
 
-if [ "${FM_CLAUDE_LIVE_E2E:-0}" != 1 ]; then
-  echo "skip: set FM_CLAUDE_LIVE_E2E=1 to run the Claude attribution guard"
-  exit 0
-fi
-
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # shellcheck source=tests/lib.sh
 . "$ROOT/tests/lib.sh" || exit 1
+
+fm_live_gate opt-in FM_CLAUDE_LIVE_E2E claude
 
 CLAUDE_BIN=$(fm_test_resolve_harness_binary claude) \
   || fail "claude not found: this guard must exercise the installed harness, and reporting a pass without one would check nothing"

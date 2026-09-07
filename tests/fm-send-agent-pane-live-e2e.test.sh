@@ -27,19 +27,15 @@
 # itself. That is a small, deliberate token cost per installed harness.
 set -u
 
-if [ "${FM_SEND_AGENT_PANE_LIVE:-0}" != 1 ]; then
-  echo "skip: set FM_SEND_AGENT_PANE_LIVE=1 to run the installed-harness steer corroboration guard"
-  exit 0
-fi
-
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 1
+
+fm_live_gate opt-in FM_SEND_AGENT_PANE_LIVE tmux
 
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
 note() { printf '# %s\n' "$1"; }
 
-command -v tmux >/dev/null 2>&1 || fail "tmux not found"
 BASH_BIN=$(command -v bash) || fail "bash not found"
 REAL_TMUX=$(command -v tmux)
 SOCKET="fm-send-agent-pane-$$"
