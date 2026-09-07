@@ -1894,7 +1894,7 @@ const expectedOperationalTexts = Array.from({ length: expected }, (_, index) => 
     ? "\u2063FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: signal: /home/fixture/github/kunchenguid/firstmate/state/oss-triage-t4.status\n\nRun bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned."
     : label === "legacy_away" && suffix === "ONE"
       ? "\u2063Supervisor escalate (LEGACY_AWAY_E2E)"
-      : `\u2063FIRSTMATE_OP: v1 watcher: MONITOR_${label}_${suffix}`;
+      : `\u2063FIRSTMATE_OP: v1 watcher: MONITOR_${label}_${suffix}\u2063FIRSTMATE_OP_END: v1 watcher`;
 });
 const matching = entries.filter((entry) => {
   const entryText = entry.type === "message"
