@@ -79,11 +79,14 @@
 #   check: inactive-outcome bounded poll-loop reconciliation found a suspicious
 #                          inactive terminal outcome that still lacks its durable
 #                          upstream receipt
-#   check: secondmate wake-loop stalled: mate=<id> row=<seq> age=<seconds>s
-#                          the oldest valid row in an endpoint-recorded local
-#                          secondmate home's durable wake queue exceeded
-#                          FM_SECONDMATE_WAKE_STALL_SECS; observation is read-only
-#                          and one parent receipt suppresses repeats for that row
+#   check: secondmate wake-loop stalled: mate=<id> row=<seq> idle=<seconds>s
+#                          an actionable row in an endpoint-recorded local
+#                          secondmate home's durable wake queue did not advance
+#                          between observations for FM_SECONDMATE_WAKE_STALL_SECS
+#                          while the mate was not in an active turn; declared
+#                          external-wait pause rows do not feed this escalation,
+#                          observation is read-only, and one parent notification
+#                          covers each no-progress episode
 # For normal supervision, resume the session-start primary-harness protocol
 # after each printed reason. Direct duplicate invocations of this script still
 # no-op through the watcher singleton lock.
@@ -161,8 +164,10 @@ WATCHER_CLEANUP_LOCK_TICKS=${FM_WATCHER_CLEANUP_LOCK_TICKS:-20}
 # appended to that garbage. Arithmetic under `set -u` then aborts on the stray
 # token (e.g. the word "File" read as an unset variable), which silently kills the
 # watcher mid-cycle. Detect the platform once and pick the right form.
+# On Darwin, call /usr/bin/stat rather than PATH-resolved stat so GNU coreutils
+# cannot shadow the BSD `-f` syntax.
 if [ "$(uname)" = Darwin ]; then
-  stat_mtime() { stat -f %m "$1" 2>/dev/null; }        # epoch seconds of mtime
+  stat_mtime() { /usr/bin/stat -f %m "$1" 2>/dev/null; }        # epoch seconds of mtime
 else
   stat_mtime() { stat -c %Y "$1" 2>/dev/null; }
 fi
@@ -224,8 +229,12 @@ STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provabl
 # between completed turns, including long tool calls, builds, or test runs.
 BUSY_TURN_MAX_SECS=${FM_BUSY_TURN_MAX_SECS:-3600}
 # A local secondmate's foreign queue is checked on every poll, but only after this
-# bounded age can it produce a parent notification.
-SECONDMATE_WAKE_STALL_SECS=${FM_SECONDMATE_WAKE_STALL_SECS:-60}
+# bounded interval with no drain progress can it produce a parent notification.
+# A healthy mate drains its queue between turns, not inside one, so this default
+# sits above a real turn; it is only the backstop behind the active-turn gate in
+# secondmate_wake_stall_tick, never a substitute for it.
+SECONDMATE_WAKE_STALL_SECS=${FM_SECONDMATE_WAKE_STALL_SECS:-}
+case "$SECONDMATE_WAKE_STALL_SECS" in ''|*[!0-9]*|0) SECONDMATE_WAKE_STALL_SECS=180 ;; esac
 # A crew that declared a pause is idling on a known external wait, so its stale
 # pane is absorbed rather than wedge-escalated.
 # A captain-held or paused crew whose agent has confidently exited uses the same
@@ -655,14 +664,23 @@ recorded_windows() {
   done
 }
 
-# Print the oldest structurally valid row in a local secondmate's foreign queue.
-# This is a read-only observation: the receiving home owns acknowledgement and
-# this parent never changes the row or the foreign queue.
+# Print the oldest structurally valid ACTIONABLE row in a local secondmate's
+# foreign queue. A stale recheck that explicitly identifies itself as a declared
+# external-wait pause is not evidence that the mate's wake loop is stuck: the
+# pause cadence already owns that bounded visibility, and blocked waits remain
+# actionable because they do not carry this declaration. This is a read-only
+# observation: the receiving home owns acknowledgement and this parent never
+# changes the row or the foreign queue.
 secondmate_oldest_queue_row() {  # <queue-path>
   local queue=$1
   [ -f "$queue" ] && [ ! -L "$queue" ] || return 0
   awk -F '\t' '
-    NF >= 5 && $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ {
+    function declared_external_pause(kind, payload) {
+      return kind == "stale" \
+        && payload ~ /^stale: .*\(paused [0-9]+s, awaiting external - declared (pause,|paused\))/
+    }
+    NF >= 5 && $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ \
+      && !declared_external_pause($3, $5) {
       if (!found || $2 < seq) {
         found = 1
         seq = $2
@@ -673,14 +691,39 @@ secondmate_oldest_queue_row() {  # <queue-path>
   ' "$queue" 2>/dev/null || true
 }
 
-# Surface one durable parent check for one unchanged foreign row after its
-# bounded age. The primary marker and queued-key check make repeated watcher
-# cycles converge without a notification storm, while an empty queue removes
-# only this home's marker so a later row can be observed.
+# 0 iff <task> is demonstrably inside an active turn, through the watcher's own
+# busy-state knowledge: an exact busy verdict from the semantic contract, bounded
+# by the same BUSY_TURN_MAX_SECS that stops a busy pane from proving liveness
+# forever. A mate mid-turn has not stopped draining its queue - it simply drains
+# between turns - so this gate, not the elapsed interval, is what separates a
+# healthy mate from a frozen wake loop. Any absence of proof (no window, a failed
+# capture, an idle or unknown verdict, a busy pane past the bound) is NOT an
+# active turn, so a frozen queue still escalates.
+secondmate_in_active_turn() {  # <task> <window>
+  local task=$1 w=$2 tail40
+  [ -n "$w" ] || return 1
+  ! busy_turn_over_age "$task" || return 1
+  tail40=$(fm_backend_capture "$(window_backend "$w")" "$w" 40 "$(window_label "$w")" 2>/dev/null) || return 1
+  window_is_busy "$w" "$tail40"
+}
+
+# Surface one durable parent check when the foreign queue's drain position has
+# not moved for the bounded interval. The progress marker records that position
+# as the same epoch-sequence row identity the stall receipts use, so the timer
+# restarts whenever a different row becomes the oldest actionable one - as the
+# mate drains, and as a queue reprovisioned under the same task id starts its
+# own generation of rows at whatever sequence it restarts, and neither is a
+# continued no-progress episode; row creation time belongs to that identity but
+# never to the interval. A moved position ends an alerted episode and starts a
+# new observation interval, so a newly-oldest row cannot alert immediately while
+# a later genuine freeze remains visible. A mate demonstrably inside an active
+# turn never escalates, so the interval is only the backstop behind that gate.
+# Receipts close the append-before-marker crash window without changing the
+# foreign queue.
 secondmate_wake_stall_tick() {
   local now=$(( $(date +%s) )) threshold=$SECONDMATE_WAKE_STALL_SECS
-  local meta task kind remote_host home queue row epoch seq row_key marker receipt receipt_dir notify_key queued age reason
-  case "$threshold" in ''|*[!0-9]*|0) threshold=60 ;; esac
+  local meta task kind remote_host home queue row epoch seq row_key marker progress_marker progress observed_at observed_key
+  local receipt receipt_dir notify_key queued idle reason episode_alerted
   # Endpoint metadata admits this queue-loop check; secondmate-liveness owns registered mates whose endpoint is missing or dead.
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue
@@ -698,9 +741,10 @@ secondmate_wake_stall_tick() {
     queue="$home/state/.wake-queue"
     row=$(secondmate_oldest_queue_row "$queue")
     marker="$STATE/.secondmate-wake-stall-$task"
+    progress_marker="$STATE/.secondmate-wake-progress-$task"
     receipt_dir="$STATE/.secondmate-wake-stall-receipts/$task"
     if [ -z "$row" ]; then
-      rm -f "$marker"
+      rm -f "$marker" "$progress_marker"
       if [ -e "$receipt_dir" ] || [ -L "$receipt_dir" ]; then
         [ -d "$receipt_dir" ] && [ ! -L "$receipt_dir" ] || return 1
         rm -rf -- "$receipt_dir" || return 1
@@ -712,17 +756,39 @@ $row
 EOF
     case "$epoch" in ''|*[!0-9]*) continue ;; esac
     case "$seq" in ''|*[!0-9]*) continue ;; esac
-    age=$((now - epoch))
-    [ "$age" -ge "$threshold" ] || continue
     row_key="$epoch-$seq"
-    receipt="$receipt_dir/$row_key"
+    episode_alerted=0
     if [ -e "$marker" ] || [ -L "$marker" ]; then
       [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
+      episode_alerted=1
     fi
-    [ "$(cat "$marker" 2>/dev/null || true)" = "$row_key" ] && continue
-    [ "$(cat "$receipt" 2>/dev/null || true)" = "$row_key" ] && continue
+    progress=$(cat "$progress_marker" 2>/dev/null || true)
+    observed_at=${progress%%[[:space:]]*}
+    observed_key=${progress#*[[:space:]]}
+    if [ "$observed_at" = "$progress" ]; then
+      observed_key=
+    else
+      observed_key=${observed_key%%[[:space:]]*}
+    fi
+    case "$observed_at" in ''|*[!0-9]*) observed_at= ;; esac
+    case "$observed_key" in ''|*[!0-9-]*) observed_key= ;; esac
+    if [ -z "$observed_at" ] || [ -z "$observed_key" ] \
+      || [ "$now" -lt "$observed_at" ] || [ "$row_key" != "$observed_key" ]; then
+      fm_wake_secondmate_progress_marker_write "$task" "$now" "$row_key" || return 1
+      [ "$episode_alerted" -eq 0 ] || rm -f "$marker" || return 1
+      continue
+    fi
+    [ "$episode_alerted" -eq 0 ] || continue
+    idle=$((now - observed_at))
+    [ "$idle" -ge "$threshold" ] || continue
+    ! secondmate_in_active_turn "$task" "$(fm_backend_target_of_meta "$meta")" || continue
+    receipt="$receipt_dir/$row_key"
+    if [ "$(cat "$receipt" 2>/dev/null || true)" = "$row_key" ]; then
+      fm_wake_secondmate_stall_marker_write "$task" "$row_key" || return 1
+      continue
+    fi
     notify_key="secondmate-wake-loop-$task-$row_key"
-    reason="check: secondmate wake-loop stalled: mate=$task row=$seq age=${age}s"
+    reason="check: secondmate wake-loop stalled: mate=$task row=$seq idle=${idle}s"
     queued=$(fm_wake_queued_keys check)
     if ! printf '%s\n' "$queued" | grep -Fx "$notify_key" >/dev/null 2>&1; then
       fm_wake_append check "$notify_key" "$reason" || return 1
