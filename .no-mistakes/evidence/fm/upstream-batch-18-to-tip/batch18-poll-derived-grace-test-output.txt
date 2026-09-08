@@ -1,0 +1,36 @@
+=== bin/fm-turnend-guard.sh behavior tests (tests/fm-turnend-guard.test.sh) ===
+Includes the 4 new poll-derived-grace tests exercising the actual hook exit codes/output.
+ok - fm-turnend-guard --claude: a dead lock owner reports the reclaim mechanism, not a live-owner stand-down
+ok - fm-turnend-guard --claude: positive watcher recovery clears the recorded non-participation
+ok - fm-turnend-guard --claude: a real auto-arm that never participates still reaches the bounded fail-open
+ok - fm-turnend-guard --claude: verified fail-open is loud, bounded, attended, and non-repeating
+ok - fm-turnend-guard --claude: a partial auto-arm failure record is never read as exhausted retries
+ok - fm-turnend-guard --claude: away ownership excludes the Stop-autoarm fail-open
+ok - fm-turnend-guard --claude: positive watcher recovery resets failure episode state
+ok - fm-turnend-guard --claude: bounded claim wait avoids a token-consuming forced continuation
+ok - fm-turnend-guard --claude: secondmate home re-blocks unclaimed and allows auto-arm-claimed stops
+ok - fm-turnend-guard: a live away-mode daemon satisfies supervision with no watcher holding the lock
+ok - fm-turnend-guard: away-mode daemon ownership survives a leftover dead watcher lock
+ok - fm-turnend-guard: away mode with no daemon and no watcher still blocks
+ok - fm-turnend-guard: away mode blocks on a dead away-mode daemon
+ok - fm-turnend-guard: away mode blocks on a pid-reused away-mode daemon lock
+ok - fm-turnend-guard: away-mode daemon ownership never substitutes for a fresh beacon
+ok - fm-turnend-guard: a daemon lock proves nothing while away mode is off
+ok - fm-turnend-guard: away-mode beacon freshness uses the poll-derived grace, not the flat default
+ok - fm-turnend-guard: a dead away-mode daemon still blocks under the poll-derived grace
+ok - fm-turnend-guard: the poll-derived grace is bounded, not unlimited
+ok - fm-turnend-guard: with away mode off, the poll-derived grace never applies
+
+=== bin/fm-claude-stop-autoarm.sh behavior tests (tests/fm-claude-stop-autoarm.test.sh) ===
+ok - auto-arm: need vanishing mid-cycle closes without a rewake
+ok - auto-arm: mid-cycle AFK hands triage to the daemon with no rewake
+ok - auto-arm: active in a marked secondmate home
+ok - auto-arm: a long FM_POLL with FM_GUARD_GRACE unset reaches fm-watch-arm.sh with the derived grace
+ok - fm-lock: shared session-lock lib preserves the status path
+
+=== fm-remote-job-orphan-reap behavior tests ===
+ok - a worker whose code root still exists is never reaped
+ok - a worker stops its whole tree once its code root is pruned
+ok - a dry run reports the abandoned worker and signals nothing
+ok - the reaper stops an abandoned worker's whole tree
+ok - the reaper is idempotent
