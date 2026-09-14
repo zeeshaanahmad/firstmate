@@ -44,7 +44,7 @@ The workspace-trust dialog is unaffected by the permission mode and still needs 
 
 Claude states its own commit and PR attribution inside the Bash tool description it ships in the system prompt ("End git commit messages with: `Co-Authored-By: Claude ...`" plus a `Claude-Session:` URL).
 That is a harness instruction, not a model preference, so a brief, a project `AGENTS.md`, or the captain's global memory can only argue with it, and a lost argument is how the agent co-author trailer `AGENTS.md` section 1 forbids reaches a project's default branch.
-The spawn therefore launches every claude worker with `--settings '{"attribution":{"commit":"","pr":"","sessionUrl":false}}'`, which removes the instruction rather than contradicting it; `--settings` loads ADDITIONAL settings, so it composes with the per-worktree `.claude/settings.local.json` carrying the busy-state hooks.
+The spawn therefore empties the `attribution` commit, PR, and session-URL fields inside the single per-launch `--settings` JSON that `bin/fm-spawn.sh`'s `launch_template()` owns alongside that launch's other per-invocation settings keys, which removes the instruction rather than contradicting it; `--settings` loads ADDITIONAL settings, so it composes with the per-worktree `.claude/settings.local.json` carrying the busy-state hooks.
 `tests/fm-claude-attribution.test.sh` pins the launch and `tests/fm-claude-attribution-live-e2e.test.sh` is the live guard for the settings key itself, with dated evidence in `docs/verification/runtime-backends.md`.
 
 ## Composer ghost
