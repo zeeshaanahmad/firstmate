@@ -50,7 +50,7 @@ make_case() {
   local name=$1 variant=${2:-plain} case_dir fakebin head
   case_dir="$TMP_ROOT/$name"
   fakebin="$case_dir/fakebin"
-  mkdir -p "$case_dir/state" "$fakebin"
+  mkdir -p "$case_dir/state" "$case_dir/data" "$fakebin"
   fm_sg_make_project "$case_dir" "$variant"
   head=$(fm_sg_git "$case_dir/work" rev-parse feat)
   fm_write_meta "$case_dir/state/task-g1.meta" \
@@ -97,6 +97,7 @@ run_pr_merge() {
   local case_dir=$1; shift
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_DATA_OVERRIDE="$case_dir/data" \
   FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
   FM_TEST_GH_LOG="$case_dir/gh.log" \
   PATH="$case_dir/fakebin:$PATH" \

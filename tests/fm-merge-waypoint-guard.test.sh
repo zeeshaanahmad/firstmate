@@ -147,7 +147,7 @@ make_case() {  # <name> <variant>
   local name=$1 variant=$2 case_dir fakebin head
   case_dir="$TMP_ROOT/$name"
   fakebin="$case_dir/fakebin"
-  mkdir -p "$case_dir/state" "$fakebin"
+  mkdir -p "$case_dir/state" "$case_dir/data" "$fakebin"
   wp_make_project "$case_dir" "$variant"
   head=$(cat "$case_dir/head.sha")
   fm_write_meta "$case_dir/state/task-w1.meta" \
@@ -222,6 +222,7 @@ run_pr_merge() {  # <case_dir> <args...>
   local case_dir=$1; shift
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_DATA_OVERRIDE="$case_dir/data" \
   FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
   FM_TEST_GH_LOG="$case_dir/gh.log" \
   FM_TEST_GLAB_LOG="$case_dir/glab.log" \
