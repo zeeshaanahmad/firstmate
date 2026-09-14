@@ -16,7 +16,7 @@
 #
 # Matrix:
 #   (a) the squash DEFAULT is refused for such a PR, names the commits it would
-#       erase, and never reaches gh-axi
+#       erase, and never reaches the forge merge
 #   (b) scope: an ordinary PR in the SAME repo, with the same upstream remote
 #       fetched, still merges on the squash default - the guard discriminates
 #       rather than being globally on
@@ -162,17 +162,22 @@ printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 exit 0
 SH
   # The outcome query is matched first: it also names baseRefName, and the
-  # merge-refs lookup below would otherwise answer it with a single field.
+  # merge-refs lookup below would otherwise answer it with a single field. The
+  # pre-merge verify read comes next for the same reason: it names headRefOid
+  # and baseRefName too, and wants one green, open, mergeable pull request at
+  # this exact head. Every call is logged, so a case can see the forge merge.
   # bin/fm-pr-merge.sh reads this back after the forge command to confirm the
   # pull request actually landed, so every case here that is expected to merge
   # needs a landed outcome to read.
   cat > "$fakebin/gh" <<SH
 #!/usr/bin/env bash
+printf '%s\n' "\$*" >> "\$FM_TEST_GH_LOG"
 case "\$*" in
   *isInMergeQueue*)
     printf 'state=MERGED\nmerged=true\nqueued=false\nbase=main\n'
     exit 0
     ;;
+  *statusCheckRollup*) printf '%s\n' '{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","statusCheckRollup":[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}]}' ; exit 0 ;;
   *headRefOid*) printf '%s\n' '$head' ; exit 0 ;;
   *baseRefName*) printf '%s\n' 'main' ; exit 0 ;;
 esac
@@ -208,6 +213,7 @@ SH
   printf '"target_branch":"main","sha":"%s","head_pipeline":{"sha":"%s","status":"success"}}\n' \
     "$head" "$head" >> "$case_dir/mr.json"
   : > "$case_dir/gh-axi.log"
+  : > "$case_dir/gh.log"
   : > "$case_dir/glab.log"
   printf '%s\n' "$case_dir"
 }
@@ -217,11 +223,18 @@ run_pr_merge() {  # <case_dir> <args...>
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
   FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
+  FM_TEST_GH_LOG="$case_dir/gh.log" \
   FM_TEST_GLAB_LOG="$case_dir/glab.log" \
   FM_TEST_GLAB_JSON="$case_dir/mr.json" \
   FM_TEST_GLAB_MERGED_MARK="$case_dir/glab-merged.mark" \
   PATH="$case_dir/fakebin:$PATH" \
     "$PR_MERGE" "$@"
+}
+
+# The exact forge merge bin/fm-pr-merge.sh issues: it binds the merge to the head
+# it verified, so the line names that commit as well as the method.
+merge_line() {  # <case_dir> <method>
+  printf 'pr merge 7 --repo example/repo --match-head-commit %s --%s' "$(cat "$1/head.sha")" "$2"
 }
 
 # The GitLab fixture's identity: a namespace deeper than one group, because a
@@ -257,7 +270,7 @@ test_squash_default_refused_for_upstream_history() {
     "squash-default-refused: refusal did not name the upstream commits it would erase"
   assert_grep 'merge this PR with --merge' "$case_dir/stderr" \
     "squash-default-refused: refusal did not name the remedy"
-  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "squash-default-refused: the PR was merged despite erasing upstream history"
   pass "the squash default is refused for a PR carrying upstream history the base branch lacks"
 }
@@ -273,7 +286,7 @@ test_ordinary_pr_still_squashes() {
     > "$case_dir/stdout" 2> "$case_dir/stderr" \
     || fail "ordinary-still-squashes: an ordinary PR should still merge"
 
-  grep -qxF 'pr merge 7 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+  grep -qxF "$(merge_line "$case_dir" squash)" "$case_dir/gh.log" \
     || fail "ordinary-still-squashes: the ordinary PR did not merge on the squash default"
   assert_no_grep 'upstream-history' "$case_dir/stderr" \
     "ordinary-still-squashes: the guard spoke about a PR that carries no upstream history"
@@ -288,7 +301,7 @@ test_merge_method_is_allowed_and_forwarded() {
     > "$case_dir/stdout" 2> "$case_dir/stderr" \
     || fail "merge-method-allowed: --merge should not be refused"
 
-  grep -qxF 'pr merge 7 --repo example/repo --merge' "$case_dir/gh-axi.log" \
+  grep -qxF "$(merge_line "$case_dir" merge)" "$case_dir/gh.log" \
     || fail "merge-method-allowed: --merge was not forwarded unchanged"
   pass "--merge is the remedy the guard names and is not itself refused"
 }
@@ -304,7 +317,7 @@ test_rebase_refused_for_upstream_history() {
   set -e
 
   expect_code 1 "$rc" "rebase-refused: --rebase should be refused"
-  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "rebase-refused: the PR was rebased despite erasing upstream history"
   pass "--rebase is refused too, because it rewrites the same commits out of ancestry"
 }
@@ -320,7 +333,7 @@ test_explicit_squash_method_refused() {
   set -e
 
   expect_code 1 "$rc" "explicit-squash-refused: --method=squash should be refused"
-  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "explicit-squash-refused: naming the default squash method got past the guard"
   pass "asking for squash explicitly is refused exactly as the default is"
 }
@@ -338,7 +351,7 @@ test_static_guard_off_does_not_disable_this_guard() {
   expect_code 1 "$rc" "guard-off-still-refuses: FM_MERGE_GUARD=off must not disable this guard"
   assert_grep 'merge refused' "$case_dir/stderr" \
     "guard-off-still-refuses: the merge was not refused under FM_MERGE_GUARD=off"
-  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "guard-off-still-refuses: FM_MERGE_GUARD=off merged a PR that erases upstream history"
   pass "FM_MERGE_GUARD=off selects the static check's posture and never this guard's"
 }
@@ -351,7 +364,7 @@ test_project_without_upstream_is_not_checked() {
     > "$case_dir/stdout" 2> "$case_dir/stderr" \
     || fail "no-upstream-remote: a project with no upstream should merge unchanged"
 
-  grep -qxF 'pr merge 7 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+  grep -qxF "$(merge_line "$case_dir" squash)" "$case_dir/gh.log" \
     || fail "no-upstream-remote: the merge did not proceed on the squash default"
   assert_no_grep 'upstream-history' "$case_dir/stderr" \
     "no-upstream-remote: the guard spoke about a project that tracks no upstream"
@@ -368,7 +381,7 @@ test_unfetched_upstream_is_loudly_unguarded() {
 
   assert_grep 'upstream-history: UNGUARDED' "$case_dir/stderr" \
     "unfetched-upstream: the guard merged without saying it had nothing to compare against"
-  grep -qxF 'pr merge 7 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+  grep -qxF "$(merge_line "$case_dir" squash)" "$case_dir/gh.log" \
     || fail "unfetched-upstream: the merge did not proceed"
   pass "an upstream remote that was never fetched here is loudly unguarded, not a wedge"
 }
@@ -395,7 +408,7 @@ test_unresolvable_history_refuses_when_upstream_present() {
     "unresolvable-history-refuses: refusal did not say the merge was refused"
   assert_grep 'an unmeasured history check is not a clear one' "$case_dir/stderr" \
     "unresolvable-history-refuses: refusal did not name the unmeasured-check doctrine"
-  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "unresolvable-history-refuses: the PR was merged despite an unmeasured comparison"
   pass "upstream history present but unresolvable base/head refuses, unlike an unfetched upstream which merges loudly"
 }
@@ -413,7 +426,7 @@ test_required_waypoint_ancestor_passes() {
 
   assert_grep "upstream-waypoint: green - $waypoint is an ancestor of PR head $head" "$case_dir/stdout" \
     "required-waypoint-passes: the assertion did not name the waypoint and PR head"
-  grep -qxF 'pr merge 7 --repo example/repo --merge' "$case_dir/gh-axi.log" \
+  grep -qxF "$(merge_line "$case_dir" merge)" "$case_dir/gh.log" \
     || fail "required-waypoint-passes: the merge method was not forwarded after the waypoint assertion"
   pass "a required upstream waypoint that reaches the PR head passes with both commits named"
 }
@@ -439,8 +452,8 @@ test_flattened_branch_missing_waypoint_refuses() {
   expect_code 1 "$rc" "flattened-waypoint-refuses: a flattened batch must be refused"
   assert_grep "required upstream waypoint $waypoint is not an ancestor of PR head $head" "$case_dir/stderr" \
     "flattened-waypoint-refuses: the refusal did not name the waypoint and exact PR head"
-  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
-    "flattened-waypoint-refuses: gh-axi was called after the ancestry assertion failed"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "flattened-waypoint-refuses: the forge merge ran after the ancestry assertion failed"
   pass "a content-complete flattened batch is refused when its named waypoint is absent from ancestry"
 }
 
@@ -461,7 +474,7 @@ test_recorded_waypoint_passes_without_flag() {
 
   assert_grep "upstream-waypoint: green - $waypoint is an ancestor of PR head $head" "$case_dir/stdout" \
     "recorded-waypoint-passes: the recorded waypoint was not asserted"
-  grep -qxF 'pr merge 7 --repo example/repo --merge' "$case_dir/gh-axi.log" \
+  grep -qxF "$(merge_line "$case_dir" merge)" "$case_dir/gh.log" \
     || fail "recorded-waypoint-passes: the merge did not proceed after the assertion"
   pass "a waypoint recorded on the task is asserted with no flag and lets an intact batch merge"
 }
@@ -482,8 +495,8 @@ test_recorded_waypoint_refuses_flattened_without_flag() {
   expect_code 1 "$rc" "recorded-waypoint-flattened: a flattened batch must be refused on its recorded waypoint alone"
   assert_grep "required upstream waypoint $waypoint is not an ancestor of PR head $head" "$case_dir/stderr" \
     "recorded-waypoint-flattened: the refusal did not name the waypoint and exact PR head"
-  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
-    "recorded-waypoint-flattened: gh-axi was called after the recorded waypoint failed"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "recorded-waypoint-flattened: the forge merge ran after the recorded waypoint failed"
   pass "a flattened batch is refused from its recorded waypoint even when the merge command omits the flag"
 }
 
@@ -505,8 +518,8 @@ test_flag_and_recorded_waypoint_disagreement_refuses() {
   expect_code 1 "$rc" "waypoint-disagreement: two different waypoints must refuse"
   assert_grep "--require-ancestor $other disagrees with the waypoint $waypoint recorded for this task" "$case_dir/stderr" \
     "waypoint-disagreement: the refusal did not name both commits"
-  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
-    "waypoint-disagreement: gh-axi was called despite disagreeing waypoints"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "waypoint-disagreement: the forge merge ran despite disagreeing waypoints"
   pass "a flag and a recorded waypoint naming different commits refuse instead of one silently winning"
 }
 
@@ -524,8 +537,8 @@ test_empty_require_ancestor_space_form_refuses() {
   expect_code 2 "$rc" "empty-require-ancestor-space: an explicitly empty --require-ancestor value must be refused"
   assert_grep 'error: --require-ancestor requires a full lowercase 40-character commit SHA' "$case_dir/stderr" \
     "empty-require-ancestor-space: the refusal did not name the SHA-format requirement"
-  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
-    "empty-require-ancestor-space: gh-axi was called despite an empty waypoint value"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "empty-require-ancestor-space: the forge merge ran despite an empty waypoint value"
   pass "--require-ancestor '' is refused as a malformed value rather than treated as the flag being absent"
 }
 
@@ -543,8 +556,8 @@ test_empty_require_ancestor_equals_form_refuses() {
   expect_code 2 "$rc" "empty-require-ancestor-equals: an explicitly empty --require-ancestor= value must be refused"
   assert_grep 'error: --require-ancestor requires a full lowercase 40-character commit SHA' "$case_dir/stderr" \
     "empty-require-ancestor-equals: the refusal did not name the SHA-format requirement"
-  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
-    "empty-require-ancestor-equals: gh-axi was called despite an empty waypoint value"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "empty-require-ancestor-equals: the forge merge ran despite an empty waypoint value"
   pass "--require-ancestor= is refused as a malformed value rather than treated as the flag being absent"
 }
 

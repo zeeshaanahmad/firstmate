@@ -190,7 +190,7 @@ for harness in claude codex opencode pi pi-signed grok kimi cursor muse; do
   case "$verdict" in
     no-agent|agent-lost)
       harness_still_on_tty "$target" "$bin_path" && fail \
-        "$harness ($version): a live agent pane was refused as agent-free (verdict=$verdict, foreground=[$(fm_backend_tmux_foreground_comms "$target" | tr '\n' ' ')]). Every steer to this harness would now fail; teach bin/backends/tmux.sh's fm_backend_tmux_classify_process_name the identity this release reports."
+        "$harness ($version): a live agent pane was refused as agent-free (verdict=$verdict, foreground=[$(fm_backend_tmux_foreground_comms "$target" | tr '\n' ' ')]). Every steer to this harness would now fail; teach bin/fm-agent-process-lib.sh's fm_agent_process_classify_name the identity this release reports."
       SKIPPED="$SKIPPED $harness"
       note "UNVERIFIED: $harness ($version) stopped running during the steer probe, so its live-pane behavior could not be exercised. Pane tail: $("$REAL_TMUX" -L "$SOCKET" capture-pane -p -t "$target" | grep -v '^ *$' | tail -3 | tr '\n' '|')"
       continue

@@ -86,6 +86,14 @@ fm_task_script_registered() {  # <state> <id> <kind>
   [ "$hash" = "$FM_TASK_SCRIPT_HASH" ]
 }
 
+# Upstream's name for the check kind of fm_task_script_registered, kept so code
+# carried from upstream that calls it (bin/fm-mail-check.sh's arm rollback) runs
+# unchanged. Without it that call is "command not found", which reads as "not
+# registered" and deletes a check that is still bound.
+fm_custom_check_registered() {  # <state> <id>
+  fm_task_script_registered "$1" "$2" check
+}
+
 fm_task_script_snapshot_prepare() {  # <state> <id> <kind>
   local state=$1 id=$2 kind=$3 hash state_device
   fm_task_script_snapshot_cleanup

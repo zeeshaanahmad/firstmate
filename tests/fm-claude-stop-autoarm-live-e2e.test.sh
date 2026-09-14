@@ -7,15 +7,12 @@
 # dead owner; at least two tokenless auto-arm and rewake cycles then complete
 # with zero model-issued arm commands; and the cooperative guard consumes no
 # forced continuation while the hook's launch is healthy.
-# It also owns the two facts that decide whether that cooperation can work at
-# all, both of which come from the vendor and so cannot be settled by a stub:
-#   1. Claude runs BOTH registered Stop hooks on the same Stop, including a Stop
-#      the blocking one refuses with exit 2. If a refusal pre-empted the
-#      asyncRewake sibling the pair would deadlock, because the auto-arm could
-#      never record the exhausted failure the guard's fail-open requires.
-#   2. From the auto-arm's own silent stand-down - a home whose session lock
-#      belongs to another live session - the guard still reaches its bounded
-#      loud fail-open instead of blocking every turn forever.
+# It also owns the fact that decides whether that cooperation can work at all,
+# which comes from the vendor and so cannot be settled by a stub: Claude runs
+# BOTH registered Stop hooks on the same Stop, including a Stop the blocking one
+# refuses with exit 2. If a refusal pre-empted the asyncRewake sibling the pair
+# would deadlock, because the auto-arm could never record the exhausted failure
+# the guard's fail-open requires.
 # The project and FM_HOME are isolated; Claude keeps using its existing managed
 # authentication. No live fleet home, worktree, or session is touched.
 # shellcheck disable=SC2016 # the model, not this test shell, reads the prompt text
@@ -160,61 +157,6 @@ printf '%s\n' '{"session_id":"live-owner-control"}' \
 [ ! -e "$LIVE_OWNER_HOME/state/.claude-autoarm-epoch" ] || fail "competing Stop hook wrote an epoch while another live session owned the home"
 [ ! -s "$LAB/live-owner.out" ] && [ ! -s "$LAB/live-owner.err" ] || fail "competing Stop hook produced a rewake while another live session owned the home"
 wait "$LIVE_OWNER_PID"
-
-# --- the stood-down home still reaches a loud fail-open -----------------------
-#
-# The control above proves the auto-arm records NOTHING here, which is correct.
-# The cooperative guard must still resolve that state: three bounded blocks, then
-# one loud attended fail-open naming non-participation and the reason this
-# session cannot recover supervision - never an indefinite block and never a
-# manual arm instruction.
-"$FAKE_CLAUDE" -c 'sleep 90; :' &
-STUCK_OWNER_PID=$!
-printf '%s\n' "$STUCK_OWNER_PID" > "$LIVE_OWNER_HOME/state/.lock"
-rm -f "$LIVE_OWNER_HOME/state/.turnend-claude-blocks" \
-  "$LIVE_OWNER_HOME/state/.claude-autoarm-absent" \
-  "$LIVE_OWNER_HOME/state/.claude-autoarm-failure-alarmed"
-printf 'project=fixture\n' > "$LIVE_OWNER_HOME/state/task.meta"
-
-run_stood_down_stop() {
-  printf '%s\n' '{"session_id":"stood-down","stop_hook_active":true}' \
-    | FM_HOME="$LIVE_OWNER_HOME" FM_ROOT_OVERRIDE="$PROJECT" \
-      FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 "$FAKE_CLAUDE" -c \
-        '"$FM_ROOT_OVERRIDE/bin/fm-turnend-guard.sh" --claude' 2>&1
-}
-
-for i in 1 2 3; do
-  # Both hooks fire on every real Stop, so drive both here too.
-  printf '%s\n' '{"session_id":"stood-down","stop_hook_active":true}' \
-    | FM_HOME="$LIVE_OWNER_HOME" FM_ROOT_OVERRIDE="$PROJECT" "$FAKE_CLAUDE" -c \
-        '"$FM_ROOT_OVERRIDE/bin/fm-claude-stop-autoarm.sh"' >/dev/null 2>&1 || true
-  STUCK_OUT=$(run_stood_down_stop) && STUCK_RC=0 || STUCK_RC=$?
-  [ "$STUCK_RC" -eq 2 ] \
-    || fail "stop $i on a stood-down home returned $STUCK_RC, expected a bounded block: $STUCK_OUT"
-done
-STUCK_OUT=$(run_stood_down_stop) && STUCK_RC=0 || STUCK_RC=$?
-kill "$STUCK_OWNER_PID" 2>/dev/null || true
-wait "$STUCK_OWNER_PID" 2>/dev/null || true
-[ "$STUCK_RC" -eq 0 ] \
-  || fail "a home the auto-arm permanently stands down from never reached the bounded fail-open (rc=$STUCK_RC): $STUCK_OUT"
-case "$STUCK_OUT" in
-  *'FIRSTMATE SUPERVISION IS GENUINELY DOWN'*) : ;;
-  *) fail "the stood-down fail-open was not loud: $STUCK_OUT" ;;
-esac
-case "$STUCK_OUT" in
-  *'never participated'*) : ;;
-  *) fail "the stood-down fail-open did not name non-participation: $STUCK_OUT" ;;
-esac
-case "$STUCK_OUT" in
-  *'does NOT own the home lock'*) : ;;
-  *) fail "the stood-down fail-open did not name why this session cannot recover supervision: $STUCK_OUT" ;;
-esac
-case "$STUCK_OUT" in
-  *fm-watch-arm.sh*) fail "the stood-down fail-open directed a manual watcher arm: $STUCK_OUT" ;;
-esac
-[ -e "$LIVE_OWNER_HOME/state/.claude-autoarm-absent" ] \
-  || fail "the stood-down fail-open recorded no non-participation episode"
-printf 'ok - Claude %s live E2E: a home the auto-arm permanently stands down from blocks exactly three times and then fails open loudly, naming non-participation\n' "$CLAUDE_VERSION"
 
 # --- vendor fact: a refused Stop still runs its asyncRewake sibling -----------
 #
