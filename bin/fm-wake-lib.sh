@@ -756,11 +756,19 @@ fm_child_stop_bounded() {  # <pid> [ticks]
 }
 
 # Acquire <lockdir> as a short critical section that a signal may not interrupt.
-# Returns non-zero WITHOUT deferring when the lock was not taken, so a caller's
-# existing failure path stays correct.
+# Defers BEFORE acquiring, not after: fm_lock_claim's own acquisition is several
+# non-atomic steps (it forks a subshell for fm_current_pid), so the lock can
+# already be visible on disk while acquisition is still in progress. A signal
+# landing in that window must not hit the pre-deferral disposition and abandon
+# a lock the caller never got a chance to track. Returns non-zero, with
+# deferral already unwound and any pending signal re-raised, when the lock was
+# not taken - so a caller's existing failure path stays correct.
 fm_lock_section_enter() {
-  fm_lock_acquire_wait "$1" || return 1
   fm_signal_defer_begin
+  if ! fm_lock_acquire_wait "$1"; then
+    fm_signal_defer_end
+    return 1
+  fi
 }
 
 # Release a section taken with fm_lock_section_enter. Pair these one-for-one:
