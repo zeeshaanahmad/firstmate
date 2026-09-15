@@ -101,7 +101,7 @@ This touches only the firstmate repo and its own worktrees, never anything under
 - **Only the firstmate repo and its worktrees** are touched, never `projects/`.
   It is the same sanctioned self-write as the fleet sync.
 - **Nothing with work in it is disrupted.**
-  A local or remote second mate gets a tracked-files fast-forward only when its own checkout is safe to advance, and a mate whose home was skipped is not restarted either.
+  A local or remote second mate gets a tracked-files update only when its own checkout is safe to advance, and a mate whose home was skipped is not restarted either.
   A restart replaces that mate's agent in the same home and endpoint after its open work is written down; it is never a teardown and never forced.
   Its crewmates keep running in their own endpoints, and every durable record - backlog, held captain calls, unread status, unhandled instructions - is re-presented to the replacement at startup.
   A restart refused before it is attempted leaves that mate on the re-read path; once a relaunch is attempted, any failed or ambiguous result is reported as unknown rather than attributed to either incarnation.
