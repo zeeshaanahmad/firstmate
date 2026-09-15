@@ -50,7 +50,7 @@ make_case() {
   local name=$1 variant=${2:-plain} case_dir fakebin head
   case_dir="$TMP_ROOT/$name"
   fakebin="$case_dir/fakebin"
-  mkdir -p "$case_dir/state" "$fakebin"
+  mkdir -p "$case_dir/state" "$case_dir/data" "$fakebin"
   fm_sg_make_project "$case_dir" "$variant"
   head=$(fm_sg_git "$case_dir/work" rev-parse feat)
   fm_write_meta "$case_dir/state/task-g1.meta" \
@@ -65,17 +65,22 @@ printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 exit 0
 SH
   # The outcome query is matched first: it also names baseRefName, and the
-  # merge-refs lookup below would otherwise answer it with a single field.
+  # merge-refs lookup below would otherwise answer it with a single field. The
+  # pre-merge verify read comes next for the same reason: it names headRefOid
+  # and baseRefName too, and wants one green, open, mergeable pull request at
+  # this exact head. Every call is logged, so a case can see the forge merge.
   # bin/fm-pr-merge.sh reads this back after the forge command to confirm the
   # pull request actually landed, so every case here that is expected to merge
   # needs a landed outcome to read.
   cat > "$fakebin/gh" <<SH
 #!/usr/bin/env bash
+printf '%s\n' "\$*" >> "\$FM_TEST_GH_LOG"
 case "\$*" in
   *isInMergeQueue*)
     printf 'state=MERGED\nmerged=true\nqueued=false\nbase=main\n'
     exit 0
     ;;
+  *statusCheckRollup*) printf '%s\n' '{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","statusCheckRollup":[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}]}' ; exit 0 ;;
   *headRefOid*) printf '%s\n' '$head' ; exit 0 ;;
   *baseRefName*) printf '%s\n' 'main' ; exit 0 ;;
 esac
@@ -83,6 +88,8 @@ exit 0
 SH
   chmod +x "$fakebin/gh-axi" "$fakebin/gh"
   : > "$case_dir/gh-axi.log"
+  : > "$case_dir/gh.log"
+  printf '%s\n' "$head" > "$case_dir/pr-head.sha"
   printf '%s\n' "$case_dir"
 }
 
@@ -90,9 +97,17 @@ run_pr_merge() {
   local case_dir=$1; shift
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_DATA_OVERRIDE="$case_dir/data" \
   FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
+  FM_TEST_GH_LOG="$case_dir/gh.log" \
   PATH="$case_dir/fakebin:$PATH" \
     "$PR_MERGE" "$@"
+}
+
+# The exact forge merge bin/fm-pr-merge.sh issues: it binds the merge to the head
+# it verified, so the line names that commit as well as the method.
+merge_line() {  # <case_dir> <method>
+  printf 'pr merge 7 --repo example/repo --match-head-commit %s --%s' "$(cat "$1/pr-head.sha")" "$2"
 }
 
 test_refuses_red_merge_result() {
@@ -113,7 +128,7 @@ test_refuses_red_merge_result() {
     "red-merge-result: the checker's own output was not printed"
   assert_grep 'rebase onto current main and re-gate' "$case_dir/stderr" \
     "red-merge-result: refusal did not tell the lane what to do"
-  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "red-merge-result: the PR was merged despite a red merge result"
   assert_grep 'merge_guard=red' "$case_dir/state/task-g1.meta" \
     "red-merge-result: the guard outcome was not recorded in task metadata"
@@ -129,7 +144,7 @@ test_allows_green_merge_result() {
     > "$case_dir/stdout" 2> "$case_dir/stderr" \
     || fail "green-merge-result: fm-pr-merge failed: $(cat "$case_dir/stderr")"
 
-  assert_grep 'pr merge 7 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+  assert_grep "$(merge_line "$case_dir" squash)" "$case_dir/gh.log" \
     "green-merge-result: the PR was not merged"
   assert_grep 'merge-guard: green' "$case_dir/stdout" \
     "green-merge-result: the green verdict was not reported"
@@ -176,7 +191,7 @@ test_refuses_conflicting_merge() {
   expect_code 1 "$rc" "conflicting-merge: the merge should be refused"
   assert_grep 'conflicts with the current tip of main' "$case_dir/stderr" \
     "conflicting-merge: refusal did not name the conflict"
-  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "conflicting-merge: a conflicted PR was merged"
   pass "a PR that conflicts with the current default branch is refused, not merged"
 }
@@ -194,7 +209,7 @@ test_no_static_check_is_loudly_unguarded() {
     "no-static-check: the degradation was not announced"
   assert_grep 'no static check discovered' "$case_dir/stderr" \
     "no-static-check: the reason was not named"
-  assert_grep 'pr merge 7 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+  assert_grep "$(merge_line "$case_dir" squash)" "$case_dir/gh.log" \
     "no-static-check: the merge did not proceed unguarded"
   assert_grep 'merge_guard=unguarded' "$case_dir/state/task-g1.meta" \
     "no-static-check: the unguarded outcome was not recorded in task metadata"
@@ -215,7 +230,7 @@ test_pr_cannot_redirect_its_own_check() {
   expect_code 1 "$rc" "pr-owned-config: a PR rewriting its own check config still must not merge"
   assert_grep 'undefined name: USE_OLD' "$case_dir/stderr" \
     "pr-owned-config: the default branch's check command was not the one that ran"
-  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "pr-owned-config: a PR disabled the guard by editing its own config"
   pass "the check command comes from the default branch, so a PR cannot disable the guard"
 }
@@ -231,7 +246,7 @@ test_guard_off_is_recorded() {
 
   assert_grep 'OFF by FM_MERGE_GUARD=off' "$case_dir/stderr" \
     "guard-off: switching the guard off was not announced"
-  assert_grep 'pr merge 7 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+  assert_grep "$(merge_line "$case_dir" squash)" "$case_dir/gh.log" \
     "guard-off: the merge did not proceed"
   assert_grep 'merge_guard=off' "$case_dir/state/task-g1.meta" \
     "guard-off: the disabled guard was not recorded in task metadata"
@@ -243,6 +258,9 @@ test_verdict_without_a_pull_ref() {
   case_dir=$(make_case no-pull-ref)
   fm_sg_advance_main_rename "$case_dir"
   git -C "$case_dir/origin.git" update-ref -d refs/pull/7/head
+  # The guards run before the merge re-records the PR, so the head they fall
+  # back to is the one bin/fm-pr-check.sh recorded when the PR went ready.
+  printf 'pr_head=%s\n' "$(cat "$case_dir/pr-head.sha")" >> "$case_dir/state/task-g1.meta"
 
   set +e
   run_pr_merge "$case_dir" task-g1 https://github.com/example/repo/pull/7 \
@@ -311,7 +329,7 @@ test_makefile_lint_target_is_the_second_source() {
   expect_code 1 "$rc" "makefile-source: the merge should be refused"
   assert_grep 'undefined name: USE_OLD' "$case_dir/stderr" \
     "makefile-source: the Makefile lint target was not discovered and run"
-  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "makefile-source: the PR merged despite a red merge result"
   pass "a project declaring its check as a Makefile lint target is guarded too"
 }
@@ -329,7 +347,7 @@ test_unreachable_forge_is_loudly_unguarded() {
 
   assert_grep 'UNGUARDED' "$case_dir/stderr" \
     "unreachable-forge: the degradation was not announced"
-  assert_grep 'pr merge 7 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+  assert_grep "$(merge_line "$case_dir" squash)" "$case_dir/gh.log" \
     "unreachable-forge: the merge did not proceed"
   assert_grep 'merge_guard=unguarded' "$case_dir/state/task-g1.meta" \
     "unreachable-forge: the unguarded outcome was not recorded in task metadata"
@@ -353,7 +371,7 @@ test_unfinished_check_refuses_the_merge() {
   set -e
 
   expect_code 1 "$rc" "check-timeout: an unfinished check must refuse the merge, not authorize it"
-  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "check-timeout: the PR was merged without the static check ever finishing"
   assert_grep 'merge refused' "$case_dir/stderr" \
     "check-timeout: the refusal did not say the merge was refused"
@@ -381,7 +399,7 @@ test_slow_check_merges_green_when_given_room() {
 
   assert_grep 'merge-guard: green' "$case_dir/stdout" \
     "slow-check-with-room: the slow check did not reach a green verdict with room to finish"
-  assert_grep 'pr merge 7 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+  assert_grep "$(merge_line "$case_dir" squash)" "$case_dir/gh.log" \
     "slow-check-with-room: the PR did not merge on a green verdict"
   assert_grep 'merge_guard=green' "$case_dir/state/task-g1.meta" \
     "slow-check-with-room: the green outcome was not recorded in task metadata"
@@ -402,7 +420,7 @@ test_allow_timeout_is_explicit_and_recorded() {
     "allow-timeout: merging past an unfinished check was not announced"
   assert_grep 'FM_MERGE_GUARD=allow-timeout' "$case_dir/stderr" \
     "allow-timeout: the announcement did not say the override was what allowed it"
-  assert_grep 'pr merge 7 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+  assert_grep "$(merge_line "$case_dir" squash)" "$case_dir/gh.log" \
     "allow-timeout: the explicit override did not merge"
   assert_grep 'merge_guard=timeout-allowed' "$case_dir/state/task-g1.meta" \
     "allow-timeout: metadata does not distinguish an operator override from a default"
@@ -424,7 +442,7 @@ test_allow_timeout_still_refuses_a_red_merge_result() {
   expect_code 1 "$rc" "allow-timeout-red: a red merge result must still be refused under the override"
   assert_grep 'merge refused' "$case_dir/stderr" \
     "allow-timeout-red: the red refusal was lost under the override"
-  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "allow-timeout-red: the timeout override became a second off switch"
   assert_grep 'merge_guard=red' "$case_dir/state/task-g1.meta" \
     "allow-timeout-red: the red outcome was not recorded in task metadata"
@@ -443,7 +461,7 @@ test_unknown_guard_mode_is_refused() {
   set -e
 
   expect_code 2 "$rc" "unknown-guard-mode: a misspelled guard mode must refuse, not be ignored"
-  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "unknown-guard-mode: the PR merged under a guard mode nothing understood"
   assert_grep 'FM_MERGE_GUARD' "$case_dir/stderr" \
     "unknown-guard-mode: the refusal did not name the setting it could not read"

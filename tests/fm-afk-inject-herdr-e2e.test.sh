@@ -229,7 +229,20 @@ done
 LOOP
 chmod +x "$LOOP_SCRIPT"
 
-fm_backend_herdr_send_text_line "$SUPERVISOR_TARGET" "bash '$LOOP_SCRIPT' '$LOG_FILE'" \
+# bin/backends/herdr.sh's fm_backend_herdr_pane_process_state (#4191) now
+# verifies a registered agent against the pane's actual foreground process
+# before trusting it, exactly like the daemon's POSITIVE TARGET IDENTIFICATION
+# already required of the tmux fixture (tests/fm-afk-inject-e2e.test.sh's
+# AGENT_SHIM). A bare `bash` loop is process-classified `shell`, so however
+# faithfully it self-reports via `pane report-agent`, fm_backend_herdr_agent_state
+# now reads it as stale-agent/dead and the daemon refuses to start against it.
+# A SYMLINK, never a copy: a copied platform binary fails code-signing
+# validation and is killed on macOS arm64; the symlink name is what the kernel
+# records.
+AGENT_SHIM="$STATE_DIR/claude-shim"
+ln -s "$(command -v bash)" "$AGENT_SHIM"
+
+fm_backend_herdr_send_text_line "$SUPERVISOR_TARGET" "'$AGENT_SHIM' '$LOOP_SCRIPT' '$LOG_FILE'" \
   || fail "could not start the supervisor-loop script in the scratch herdr pane"
 sleep 1  # let the loop start and settle
 

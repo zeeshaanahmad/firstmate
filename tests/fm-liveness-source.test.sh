@@ -18,6 +18,10 @@
 # registered source is a real script the watcher really executes, the watcher is
 # a real subprocess, and the no-mistakes reads go through a fake `no-mistakes`
 # on PATH so the TOON parse is exercised against the shape the real CLI emits.
+#
+# The byte-binding owner this source shares with custom checks
+# (bin/fm-check-lib.sh) is pinned here too, through a custom-check caller
+# carried from upstream, so generalizing it for liveness cannot break checks.
 set -u
 
 # shellcheck source=tests/wake-helpers.sh
@@ -230,6 +234,34 @@ test_registered_source_is_time_bounded() {
   elapsed=$(( $(date +%s) - started ))
   [ "$elapsed" -lt 15 ] || fail "the source bound was not enforced (waited ${elapsed}s)"
   pass "a hanging liveness source is killed at its bound and read as no answer"
+}
+
+# The one binding owner still answers the check kind by its upstream name, which
+# code carried from upstream calls. bin/fm-mail-check.sh's failed-arm rollback
+# is that caller: it restores the shim a working home had and keeps it only
+# while it is still bound. If that name stops resolving, the call reads as "not
+# bound" and the rollback deletes a working, bound check.
+test_failed_rearm_keeps_a_still_bound_check() {
+  local bin home out lib rc=0
+  bin="$TMP_ROOT/mail-rearm/bin"; home="$TMP_ROOT/mail-rearm/home"
+  mkdir -p "$bin" "$home/state"
+  cp "$ROOT/bin/fm-mail-check.sh" "$bin/"
+  for lib in fm-mail.sh fm-check-register.sh fm-timeout-lib.sh fm-pr-lib.sh fm-line-cap-lib.sh fm-check-lib.sh; do
+    ln -s "$ROOT/bin/$lib" "$bin/$lib"
+  done
+  out=$(FM_HOME="$home" "$bin/fm-mail-check.sh" arm 2>&1) \
+    || fail "the first arm did not succeed: $out"
+
+  rm -f "$bin/fm-check-register.sh"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$bin/fm-check-register.sh"
+  chmod +x "$bin/fm-check-register.sh"
+  out=$(FM_HOME="$home" "$bin/fm-mail-check.sh" arm 2>&1) || rc=$?
+  expect_code 1 "$rc" "a re-arm whose registration fails"
+  assert_contains "$out" "could not register" "the failed re-arm names the registration"
+  assert_not_contains "$out" "command not found" "the rollback's binding check resolves"
+  fm_task_script_registered "$home/state" mail check \
+    || fail "the failed re-arm did not leave the working check bound"
+  pass "a failed re-arm keeps the check that is still bound"
 }
 
 # --- built-in no-mistakes validation-run source ----------------------------
@@ -983,6 +1015,7 @@ test_active_step_field_parsing
 test_registered_source_answers
 test_registered_source_requires_binding
 test_registered_source_is_time_bounded
+test_failed_rearm_keeps_a_still_bound_check
 test_run_source_reads_its_own_run_activity
 test_run_source_reads_an_in_flight_pipeline_head
 test_run_source_answers_on_the_run_state_not_an_activity_age

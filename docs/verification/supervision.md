@@ -287,7 +287,6 @@ A blocking sibling therefore does not pre-empt it: a Claude auto-arm that record
 On the observed 2026-09-01 incident that cause was the auto-arm's identity gate, which correctly exits 0 without a trace when `state/.lock` names another live session.
 
 `FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` re-establishes this against the installed binary and fails naming the version; run it after every Claude upgrade before trusting this record.
-The same guard proves the consequence that matters: from a home the auto-arm permanently stands down from, the turn-end guard still blocks exactly its bounded budget and then reaches one loud attended fail-open naming non-participation.
 [`../turnend-guard.md`](../turnend-guard.md) owns the contract itself, and `tests/fm-turnend-guard.test.sh` pins the guard-side consequences portably.
 
 Its remaining credentialed model-driven cycle - two tokenless Stop-owned rewakes with no model arm command - was observed failing on 2.1.252 and 2.1.258 for reasons unrelated to the hooks: the model does not reliably reproduce the exact turn sequence those assertions require, sometimes skipping the session-start command the run-tier hook has already executed for it, and sometimes ending fewer turns than the fixture expects.
@@ -411,7 +410,7 @@ fm-doc-audience-check: ok surfaces=61 local_links=174
 FM_TEST_SUMMARY total=4 failed=0 skipped_gate=0 duration_ms=102585
 ```
 
-The model-aware pull-guard predicate correction (`bin/fm-guard.sh` no longer reports a false watcher-down mid-turn under the Claude Stop auto-arm model, where the watcher runs only between turns) was verified on 2026-08-04 with the installed ShellCheck 0.11.0 and the same isolated behavior suites.
+The fresh-beacon portion of the model-aware pull-guard predicate (`bin/fm-guard.sh` accepts a beacon within grace without a live watcher under the Claude Stop auto-arm model) was verified on 2026-08-04 with the installed ShellCheck 0.11.0 and the same isolated behavior suites.
 
 ```sh
 bin/fm-lint.sh
