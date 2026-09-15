@@ -444,7 +444,8 @@ Both `use` and the optional top-level `default` accept either one profile object
 The single-object form stays fully backward-compatible, and every profile needs `harness`.
 Profile `model` and `effort` fields and rule `why` are optional.
 `ultra` is native-only: the model-aware validation contract and launch mapping are owned by `bin/fm-harness.sh validate-native-effort` and `bin/fm-spawn.sh` respectively.
-An omitted model or effort in a PROFILE means the selected harness uses its own default for that axis; a rule or the top-level `default` may omit either field.
+Codex `max` is valid when the profile selects `gpt-5.6-luna`, whose installed catalog entry supports that reasoning level.
+An omitted model or effort means the selected harness uses its own default for that axis.
 The SPAWN command line may not: once `config/crew-dispatch.json` exists, firstmate must still pass `--model` and `--effort` explicitly, using the literal value `default` to carry a profile's own omission forward, so the decision to skip an axis is always a deliberate, visible choice rather than a silently inherited one.
 Every profile array is an implicit quota-aware choice resolved through `quota-array-dispatch`.
 If no dispatch rule fits, firstmate resolves `default` through the same object-or-array path before falling back to `config/crew-harness`.
