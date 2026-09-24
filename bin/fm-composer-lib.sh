@@ -91,8 +91,8 @@
 #                already did before titled rules were accepted; the titled shape
 #                extends it, and the bottom-most shape winning bounds it in a
 #                pane running a harness. tmux is unaffected (its cursor anchors
-#                the composer row). Tracked separately; the details live on
-#                _fm_composer_titled_rule_row.
+#                the composer row). The tracker reference and the details live
+#                on _fm_composer_titled_rule_row.
 #
 # THE COMPOSER FOOTER ZONE (task firstmate-doorbell-vals-pending-p1): a
 # harness draws its own furniture BELOW the composer - a user statusLine, a
@@ -797,8 +797,8 @@ _fm_composer_pi_separator_row() {  # <trimmed-row>
 # tmux is unaffected: its cursor anchors the composer row. The arrangement is
 # common in a supervisor pane's scrollback (peeking a worker prints its rule /
 # prompt / rule, titled for a named session, into the transcript), which that
-# bottom-most rule bounds. The pre-existing hole is tracked separately and is
-# not fixed here.
+# bottom-most rule bounds. The pre-existing hole is tracked as
+# `scrollback-lookalike-can-pass-as-a-composer` and is not fixed here.
 _fm_composer_titled_rule_row() {  # <trimmed-row>
   local row=$1 rest title
   case "$row" in
