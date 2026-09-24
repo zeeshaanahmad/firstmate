@@ -722,8 +722,9 @@ The doorbell and secondmate rings defer only on `pending`, so they could not see
 The tmux adapter was never affected, because its cursor anchors the `❯` row directly.
 
 The classifier now accepts a titled rule only when it is still recognisably a rule (`_fm_composer_titled_rule_row` in `bin/fm-composer-lib.sh` owns the exact test), and a separator pair that a titled rule bounds is proven only by the agent glyph inside it, never by Pi's identity-gated blank region.
-A name long enough to fill the row is not truncated to keep the rule (at 200 columns a 240-character name left no leading rule glyph), and that shape deliberately stays `unknown`.
-The real captures and their provenance are in `tests/captures/claude-titled-composer-rule/`, replayed by `test_matrix_claude_titled_top_rule` and `test_titled_rule_guard_still_guards` in `tests/fm-composer-lib.test.sh`.
+The test is structural, so a title of any length still reads as a rule; only a name so long that fewer than 8 leading rule glyphs remain (at 200 columns a 240-character name left none) still reads `unknown`.
+One limitation is known and unchanged in kind: on the cursorless read, a pane that is not showing a real composer but whose visible tail ends with a separator directly above a bare agent-glyph row and a rule can read `empty`, and the titled shape now joins the plain shape in that (see `_fm_composer_titled_rule_row` in `bin/fm-composer-lib.sh`).
+The real captures and their provenance are in `tests/captures/claude-titled-composer-rule/`, replayed by `test_matrix_claude_titled_top_rule`, `test_titled_rule_guard_still_guards`, `test_titled_rule_decoration_is_not_a_composer`, and `test_titled_rule_lookalike_known_limitation` in `tests/fm-composer-lib.test.sh`.
 
 The live refresh is the composer-matrix guard's `claude-named` arm, which launches `claude --name 'fm composer title probe'`, requires the pane to show that titled rule, and requires its cursorless read to be exactly `empty`:
 

@@ -82,6 +82,17 @@
 #                one only while it is still recognisably a rule
 #                (_fm_composer_titled_rule_row), and a pair it bounds is
 #                proven only by that inner glyph, never by identity alone.
+#                KNOWN LIMITATION: on the cursorless read (herdr, zellij, cmux,
+#                orca) a pane that is NOT showing a real composer - a dead
+#                shell, a modal, a still-running tool - whose visible tail ends
+#                with a separator directly above a bare agent-glyph row and a
+#                rule (`──── Results ─` / `❯` / `────`) is read as a proven
+#                composer and can report `empty`. The untitled arrangement
+#                already did before titled rules were accepted; the titled shape
+#                extends it, and the bottom-most shape winning bounds it in a
+#                pane running a harness. tmux is unaffected (its cursor anchors
+#                the composer row). Tracked separately; the details live on
+#                _fm_composer_titled_rule_row.
 #
 # THE COMPOSER FOOTER ZONE (task firstmate-doorbell-vals-pending-p1): a
 # harness draws its own furniture BELOW the composer - a user statusLine, a
@@ -761,27 +772,42 @@ _fm_composer_pi_separator_row() {  # <trimmed-row>
 # near its right end, the shape claude 2.x draws on its composer's TOP rule for
 # any named session (`--name`, `/rename`, or a resumed named session; verified
 # live on claude 2.1.281, see docs/verification/runtime-backends.md):
-# `──────── Main Firstmate session ─`. Accepted only when the row is still
-# recognisably a rule:
+# `──────── Main Firstmate session ─`. Accepted only when the row has the
+# structure of a rule with a title in it, whatever the title's length:
 #   - it opens with at least 8 rule glyphs (the plain rule's own floor) and
 #     closes with at least one;
 #   - exactly one space pads each side of the title, and the title itself is
-#     non-blank and holds no rule glyph, so the two rule runs are unambiguous;
-#   - the rule glyphs outnumber every other column on the row, counting each
-#     non-ASCII title character as two columns so a wide title can only make
-#     the row read LESS like a rule.
-# Prose that merely contains dashes, a title with no rule before it, and a
-# title long enough to crowd out the rule (claude lets a long name eat the
-# whole rule) all fail, and a row that fails is no separator at all.
+#     non-blank, has no leading or trailing space, and holds no rule glyph, so
+#     the two rule runs are unambiguous.
+# Prose that merely contains dashes and a title with no rule before it fail, and
+# so does a name so long that fewer than 8 leading rule glyphs remain (claude
+# lets a long name eat the rule); a row that fails is no separator at all and
+# the pane stays `unknown`.
+#
+# KNOWN LIMITATION, shared with the plain separator: on the cursorless read
+# (herdr, zellij, cmux, orca) a pane that is NOT showing a real composer - a
+# dead shell, a modal, a still-running tool - whose visible tail ENDS with a
+# separator directly above a bare agent-glyph row and a rule
+# (`──── Results ─` / `❯` / `────`) is read as a proven composer and can report
+# `empty`. That hole predates the titled shape: the untitled arrangement
+# (`────` / `❯` / `────`) already reads `empty` on the commit before titled
+# rules were accepted, and the titled shape only extends the same arrangement.
+# In a live pane it is bounded because, with no cursor, the bottom-most shape
+# wins and a pane actually running a harness has its real composer bottom-most.
+# tmux is unaffected: its cursor anchors the composer row. The arrangement is
+# common in a supervisor pane's scrollback (peeking a worker prints its rule /
+# prompt / rule, titled for a named session, into the transcript), which that
+# bottom-most rule bounds. The pre-existing hole is tracked separately and is
+# not fixed here.
 _fm_composer_titled_rule_row() {  # <trimmed-row>
-  local row=$1 rest lead=0 tail=0 title width
+  local row=$1 rest title
   case "$row" in
     ────────*' '*' '*─) ;;
     *) return 1 ;;
   esac
   rest=$row
-  while [ "${rest#─}" != "$rest" ]; do rest=${rest#─}; lead=$((lead + 1)); done
-  while [ "${rest%─}" != "$rest" ]; do rest=${rest%─}; tail=$((tail + 1)); done
+  while [ "${rest#─}" != "$rest" ]; do rest=${rest#─}; done
+  while [ "${rest%─}" != "$rest" ]; do rest=${rest%─}; done
   case "$rest" in
     ' '*' ') title=${rest#' '}; title=${title%' '} ;;
     *) return 1 ;;
@@ -789,19 +815,7 @@ _fm_composer_titled_rule_row() {  # <trimmed-row>
   case "$title" in
     ''|' '*|*' '|*─*) return 1 ;;
   esac
-  width=$(printf '%s' "$title" | LC_ALL=C awk '
-    {
-      n = length($0); w = 0
-      for (i = 1; i <= n; i++) {
-        c = substr($0, i, 1)
-        if (c < "\200") w += 1
-        else if (c >= "\300") w += 2
-      }
-      printf "%d", w
-    }
-  ')
-  case "$width" in ''|*[!0-9]*) return 1 ;; esac
-  [ $((lead + tail)) -gt $((width + 2)) ]
+  return 0
 }
 
 # Row-scan results are returned through FM_COMPOSER_SCAN_* globals (bash 3.2
