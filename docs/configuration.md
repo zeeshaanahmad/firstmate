@@ -526,7 +526,7 @@ This section is the single owner of the canonical schema and its per-field seman
       "min_confidence": 0.85,
       "floor": { "scope": "<quota-axi scope>", "min_percent": 20, "provider": "<quota-axi provider>" },
       "use": [
-        { "harness": "<adapter>", "model": "<optional model>", "effort": "<low|medium|high|xhigh|max|ultra, optional>", "provider": "<optional quota-axi provider>", "floor": { "scope": "<quota-axi scope>", "min_percent": 50 } }
+        { "harness": "<adapter>", "model": "<optional model>", "effort": "<low|medium|high|xhigh|max|ultra, optional>", "provider": "<optional quota-axi provider>", "quota_scope": "<optional quota-axi scope>", "floor": { "scope": "<quota-axi scope>", "min_percent": 50 } }
       ],
       "why": "<optional rationale that helps firstmate choose>"
     }
@@ -541,7 +541,7 @@ Per rule, `when` and `use` are required; the top-level `rules` array itself may 
 Both `use` and the optional top-level `default` accept either one profile object or a non-empty array of profile objects.
 The single-object form stays fully backward-compatible, and every profile needs `harness`.
 Profile `model` and `effort` fields and rule `why` are optional.
-Rule `approval`, `min_confidence`, and `floor`, and profile `provider` and `floor` are optional declarations that only [typed dispatch resolution](#typed-dispatch-resolution-env-typesafe_api_key) applies in code; without that opt-in they are inert, and firstmate's own intake reads them as ordinary hints.
+Rule `approval`, `min_confidence`, and `floor`, and profile `provider`, `quota_scope`, and `floor` are optional declarations that only [typed dispatch resolution](#typed-dispatch-resolution-env-typesafe_api_key) applies in code; without that opt-in they are inert, and firstmate's own intake reads them as ordinary hints.
 The resolver supplies the fixed neutral Choice option `No listed rule applies to this task.` for work that matches no listed rule.
 `approval` accepts only `"captain"` and means a task the rule matches is never dispatched from the tool's answer alone.
 `min_confidence` is a number from 0 through 1 that the rule's own probability in the answer must reach, in place of the resolver's global 0.6 floor on the answer's confidence; set it high on a rule whose wrong pick is costly and low on a rule that is a safe runner-up.
@@ -550,7 +550,13 @@ A provider-only rule floor on an expanded provider binds to its `default` accoun
 An absent or unknown row or unmeasured provider makes the floor unverifiable and escalates without authorizing default routing.
 A known percentage below the floor makes the tool resolve among `default` profiles instead.
 A profile `provider` optionally names the quota-axi provider family whose rows apply to that profile; when present, profile and rule-floor provider IDs must match the strict whole-string pattern `^[a-z0-9]+(-[a-z0-9]+)*\z`.
-Bootstrap validates resolver-only `approval`, `min_confidence`, `floor`, and present `provider` values only while typed resolution is active; without the key those inert fields and the pre-existing verified-harness baseline preserve bootstrap behavior.
+A profile `quota_scope` explicitly declares one quota-axi scope whose row also binds that candidate, for a provider that meters per tier under scope names the resolver's `all_models`, `all_products`, `model:<bare>`, and `product:<bare>` matching never reaches.
+The declared row joins the provider-wide and model rows as ordinary applicable evidence, so `exhausted_now` or 0% remaining at that scope makes the candidate ineligible and names the scope, and a known percentage with an unranked `spendPriority` keeps the candidate eligible and unranked while its line shows the real remaining percentage and scope.
+A declared scope absent from the snapshot leaves the candidate unrankable and reports the declared scope as disclosed uncertainty, never a silent pass.
+The link from model to scope is only ever this declaration; nothing infers a tier from a model name, and a profile without `quota_scope` behaves exactly as before.
+Antigravity meters per tier with its own clock, so an `agy` profile declares its tier, for example `{ "harness": "agy", "model": "claude-opus-4-6-thinking", "quota_scope": "claude_gpt" }` for the Claude/GPT tier and `{ "harness": "agy", "model": "gemini-3-pro", "quota_scope": "gemini" }` for the Gemini tier.
+`fm-quota-choose.sh` accepts the same declaration as `--scope <quota-scope>` immediately after a `--candidate`.
+Bootstrap validates resolver-only `approval`, `min_confidence`, `floor`, `quota_scope`, and present `provider` values only while typed resolution is active; without the key those inert fields and the pre-existing verified-harness baseline preserve bootstrap behavior.
 Typed resolution additively recognizes `gemini` because AGENTS.md section 4 verifies it for crewmate and scout dispatch.
 The opted-in resolver has authoritative single-provider mappings for `claude`, `codex`, `grok`, `kimi`, `cursor`, `agy`, and `muse`; every other verified harness must declare `provider` explicitly, including multi-provider `pi`, `pi-signed`, `omp`, and `opencode` and unmapped `gemini`, `rovo`, and `devin`.
 Its single-provider table is separate from the frozen legacy mapping used by `fm-quota-choose.sh`, so additions cannot alter no-key routing.

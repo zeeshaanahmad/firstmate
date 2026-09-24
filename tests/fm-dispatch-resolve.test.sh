@@ -906,4 +906,48 @@ expect_code 0 "$code" "--help exits 0"
 assert_contains "$out" 'Usage:' "--help prints usage"
 pass "configuration errors exit 2 before any network call"
 
+# --- declared quota_scope binds an agy candidate to its own tier row -------------
+cat > "$RULES" <<'JSON'
+{
+  "rules": [
+    { "when": "New feature work on the app.",
+      "use": [
+        { "harness": "agy", "model": "claude-opus-4-6-thinking", "quota_scope": "claude_gpt" },
+        { "harness": "agy", "model": "gemini-3-pro", "quota_scope": "gemini" },
+        { "harness": "agy", "model": "gemini-3-flash", "quota_scope": "gone_tier" },
+        { "harness": "claude", "model": "sonnet" }
+      ] },
+    { "when": "Bug fix.", "use": { "harness": "claude", "model": "sonnet" } },
+    { "when": "Docs.", "use": { "harness": "claude", "model": "sonnet" } },
+    { "when": "Chores.", "use": { "harness": "claude", "model": "sonnet" } }
+  ]
+}
+JSON
+AGY_QUOTA="$TMP_ROOT/agy-quota.json"
+cat > "$AGY_QUOTA" <<'JSON'
+{ "generatedAt": "2030-01-01T00:00:00Z", "schemaVersion": 5, "providers": [
+  { "provider": "agy", "state": { "status": "fresh" }, "quotaSemantics": { "status": "known", "effectiveAvailability": [
+    { "scope": "gemini", "status": "known", "effectivePercentRemaining": 76, "runway": { "status": "through_reset" }, "selection": { "spendPriority": "unknown" } },
+    { "scope": "claude_gpt", "status": "known", "effectivePercentRemaining": 0, "runway": { "status": "exhausted_now" }, "selection": { "spendPriority": "unknown" } } ] } },
+  { "provider": "claude", "state": { "status": "fresh" }, "quotaSemantics": { "status": "known", "effectiveAvailability": [
+    { "scope": "all_models", "status": "known", "effectivePercentRemaining": 79, "runway": { "status": "projected_exhaustion" }, "selection": { "spendPriority": -0.4 } } ] } } ] }
+JSON
+reset_log
+write_response "$RESPONSE" rule_1 0.95
+QUOTA_AXI_FIXTURE=$AGY_QUOTA TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --project pager
+expect_code 0 "$code" "declared quota_scope resolves"
+assert_contains "$out" 'candidate: agy:claude-opus-4-6-thinking' "exhausted tier candidate is listed"
+assert_contains "$out" '-> not eligible: runway exhausted_now at claude_gpt' "exhausted declared tier blocks the candidate and names the scope"
+assert_contains "$out" 'candidate: agy:gemini-3-pro  provider=agy  scope=gemini  remaining=76%' "healthy declared tier shows its real remaining percentage"
+assert_contains "$out" 'eligible, unranked: spendPriority missing or non-numeric at gemini' "unknown spendPriority tier stays eligible and unranked"
+assert_contains "$out" 'declared quota_scope gone_tier not in the quota snapshot for provider agy: not rankable' "a declared scope absent from the snapshot is disclosed uncertainty"
+assert_contains "$out" "  profile: --harness 'claude' --model 'sonnet'" "the ranked candidate wins over unranked tiers"
+cp "$BASE_RULES" "$RULES"
+printf '%s\n' '{"rules":[{"when":"x","use":{"harness":"agy","quota_scope":""}}]}' > "$RULES"
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+expect_code 2 "$code" "empty quota_scope exits 2"
+assert_contains "$err" 'profile quota_scope must be a non-empty string without surrounding whitespace when present' "malformed quota_scope is named"
+cp "$BASE_RULES" "$RULES"
+pass "declared quota_scope binds an agy candidate to its own tier row"
+
 printf '# all fm-dispatch-resolve tests passed\n'

@@ -729,6 +729,23 @@ out=$(call_choose --snapshot "$SCHEMA6_TOON" --candidate claude:default --candid
 [ "$out" = "cursor default" ] || fail "schema 6 TOON snapshot returned: $out"
 ok "schema 6 TOON with the accountKey column is accepted"
 
+TIERS="$LAB/tiers.json"
+cat > "$TIERS" <<'JSON'
+{ "schemaVersion": 5, "providers": [
+  { "provider": "claude", "state": { "status": "fresh" }, "quotaSemantics": { "status": "known", "effectiveAvailability": [
+    { "scope": "gemini", "status": "known", "effectivePercentRemaining": 76, "runway": { "status": "through_reset" }, "selection": { "spendPriority": "unknown" } },
+    { "scope": "claude_gpt", "status": "known", "effectivePercentRemaining": 0, "runway": { "status": "exhausted_now" }, "selection": { "spendPriority": "unknown" } } ] } } ] }
+JSON
+out=$(call_choose --snapshot "$TIERS" --candidate claude:opus --scope claude_gpt --candidate claude:sonnet --scope gemini)
+[ "$out" = "claude sonnet" ] || fail "declared tiers returned: $out"
+if out=$(call_choose --snapshot "$TIERS" --candidate claude:opus --scope claude_gpt); then
+  fail "exhausted declared tier was chosen: $out"
+fi
+if out=$(call_choose --snapshot "$TIERS" --candidate claude:sonnet --scope no_such_tier); then
+  fail "declared scope missing from the snapshot was chosen: $out"
+fi
+ok "a declared --scope binds a candidate to its own tier row"
+
 [ "$(wc -l < "$CALLS" | tr -d '[:space:]')" = 1 ] || fail "helper took an additional quota snapshot"
 ok "helper reuses the captured quota snapshot"
 
