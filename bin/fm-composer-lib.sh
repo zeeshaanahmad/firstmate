@@ -77,6 +77,22 @@
 #                different, self-proving thing: real claude 2.x draws exactly
 #                that (`─` rule, `❯`+NBSP, `─` rule), so the glyph inside the
 #                pair carries the shape and no identity is needed.
+#                Claude writes a named session's title into the TOP rule
+#                (`──── <name> ─`); such a TITLED rule separates like a plain
+#                one only while it is still recognisably a rule
+#                (_fm_composer_titled_rule_row), and a pair it bounds is
+#                proven only by that inner glyph, never by identity alone.
+#                KNOWN LIMITATION: on the cursorless read (herdr, zellij, cmux,
+#                orca) a pane that is NOT showing a real composer - a dead
+#                shell, a modal, a still-running tool - whose visible tail ends
+#                with a separator directly above a bare agent-glyph row and a
+#                rule (`──── Results ─` / `❯` / `────`) is read as a proven
+#                composer and can report `empty`. The untitled arrangement
+#                already did before titled rules were accepted; the titled shape
+#                extends it, and the bottom-most shape winning bounds it in a
+#                pane running a harness. tmux is unaffected (its cursor anchors
+#                the composer row). The tracker reference and the details live
+#                on _fm_composer_titled_rule_row.
 #
 # THE COMPOSER FOOTER ZONE (task firstmate-doorbell-vals-pending-p1): a
 # harness draws its own furniture BELOW the composer - a user statusLine, a
@@ -752,6 +768,56 @@ _fm_composer_pi_separator_row() {  # <trimmed-row>
   return 1
 }
 
+# _fm_composer_titled_rule_row: a solid `─` rule with a session title embedded
+# near its right end, the shape claude 2.x draws on its composer's TOP rule for
+# any named session (`--name`, `/rename`, or a resumed named session; verified
+# live on claude 2.1.281, see docs/verification/runtime-backends.md):
+# `──────── Main Firstmate session ─`. Accepted only when the row has the
+# structure of a rule with a title in it, whatever the title's length:
+#   - it opens with at least 8 rule glyphs (the plain rule's own floor) and
+#     closes with at least one;
+#   - exactly one space pads each side of the title, and the title itself is
+#     non-blank, has no leading or trailing space, and holds no rule glyph, so
+#     the two rule runs are unambiguous.
+# Prose that merely contains dashes and a title with no rule before it fail, and
+# so does a name so long that fewer than 8 leading rule glyphs remain (claude
+# lets a long name eat the rule); a row that fails is no separator at all and
+# the pane stays `unknown`.
+#
+# KNOWN LIMITATION, shared with the plain separator: on the cursorless read
+# (herdr, zellij, cmux, orca) a pane that is NOT showing a real composer - a
+# dead shell, a modal, a still-running tool - whose visible tail ENDS with a
+# separator directly above a bare agent-glyph row and a rule
+# (`──── Results ─` / `❯` / `────`) is read as a proven composer and can report
+# `empty`. That hole predates the titled shape: the untitled arrangement
+# (`────` / `❯` / `────`) already reads `empty` on the commit before titled
+# rules were accepted, and the titled shape only extends the same arrangement.
+# In a live pane it is bounded because, with no cursor, the bottom-most shape
+# wins and a pane actually running a harness has its real composer bottom-most.
+# tmux is unaffected: its cursor anchors the composer row. The arrangement is
+# common in a supervisor pane's scrollback (peeking a worker prints its rule /
+# prompt / rule, titled for a named session, into the transcript), which that
+# bottom-most rule bounds. The pre-existing hole is tracked as
+# `scrollback-lookalike-can-pass-as-a-composer` and is not fixed here.
+_fm_composer_titled_rule_row() {  # <trimmed-row>
+  local row=$1 rest title
+  case "$row" in
+    ────────*' '*' '*─) ;;
+    *) return 1 ;;
+  esac
+  rest=$row
+  while [ "${rest#─}" != "$rest" ]; do rest=${rest#─}; done
+  while [ "${rest%─}" != "$rest" ]; do rest=${rest%─}; done
+  case "$rest" in
+    ' '*' ') title=${rest#' '}; title=${title%' '} ;;
+    *) return 1 ;;
+  esac
+  case "$title" in
+    ''|' '*|*' '|*─*) return 1 ;;
+  esac
+  return 0
+}
+
 # Row-scan results are returned through FM_COMPOSER_SCAN_* globals (bash 3.2
 # has no nameref); they are internal to this owner.
 _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
@@ -777,6 +843,7 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
   FM_COMPOSER_SCAN_PI_OPEN=-1
   FM_COMPOSER_SCAN_PI_CLOSE=-1
   FM_COMPOSER_SCAN_PI_LAST_SEPARATOR=-1
+  FM_COMPOSER_SCAN_PI_TITLED=0
   # The glyph PROOF of each envelope: the first row strictly inside it whose
   # content leads with an agent prompt glyph once its side borders are
   # stripped, and that glyph. This is what tells a composer container from a
@@ -789,7 +856,7 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
   FM_COMPOSER_SCAN_LEFTBAR_GLYPH_ROW=-1
   FM_COMPOSER_SCAN_LEFTBAR_GLYPH=
   local leftbar_start=-1 pi_open=-1 pi_lines=0 pi_max
-  local probe row_glyph row_glyph_row
+  local probe row_glyph row_glyph_row row_titled pi_open_titled=0
   local box_glyph_row=-1 box_glyph='' pi_glyph_row=-1 pi_glyph=''
   pi_max=$FM_COMPOSER_PI_MAX_LINES
   case "$pi_max" in ''|*[!0-9]*|0) pi_max=8 ;; esac
@@ -834,12 +901,18 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
     # Pi separator rows: a solid `─` rule at least 8 columns wide. A separator
     # closes the preceding candidate and immediately opens the next, so an
     # earlier transcript rule can never outrank the live bottom composer pair.
-    if _fm_composer_pi_separator_row "$trimmed"; then
+    # A TITLED rule (claude's named-session top rule) separates the same way,
+    # but a pair it bounds is recorded as titled: only the agent glyph inside
+    # it can prove that pair, never pi's identity-gated blank region.
+    row_titled=0
+    if _fm_composer_pi_separator_row "$trimmed" \
+       || { _fm_composer_titled_rule_row "$trimmed" && row_titled=1; }; then
       FM_COMPOSER_SCAN_PI_LAST_SEPARATOR=$row
       if [ "$pi_open" -ge 0 ]; then
         FM_COMPOSER_SCAN_PI_PAIR_FOUND=1
         FM_COMPOSER_SCAN_PI_OPEN=$pi_open
         FM_COMPOSER_SCAN_PI_CLOSE=$row
+        FM_COMPOSER_SCAN_PI_TITLED=$((pi_open_titled | row_titled))
         if [ "$pi_lines" -le "$pi_max" ]; then
           FM_COMPOSER_SCAN_PI_PAIR_VALID=1
         else
@@ -849,6 +922,7 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
         FM_COMPOSER_SCAN_PI_GLYPH=$pi_glyph
       fi
       pi_open=$row
+      pi_open_titled=$row_titled
       pi_lines=0
       pi_glyph_row=-1
       pi_glyph=''
@@ -1794,6 +1868,8 @@ _fm_composer_classify_bare_pi_overlap() {  # <screen> <styled> <has-identity> <i
 # is drawn above the separator pair, so the composer region looks free while the
 # keys would answer the prompt instead of composing (issue #2797). Structure
 # cannot disprove that, so a blocked pi defers rather than claiming empty.
+# A pair bounded by a titled rule (FM_COMPOSER_SCAN_PI_TITLED) is never proven
+# by this identity path: only the agent glyph inside such a pair proves it.
 _fm_composer_pi_verdict() {  # <screen> <styled> <has_identity> <identity>
   local screen=$1 styled=$2 has_identity=$3 identity=$4 agent agent_status state
   if [ "$has_identity" != 1 ]; then
@@ -1810,7 +1886,8 @@ _fm_composer_pi_verdict() {  # <screen> <styled> <has_identity> <identity>
   fi
   agent=${identity%%$'\t'*}
   agent_status=${identity#*$'\t'}
-  if [ "$agent" != pi ] || [ "$FM_COMPOSER_SCAN_PI_PAIR_VALID" != 1 ]; then
+  if [ "$agent" != pi ] || [ "$FM_COMPOSER_SCAN_PI_PAIR_VALID" != 1 ] \
+     || [ "$FM_COMPOSER_SCAN_PI_TITLED" = 1 ]; then
     printf 'unknown'
     return 0
   fi

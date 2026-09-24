@@ -219,6 +219,184 @@ test_matrix_claude_arrow_statusline_footer() {
   pass "matrix: claude's arrow statusline is footer furniture, not a composer holding text"
 }
 
+# Real captures of claude drawing a named session's title into its composer's
+# TOP rule (provenance: tests/captures/claude-titled-composer-rule/README.md).
+TITLED_CAPTURES="$ROOT/tests/captures/claude-titled-composer-rule"
+
+# with_row <screen> <n> <text>: <screen> with zero-based row <n> replaced.
+with_row() {
+  local screen=$1 n=$2 text=$3 line i=0 out=''
+  while IFS= read -r line; do
+    [ "$i" -eq "$n" ] && line=$text
+    out="$out$line"$'\n'
+    i=$((i + 1))
+  done <<EOF
+$screen
+EOF
+  printf '%s' "$out"
+}
+
+test_matrix_claude_titled_top_rule() {
+  # Any named claude session (`--name`, `/rename`, or a resumed named session)
+  # draws its name into the composer's TOP rule. The cursorless read used to
+  # find no separator pair there and refuse with `unknown`, so the away
+  # injector, the exit command, and every other caller that needs a proven
+  # empty composer skipped that pane (1,335 deferred away-mode injections on
+  # one resumed supervisor). tmux was never blind: its cursor anchors the row.
+  local plain named renamed draft herdr claude_idle f out
+  claude_idle=$(printf 'claude\tidle')
+  plain=$(cat "$TITLED_CAPTURES/tmux-plain-idle.ansi")
+  named=$(cat "$TITLED_CAPTURES/tmux-named-idle.ansi")
+  renamed=$(cat "$TITLED_CAPTURES/tmux-renamed-idle.ansi")
+  draft=$(cat "$TITLED_CAPTURES/tmux-named-draft.ansi")
+  herdr=$(cat "$TITLED_CAPTURES/herdr-resumed-named-idle.ansi")
+  # Guard the divergence so the case cannot go quietly vacuous: the titled
+  # captures carry a title in their top rule and the plain one does not.
+  case "$named" in *'─ Fresh named ─'*) ;; *) fail "fixture drift: the named capture lost its titled top rule" ;; esac
+  case "$renamed" in *'─ Renamed later ─'*) ;; *) fail "fixture drift: the renamed capture lost its titled top rule" ;; esac
+  case "$herdr" in *'─ Main Firstmate session ─'*) ;; *) fail "fixture drift: the herdr capture lost its titled top rule" ;; esac
+  case "$plain" in *'─ '*) fail "fixture drift: the plain capture gained a title" ;; esac
+  # The supervisor's own titled capture, read exactly as the herdr adapter reads it.
+  assert_screen "resumed named claude on herdr" empty "$CAPS_STYLED" "$herdr" '' "$claude_idle"
+  for f in named renamed; do
+    assert_screen "$f claude on herdr" empty "$CAPS_STYLED" "${!f}" '' "$claude_idle"
+    assert_screen "$f claude on herdr, probe absent" empty "$CAPS_STYLED" "${!f}" '' probe-absent
+    assert_screen "$f claude on zellij" empty "$CAPS_STYLED_NOID" "${!f}"
+    assert_screen "$f claude on cmux/orca" empty "$CAPS_PLAIN" "${!f}"
+    assert_screen "$f claude on tmux" empty "$CAPS_TMUX" "${!f}" 16 probe-absent
+  done
+  # No regression on the plain worker shape.
+  assert_screen "plain claude on herdr" empty "$CAPS_STYLED" "$plain" '' "$claude_idle"
+  assert_screen "plain claude on cmux/orca" empty "$CAPS_PLAIN" "$plain"
+  assert_screen "plain claude on tmux" empty "$CAPS_TMUX" "$plain" 16 probe-absent
+  # The protection that must survive the fix: a draft under a titled rule is
+  # pending wherever styling can prove it, and never empty anywhere.
+  assert_screen "named claude draft on herdr" pending "$CAPS_STYLED" "$draft" '' "$claude_idle"
+  assert_screen "named claude draft on zellij" pending "$CAPS_STYLED_NOID" "$draft"
+  assert_screen "named claude draft on cmux/orca" unknown "$CAPS_PLAIN" "$draft"
+  assert_screen "named claude draft on tmux" pending "$CAPS_TMUX" "$draft" 16 probe-absent
+  out=$(fm_composer_extract_selected_content "$CAPS_STYLED" "$draft") \
+    || fail "the titled composer's draft must be extractable (herdr's delivery proof reads it)"
+  [ "$out" = 'draft text not sent' ] || fail "the titled composer's draft must be its extracted content, got '$out'"
+  pass "matrix: a titled claude top rule proves the composer on every profile in both locales"
+}
+
+test_titled_rule_guard_still_guards() {
+  # Loosening the separator must not loosen the strict blank-row posture.
+  local named exited screen top claude_idle pi_idle rule
+  claude_idle=$(printf 'claude\tidle'); pi_idle=$(printf 'pi\tidle')
+  named=$(cat "$TITLED_CAPTURES/tmux-named-idle.ansi")
+  exited=$(cat "$TITLED_CAPTURES/tmux-exited-to-shell.ansi")
+  rule='────────────────────────────────────────'
+  # 1. No container at all: claude exited and left a shell prompt.
+  assert_screen "claude exited to a shell on herdr" unknown "$CAPS_STYLED" "$exited" '' probe-absent
+  assert_screen "claude exited to a shell on cmux/orca" unknown "$CAPS_PLAIN" "$exited"
+  assert_screen "claude exited to a shell on tmux" unknown "$CAPS_TMUX" "$exited" 1 probe-absent
+  # A titled rule with no composer under it proves nothing either.
+  screen=$(with_row "$named" 16 'plain transcript prose')
+  assert_screen "a titled rule over prose" unknown "$CAPS_STYLED" "$screen" '' "$claude_idle"
+  # 2. The real capture with its titled top rule replaced by something that is
+  #    not recognisably a rule: prose that happens to carry rule glyphs, a
+  #    title with no rule before it, a rule too short to be one, and a title that
+  #    itself holds the rule glyph. Each must leave the pane exactly as
+  #    unproven as before.
+  for top in \
+    "see $rule below ─" \
+    "$rule prose with no closing rule" \
+    '─── short ─' \
+    '─────── seven leading rule glyphs ─' \
+    "$rule a ─ b ─" \
+    "$rule  padded title ─" \
+    '- a list item with ── dashes ─'
+  do
+    screen=$(with_row "$named" 15 "$top")
+    assert_screen "not a rule: $top" unknown "$CAPS_STYLED" "$screen" '' "$claude_idle"
+    assert_screen "not a rule, plain: $top" unknown "$CAPS_PLAIN" "$screen"
+  done
+  # The boundary those cases sit against, so the list cannot pass vacuously:
+  # the rule is recognised by its structure alone, so a title of any length or
+  # width still reads as a rule, including one that outweighs the rule glyphs.
+  for top in \
+    '────────── abcdefgh ─' \
+    '────────── x ─' \
+    '────────── this sentence is longer than the rule it sits in ─' \
+    '────────── 日本語の長いセッション名 ─' \
+    "──────── $(printf 'long-session-name-%.0s' 1 2 3 4 5 6) ─"
+  do
+    screen=$(with_row "$named" 15 "$top")
+    assert_screen "structurally a rule: $top" empty "$CAPS_STYLED" "$screen" '' "$claude_idle"
+    assert_screen "structurally a rule, plain: $top" empty "$CAPS_PLAIN" "$screen"
+    assert_screen "structurally a rule, tmux: $top" empty "$CAPS_TMUX" "$screen" 16 probe-absent
+  done
+  # 3. pi's identity-gated blank region stays plain-rule only: a titled rule
+  #    can prove a composer through the agent glyph inside it, never through
+  #    identity alone.
+  assert_screen "pi blank region between plain rules" empty "$CAPS_STYLED" $'x\n'"$rule"$'\n\n'"$rule" '' "$pi_idle"
+  assert_screen "pi blank region under a titled rule" unknown "$CAPS_STYLED" $'x\n'"$rule"$' T ─\n\n'"$rule" '' "$pi_idle"
+  pass "fm_composer_classify_screen: a titled rule is accepted only when it is still recognisably a rule"
+}
+
+test_titled_rule_decoration_is_not_a_composer() {
+  # The falsifier for accepting titled rules: a decorative separator that a
+  # tool or a transcript prints (`──── Results ─`) is shaped exactly like a
+  # claude titled top rule, so it must neither prove a composer where none is
+  # drawn nor displace the real composer below it. Real captures; provenance
+  # in tests/captures/claude-titled-composer-rule/README.md.
+  local shell named lookalike out
+  shell=$(cat "$TITLED_CAPTURES/tmux-shell-decorative-running.ansi")
+  named=$(cat "$TITLED_CAPTURES/tmux-named-decorative-scrollback.ansi")
+  lookalike=$(cat "$TITLED_CAPTURES/tmux-named-lookalike-scrollback.ansi")
+  case "$shell" in *'─ Results ─'*'─ Summary ─'*) ;; *) fail "fixture drift: the shell capture lost its decorative titled separators" ;; esac
+  case "$named" in *'─ Summary ─'*) ;; *) fail "fixture drift: the named capture lost its decorative separator in the transcript" ;; esac
+  case "$lookalike" in *'─ Results ─'*'❯'*) ;; *) fail "fixture drift: the look-alike capture lost its separator/prompt/rule in the transcript" ;; esac
+  # 1. A still-running tool in a bare shell: two titled separators with output
+  #    between them are a decorated report, not a composer.
+  assert_screen "decorated tool output on herdr" unknown "$CAPS_STYLED" "$shell" '' probe-absent
+  assert_screen "decorated tool output on zellij" unknown "$CAPS_STYLED_NOID" "$shell"
+  assert_screen "decorated tool output on cmux/orca" unknown "$CAPS_PLAIN" "$shell"
+  assert_screen "decorated tool output on tmux" unknown "$CAPS_TMUX" "$shell" 5 probe-absent
+  # 2. A named claude whose transcript holds decorative separators: the verdict
+  #    comes from the real composer at the bottom, which holds no text.
+  assert_screen "named claude over decorative scrollback on herdr" empty "$CAPS_STYLED" "$named" '' probe-absent
+  assert_screen "named claude over decorative scrollback on zellij" empty "$CAPS_STYLED_NOID" "$named"
+  assert_screen "named claude over decorative scrollback on cmux/orca" empty "$CAPS_PLAIN" "$named"
+  assert_screen "named claude over decorative scrollback on tmux" empty "$CAPS_TMUX" "$named" 16 probe-absent
+  out=$(fm_composer_extract_selected_content "$CAPS_STYLED" "$named")
+  [ -z "$out" ] || fail "the decorative scrollback must never be extracted as composer content, got '$out'"
+  # 3. A rendered separator / prompt / rule printed into the transcript (the
+  #    shape a peeked worker pane leaves behind): the bottom-most composer is
+  #    selected, not the look-alike above it.
+  assert_screen "look-alike scrollback on herdr" empty "$CAPS_STYLED" "$lookalike" '' probe-absent
+  assert_screen "look-alike scrollback on zellij" empty "$CAPS_STYLED_NOID" "$lookalike"
+  assert_screen "look-alike scrollback on cmux/orca" empty "$CAPS_PLAIN" "$lookalike"
+  out=$(fm_composer_extract_selected_content "$CAPS_STYLED" "$lookalike")
+  [ -z "$out" ] || fail "the look-alike above the real composer must never be extracted as composer content, got '$out'"
+  pass "fm_composer_classify_screen: decorative titled separators prove no composer and displace no real one"
+}
+
+test_titled_rule_lookalike_known_limitation() {
+  # KNOWN LIMITATION, pinned so a future fix flips it deliberately. On the
+  # cursorless read, a pane that is NOT showing a real composer whose visible
+  # tail ends with a separator directly above a bare agent-glyph row and a rule
+  # reads as a proven composer. The plain arrangement already did before titled
+  # rules were accepted; the titled one now matches it. tmux is unaffected: its
+  # cursor anchors the composer row, and the cursor here is not on the glyph.
+  local titled plain
+  titled=$(cat "$TITLED_CAPTURES/tmux-shell-lookalike-titled-running.ansi")
+  plain=$(cat "$TITLED_CAPTURES/tmux-shell-lookalike-plain-running.ansi")
+  case "$titled" in *'─ Results ─'*'❯'*) ;; *) fail "fixture drift: the titled look-alike capture lost its titled separator over the prompt row" ;; esac
+  case "$plain" in *'─ '*) fail "fixture drift: the plain look-alike capture gained a title" ;; esac
+  assert_screen "known limitation: plain look-alike on herdr" empty "$CAPS_STYLED" "$plain" '' probe-absent
+  assert_screen "known limitation: plain look-alike on zellij" empty "$CAPS_STYLED_NOID" "$plain"
+  assert_screen "known limitation: plain look-alike on cmux/orca" empty "$CAPS_PLAIN" "$plain"
+  assert_screen "plain look-alike on tmux" unknown "$CAPS_TMUX" "$plain" 4 probe-absent
+  assert_screen "known limitation: titled look-alike on herdr" empty "$CAPS_STYLED" "$titled" '' probe-absent
+  assert_screen "known limitation: titled look-alike on zellij" empty "$CAPS_STYLED_NOID" "$titled"
+  assert_screen "known limitation: titled look-alike on cmux/orca" empty "$CAPS_PLAIN" "$titled"
+  assert_screen "titled look-alike on tmux" unknown "$CAPS_TMUX" "$titled" 4 probe-absent
+  pass "fm_composer_classify_screen: the titled look-alike matches the plain one (known cursorless limitation)"
+}
+
 test_composer_footer_demotion_needs_a_proven_pair() {
   # The demotion is bounded in three directions, and each bound is a case
   # where a lower glyph row IS the live composer.
@@ -918,6 +1096,10 @@ test_idle_placeholder_case_mode_is_explicit
 test_real_text_is_pending
 test_matrix_claude_bare_nbsp_row
 test_matrix_claude_arrow_statusline_footer
+test_matrix_claude_titled_top_rule
+test_titled_rule_guard_still_guards
+test_titled_rule_decoration_is_not_a_composer
+test_titled_rule_lookalike_known_limitation
 test_composer_footer_demotion_needs_a_proven_pair
 test_composer_footer_zone_is_shape_independent
 test_composer_footer_zone_refuses_rather_than_allows

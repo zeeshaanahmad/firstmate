@@ -1,0 +1,20 @@
+[38;2;255;255;255m⏺[39m Great - all tests passing. What would you like me to help with?
+
+[38;2;153;153;153m✻[39m [38;2;153;153;153mWorked for 4s · done 4:04 PM
+
+[38;2;253;93;177m[48;2;65;60;65m! [38;2;255;255;255m./lookalike.sh[39m
+[38;2;153;153;153m[49m  ⎿  [39mbuild finished in 4.2s
+     ──────────────────────────────── Results ─
+     ❯
+     ──────────────────────────────────────────
+
+[38;2;255;255;255m⏺[39m The results section is incomplete - no test counts shown. What would you like me to do? Should I investigate the
+  [38;2;177;185;249mlookalike.sh[39m script, or are you working on something specific with these reports?
+
+[38;2;153;153;153m✻[39m [38;2;153;153;153mCooked for 2s · done 4:04 PM[39m
+
+[38;2;136;136;136m────────────────────────────────────────────────────────────────────────────────────────────────────────── Fresh named ─
+[39m❯ 
+[38;2;136;136;136m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  [38;2;153;153;153mHaiku 4.5 | ctx: 15% used[39m
+  [38;2;153;153;153m⏸ manual mode on · ← for agents[39m
