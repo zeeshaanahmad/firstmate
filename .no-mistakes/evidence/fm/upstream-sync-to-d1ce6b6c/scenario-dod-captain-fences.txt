@@ -1,0 +1,28 @@
+--- plain marked lines (legacy contract) -> both extracted
+extracted: [Ship the thing.
+And also the other thing.]
+--- backtick fence hides Captain line -> empty
+extracted: []
+--- tilde fence hides Captain line -> empty
+extracted: []
+--- 4-space indented example -> empty
+extracted: []
+--- tab-indented example -> empty
+extracted: []
+--- 3-space indent is still a real marker -> extracted
+extracted: [three-space real ask]
+--- unclosed fence swallows the rest -> empty
+extracted: []
+--- longer fence not ended by shorter closer; real ask after -> only the real ask
+extracted: [real ask after fence]
+--- mixed: real ask, fenced sample, real ask -> two real asks
+extracted: [first real ask
+second real ask]
+
+### end to end: real fm-promote.sh on a legacy brief whose only Captain lines are fenced/indented samples
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+error: /tmp/fm-live-dod.x8PPDZ/data/promo-x/brief.md has no provenance-marked Captain's intent; add the captain's actual words before promotion
+rc=
+brief.md
+meta still: window=fm-promo-x kind=scout worktree=/tmp/wt 

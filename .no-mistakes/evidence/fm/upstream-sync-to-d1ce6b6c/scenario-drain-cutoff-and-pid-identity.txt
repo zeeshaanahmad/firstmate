@@ -1,0 +1,12 @@
+=== W1. drain ack cutoff: a wake that lands after main's drain is NOT claimed by main's acknowledgement
+main drained; presented rows: 1; asked to ack through seq=1
+queue before ack: 1:signal 2:signal 
+ack rc=0
+queue after ack:  2:signal   (task-b must survive, task-a consumed)
+main's NEXT drain presents the late row: 1 (expect 1)
+
+=== W2. watcher pid identity is immune to terminal width (ps COLUMNS truncation, issue #799)
+long-command process alive: pid=63762
+identity length, COLUMNS=10000: 314   COLUMNS=80: 314   COLUMNS=20: 314
+RESULT: identical and non-empty across widths (a live watcher is never rejected by a narrow hook)
+control - raw ps (no pin): COLUMNS=20 length 314 vs COLUMNS=10000 length 314 => raw ps is NOT width-sensitive on this host

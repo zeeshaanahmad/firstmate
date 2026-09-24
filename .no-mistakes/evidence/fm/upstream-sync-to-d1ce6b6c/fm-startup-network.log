@@ -1,0 +1,25 @@
+ok - fm-startup-network: wait fails when no deferred stage publishes before its deadline
+ok - fm-startup-network: start returns immediately and never holds the caller's stdout open
+ok - fm-startup-network: exactly one of the digest and the wake reports each actionable result
+ok - fm-startup-network: a claimant crash after publication still surfaces the result
+ok - fm-startup-network: a report-publication failure is failed, diagnosed, and still wakes
+ok - fm-startup-network: silent and explicitly informational successes never queue a main-blocking wake
+ok - fm-startup-network: an actionable state=done report still queues a wake
+ok - fm-startup-network: deferred invalid secondmate markers produce durable wakes
+ok - fm-startup-network: manual callers cannot forge mutation authority
+ok - fm-startup-network: an aggregate bound turns a wedged sweep into an actionable line
+ok - fm-startup-network: an abandoned run reports as needing a rerun, never as in progress forever
+ok - fm-startup-network: locked requests supersede in-flight probe-only workers
+ok - fm-startup-network: a second start never launches a competing worker
+ok - fm-startup-network: start atomically reserves the generation harvest observes
+ok - fm-startup-network: a new lock owner gets a distinct worker generation
+ok - fm-startup-network: fleet-lock takeover cannot overlap a mutating sweep
+ok - fm-startup-network: timing records share one origin so their offsets form a timeline
+ok - fm-startup-network: timings are durable and printed only on demand
+ok - fm-startup-network: a timed-out run still publishes the partial timings it recorded
+ok - fm-startup-network: the timing artifact cannot carry a command line or forge records
+ok - fm-startup-network: a held publish lock ends the worker inside its budget with a failed-rerun record
+# fm-startup-network.test.sh: all assertions passed
+real 101.19
+user 10.71
+sys 18.75

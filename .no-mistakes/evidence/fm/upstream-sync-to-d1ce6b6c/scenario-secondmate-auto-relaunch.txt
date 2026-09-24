@@ -1,0 +1,52 @@
+NOTES (added after the run)
+- Real bin/fm-watch.sh + fm-secondmate-liveness-lib.sh + fm-spawn.sh against a REAL tmux server (private TMUX_TMPDIR, lab home in /tmp).
+- FM_GATE_REFUSE_BYPASS=1 was set on the lab watcher only (the repo's documented escape hatch for temp-sandbox fleets). Without it the
+  same run is refused by the gate guard: see scenario-secondmate-relaunch-gate-guard-refusal.txt.
+- The relaunched pane's foreground "2.1.282" is the operator's REAL claude binary: fm-spawn resolved it despite the fake on PATH. The
+  sessions it created recorded totalCostUSD=0 and empty modelUsage (no model call was made); the lab tmux server was killed on exit.
+  Side effect outside the lab: fm-spawn's own trust step added a hasTrustDialogAccepted entry for the (now deleted) /private/tmp/fm-live-sm.*/mate
+  path to ~/.claude.json, and three empty session files exist under ~/.claude/projects/-private-tmp-fm-live-sm-dcSv2r-mate/.
+
+
+== LEG 1: agent exited, endpoint alive as a bare shell (recovery-grade 'dead')
+before: windows=[main fm-sm1 ] fm-sm1 foreground=bash pid=80553
+watcher exit wake line:
+   check: secondmate sm1 auto-relaunched after confirmed agent absence on existing endpoint (backend=tmux)
+after:  windows=[main fm-sm1 ] fm-sm1 foreground=2.1.282 pid=81734 (old pid 80553 replaced: yes)
+   ledger: attempt;   ledger: relaunched;
+queue rows: 1
+
+== LEG 2 (adversarial): live pane running an UNKNOWN foreground process must NOT be touched
+before: foreground=sleep pid=84622 ledger rows so far: 2
+(watcher did not wake within 8s; stopped)
+after:  foreground=sleep pid=84622 untouched: yes
+ledger rows after: 2
+watcher stdout (must be empty of relaunch wake): []
+triage log:
+   [2026-09-24T20:58:44+0300] secondmate sm1 liveness: existing endpoint has ambiguous agent process (backend=tmux)
+   [2026-09-24T20:58:46+0300] secondmate sm1 liveness: existing endpoint has ambiguous agent process (backend=tmux)
+
+== LEG 3: endpoint window gone entirely (recovery-grade 'missing')
+before: windows=[main ]
+watcher exit wake line:
+   check: secondmate sm1 auto-relaunched after recorded endpoint confidently missing (backend=tmux)
+after:  windows=[main fm-sm1 ] pid=96322
+   ledger: attempt;   ledger: relaunched;   ledger: attempt;   ledger: relaunched;
+
+== LEG 4 (adversarial): a mate that keeps dying is bounded (MAX_ATTEMPTS=3 within the window), then parked
+kill #1 -> wake: check: secondmate sm1 auto-relaunched after recorded endpoint confidently missing (backend=tmux)
+kill #2 -> wake: check: secondmate sm1 auto-relaunch paused after 3 attempts in 3600s; endpoint still missing - relaunch it manually or retire the route
+kill #3 -> wake: 
+kill #4 -> wake: 
+park marker present: yes
+windows while parked: [main ] (no new fm-sm1 expected after the 4th kill)
+   ledger: attempt;   ledger: relaunched;   ledger: attempt;   ledger: relaunched;   ledger: attempt;   ledger: relaunched;
+
+== LEG 5: manual recovery lifts the park (live probe -> 'rearmed' row, marker cleared)
+manual endpoint foreground=sleep
+park marker present after live probe: no
+   ledger: attempt;   ledger: relaunched;   ledger: attempt;   ledger: relaunched;   ledger: attempt;   ledger: relaunched;   ledger: rearmed;
+   triage: [2026-09-24T21:03:59+0300] secondmate sm1 live again; auto-relaunch pause cleared
+
+watcher stderr across legs (should be free of liveness errors):
+(none above means clean)

@@ -1,0 +1,39 @@
+ship --mode no-mistakes rc=0
+ship --mode direct-PR rc=0
+ship --mode local-only rc=0
+scout rc=0
+secondmate rc=0
+
+### rule 7 as emitted in the ship (no-mistakes) brief:
+7. Never administer infrastructure that every lane shares. Two things are shared:
+   - The `no-mistakes` daemon - one instance serving every lane/home, so stopping, restarting, or
+     updating it kills other lanes' in-flight pipeline runs; only firstmate manages the daemon.
+     Before you append `blocked:` about the pipeline, run `no-mistakes daemon status` and
+     `no-mistakes axi status`. If the daemon socket refuses connections or is missing, append
+     `blocked [at=<epoch>]: {the daemon error}` and stop even when the local run record still says running or
+     fixing, because that record can be stale after the daemon exits. A run record failed with a
+     daemon error is also a real block.
+     Only after ruling out socket refusal, if the run is still running or fixing, reattach and keep
+     going. A drive-call error, timeout, slow read, or generic unreachability is NOT a daemon error:
+     the daemon accepts `respond` immediately and runs the round in the background, so a killed or
+     timed-out call was only waiting for a read while the run kept working.
+   - The worktree pool your own worktree came from, and the repository every lane's worktree
+     shares. Never create, remove, return, prune, move, or reassign a worktree or pool slot, and
+     never write into a sibling slot's directory. Rule 2 does not cover this: removing a worktree
+     is administration rather than an edit outside your directory, and it lands on lanes that are
+     running right now. The act is the rule and commands are only examples of it - `treehouse`
+     get/return/remove/prune, the equivalent operations on any other worktree provider or runtime
+     backend, and `git worktree add|remove|move|prune`. A slot that looks unused is not evidence
+     that it is free, and returning your own worktree is firstmate's job at cleanup, not yours.
+   If you genuinely need a second checkout, another slot, or the daemon touched, append
+   `blocked [at=<epoch>]: {what you need}` and stop; firstmate arranges it.
+
+### presence counts of the pool-administration prohibition per brief kind:
+live-ship-no-mistakes      pool-admin-rule=1 daemon-rule=1
+live-ship-direct-PR        pool-admin-rule=1 daemon-rule=1
+live-ship-local-only       pool-admin-rule=1 daemon-rule=1
+live-scout                 pool-admin-rule=1 daemon-rule=1
+live-mate                  pool-admin-rule=0 daemon-rule=0
+
+### ship and scout emit byte-identical rule 7 block?
+identical across ship modes and scout (      22 lines)

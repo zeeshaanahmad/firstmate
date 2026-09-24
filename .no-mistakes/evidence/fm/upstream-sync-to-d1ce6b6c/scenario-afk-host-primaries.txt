@@ -1,0 +1,32 @@
+captain session panes: 1   sessions=[captain ]
+
+=== A. opted-in home (config/supervision-host present), AWAY mode: no daemon on every host primary
+claude    enter rc=0 posture=recorded | start rc=1 daemon-terminal-record=no sessions=[captain ]
+          fm-afk-launch: the away daemon is not launched on this claude home, which runs the supervision host (config/supervision-host); the away-posture record is the posture here (run bin/fm-afk-launch.sh ent
+cursor    enter rc=0 posture=recorded | start rc=1 daemon-terminal-record=no sessions=[captain ]
+          fm-afk-launch: the away daemon is not launched on this cursor home, which runs the supervision host (config/supervision-host); the away-posture record is the posture here (run bin/fm-afk-launch.sh ent
+opencode  enter rc=0 posture=recorded | start rc=1 daemon-terminal-record=no sessions=[captain ]
+          fm-afk-launch: the away daemon is not launched on this opencode home, which runs the supervision host (config/supervision-host); the away-posture record is the posture here (run bin/fm-afk-launch.sh e
+omp       enter rc=0 posture=recorded | start rc=1 daemon-terminal-record=no sessions=[captain ]
+          fm-afk-launch: the away daemon is not launched on this omp home, which runs the supervision host (config/supervision-host); the away-posture record is the posture here (run bin/fm-afk-launch.sh enter 
+grok      enter rc=0 posture=recorded | start rc=1 daemon-terminal-record=no sessions=[captain ]
+          fm-afk-launch: the away daemon is not launched on this grok home, which runs the supervision host (config/supervision-host); the away-posture record is the posture here (run bin/fm-afk-launch.sh enter
+codex     enter rc=0 posture=recorded | start rc=1 daemon-terminal-record=no sessions=[captain ]
+          fm-afk-launch: the away daemon is not launched on this codex home, which runs the supervision host (config/supervision-host); the away-posture record is the posture here (run bin/fm-afk-launch.sh ente
+
+=== B. same harnesses, home WITHOUT config/supervision-host: daemon still launched in its own detached tmux session, closed by exact id on stop
+codex     start rc=0 record=fm-afk-daemon-726424249-92723-8347-1790273199 has-session=yes captain-panes 1->1
+          after stop: session-gone=yes record-cleared=yes .afk-cleared=yes
+opencode  start rc=0 record=fm-afk-daemon-2076925371-93138-10248-1790273200 has-session=yes captain-panes 1->1
+          after stop: session-gone=yes record-cleared=yes .afk-cleared=yes
+
+=== C. adversarial: opted-in home, QUIET mode still launches the daemon; kimi (no arm owner) keeps the daemon even opted in
+codex opted-in QUIET: start rc=0 daemon session=fm-afk-daemon-918797543-93550-23369-1790273201 (running: yes)
+kimi opted-in AWAY:  start rc=0 daemon session=fm-afk-daemon-3157013768-93947-17041-1790273202 (running: yes)
+
+=== D. enter says so when the host has no engine for the primary, and stays quiet otherwise
+cursor + empty config/supervision-host   -> Supervision host: no engine runs the away session on this home (the primary harness 'cursor' has no verified supervision engine), so every away wake reaches this conversation; name a verifie
+cursor + "claude" engine named           -> []
+cursor + no config/supervision-host       -> []
+
+sessions left at end: [captain ] (only 'captain' expected)

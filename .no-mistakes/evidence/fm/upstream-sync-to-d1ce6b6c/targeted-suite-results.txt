@@ -1,0 +1,26 @@
+Targeted suites run against the merged tree (each exit code):
+fm-tasks-axi exit=0
+fm-dod-lib exit=0
+fm-guard-stale-banner exit=0
+fm-startup-network exit=0
+fm-watch-checkpoint exit=0
+fm-composer-lib exit=0
+fm-brief exit=0
+fm-afk-launch exit=0
+fm-secondmate-liveness exit=0
+fm-watcher-lock exit=0
+fm-supervision-instructions exit=0
+fm-pi-watch-extension exit=1
+fm-secondmate-reconcile exit=0
+fm-omp-harness exit=0
+fm-cursor-primary exit=0
+fm-supervision-host exit=0
+fm-wake-queue exit=0
+fm-watch-triage exit=0
+fm-secondmate-lifecycle-e2e exit=0
+fm-remote-secondmate-lifecycle-e2e exit=0
+fm-bootstrap-network-parallel exit=0
+fm-secondmate-restart exit=0
+fm-secondmate-sync exit=0
+fm-bootstrap exit=0
+fm-pi-watch-extension exit=0 when run alone (3/3); exit=1 only under 8-way suite contention (see pi-watch-extension-contention-flake.txt; identical on base)

@@ -1,0 +1,72 @@
+### S1: add --start refused (real tasks-axi on PATH)
+$ fm-tasks-axi.sh add live-1 "hand started" --start
+fm-tasks-axi: add --start would place a row In flight with no dispatch record; add it Queued and let bin/fm-spawn.sh start it
+rc=2
+
+$ fm-tasks-axi.sh create live-c "hand started via alias" --start
+fm-tasks-axi: add --start would place a row In flight with no dispatch record; add it Queued and let bin/fm-spawn.sh start it
+rc=2
+
+### backlog after refusals (must be unchanged/empty):
+## In flight
+
+## Queued
+
+## Done
+
+$ fm-tasks-axi.sh add live-2 "plain queued"
+ok: added live-2 -> Queued
+task:
+  id: live-2
+  title: plain queued
+  state: queued
+  blocked: no
+  blocked_by: none
+  held: no
+  hold_reason: "-"
+  hold_kind: "-"
+  hold_until: "-"
+  kind: task
+  repo: "-"
+  priority: "-"
+  created: 2026-09-24
+  closed: "-"
+  deps: none
+  links: none
+  body: ""
+help[2]:
+  - Run `tasks-axi start live-2` to move it to in flight
+  - Run `tasks-axi block live-2 --by <other>` to record a dependency
+rc=0
+
+### backlog after plain add:
+## In flight
+
+## Queued
+- [ ] live-2 - plain queued (since 2026-09-24)
+
+## Done
+
+$ fm-tasks-axi.sh start live-2  (documented direct transition)
+ok: start live-2 -> In flight
+help[1]:
+  - Run `tasks-axi done live-2 --pr <url>` when it ships
+rc=0
+
+### backlog after start <id>:
+## In flight
+- [ ] live-2 - plain queued (since 2026-09-24)
+
+## Queued
+## Done
+
+$ adversarial: --start before verb ordering / flag position: add --start live-3 "x"
+fm-tasks-axi: add --start would place a row In flight with no dispatch record; add it Queued and let bin/fm-spawn.sh start it
+rc=2
+
+### backlog (live-3 must be absent):
+## In flight
+- [ ] live-2 - plain queued (since 2026-09-24)
+
+## Queued
+## Done

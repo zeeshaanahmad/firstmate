@@ -1,0 +1,42 @@
+
+== LEG 1: agent exited, endpoint alive as a bare shell (recovery-grade 'dead')
+before: windows=[main fm-sm1 ] fm-sm1 foreground=bash pid=92832
+watcher exit wake line:
+   check: secondmate sm1 auto-relaunch failed after confirmed agent absence on existing endpoint: error: no-mistakes gate agent must not drive the fleet (NO_MISTAKES_GATE set)
+after:  windows=[main ] fm-sm1 foreground=zsh pid= (old pid 92832 replaced: yes)
+   ledger: attempt;   ledger: failed;
+queue rows: 0
+
+== LEG 2 (adversarial): live pane running an UNKNOWN foreground process must NOT be touched
+before: foreground=sleep pid=98602 ledger rows so far: 2
+(watcher did not wake within 8s; stopped)
+after:  foreground=sleep pid=98602 untouched: yes
+ledger rows after: 2
+watcher stdout (must be empty of relaunch wake): []
+triage log:
+   [2026-09-24T20:52:25+0300] secondmate sm1 liveness: existing endpoint has ambiguous agent process (backend=tmux)
+   [2026-09-24T20:52:27+0300] secondmate sm1 liveness: existing endpoint has ambiguous agent process (backend=tmux)
+
+== LEG 3: endpoint window gone entirely (recovery-grade 'missing')
+before: windows=[main ]
+watcher exit wake line:
+   check: secondmate sm1 auto-relaunch failed after recorded endpoint confidently missing: error: no-mistakes gate agent must not drive the fleet (NO_MISTAKES_GATE set)
+after:  windows=[main ] pid=
+   ledger: attempt;   ledger: failed;   ledger: attempt;   ledger: failed;
+
+== LEG 4 (adversarial): a mate that keeps dying is bounded (MAX_ATTEMPTS=3 within the window), then parked
+kill #1 -> wake: check: secondmate sm1 auto-relaunch failed after recorded endpoint confidently missing: error: no-mistakes gate agent must not drive the fleet (NO_MISTAKES_GATE set)
+kill #2 -> wake: check: secondmate sm1 auto-relaunch paused after 3 attempts in 3600s; endpoint still missing - relaunch it manually or retire the route
+kill #3 -> wake: 
+kill #4 -> wake: 
+park marker present: yes
+windows while parked: [main ] (no new fm-sm1 expected after the 4th kill)
+   ledger: attempt;   ledger: failed;   ledger: attempt;   ledger: failed;   ledger: attempt;   ledger: failed;
+
+== LEG 5: manual recovery lifts the park (live probe -> 'rearmed' row, marker cleared)
+manual endpoint foreground=zsh
+park marker present after live probe: yes
+   ledger: attempt;   ledger: failed;   ledger: attempt;   ledger: failed;   ledger: attempt;   ledger: failed;
+
+watcher stderr across legs (should be free of liveness errors):
+(none above means clean)

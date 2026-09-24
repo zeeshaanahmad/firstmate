@@ -1,0 +1,6 @@
+fm-pi-watch-extension: 'Pi redundant tool call ...' case, contention analysis
+- Merged tree, alone:            3/3 runs pass (fm-pi-watch-extension.rerun{1,2,3}.log)
+- Merged tree, 12 parallel:      12/12 fail with: not ok - Pi redundant tool call must remain an ownership-based no-op with repair-only guidance: expected exit 0, got 1
+- Base 57ba4995, 6 parallel:     6/6 fail identically
+- Root cause (debug copy, 6 parallel): Error: initial arm child did not start -- the test polls only 1s for its arm child to start
+- Code path is byte-identical between base and merge (.pi/**, bin/fm-operational-input.sh untouched by the sync).
