@@ -718,7 +718,7 @@ Verified on 2026-09-24 on macOS arm64 (Darwin 25.6.0) against Claude Code 2.1.28
 Claude draws a named session's display name into its composer's TOP rule as `<rule glyphs> <name> ─`, and it does so for every named session: a fresh `claude --name <name>` launch, a fresh unnamed session renamed with `/rename <name>`, and a resumed named session all drew it.
 A plain `─` rule is the only separator the cursorless read used to accept, so on a titled pane it found only the closing rule, took that lone rule below the `❯` row as evidence of a stale candidate, and answered `unknown` for an idle composer.
 Every caller that needs a proven `empty` composer refused that pane, including the away-mode injector and `bin/fm-control.sh`'s exit command, and Herdr's Claude delivery proof and zellij's pre-send check failed every steer outright because they could not read the composer back.
-The doorbell and secondmate rings defer only on `pending`, so they could not see a draft in a titled composer; that draft now reads `pending` and defers them.
+The doorbell and secondmate rings defer only on `pending`, so they could not see a draft in a titled composer; that draft now reads `pending` on the styled readers (tmux, Herdr, zellij) and defers them, while plain-text cmux and orca still degrade a glyph row carrying trailing text to `unknown`, as they do for an untitled composer.
 The tmux adapter was never affected, because its cursor anchors the `❯` row directly.
 
 The classifier now accepts a titled rule only when it is still recognisably a rule (`_fm_composer_titled_rule_row` in `bin/fm-composer-lib.sh` owns the exact test), and a separator pair that a titled rule bounds is proven only by the agent glyph inside it, never by Pi's identity-gated blank region.

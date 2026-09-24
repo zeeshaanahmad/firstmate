@@ -1868,6 +1868,8 @@ _fm_composer_classify_bare_pi_overlap() {  # <screen> <styled> <has-identity> <i
 # is drawn above the separator pair, so the composer region looks free while the
 # keys would answer the prompt instead of composing (issue #2797). Structure
 # cannot disprove that, so a blocked pi defers rather than claiming empty.
+# A pair bounded by a titled rule (FM_COMPOSER_SCAN_PI_TITLED) is never proven
+# by this identity path: only the agent glyph inside such a pair proves it.
 _fm_composer_pi_verdict() {  # <screen> <styled> <has_identity> <identity>
   local screen=$1 styled=$2 has_identity=$3 identity=$4 agent agent_status state
   if [ "$has_identity" != 1 ]; then
