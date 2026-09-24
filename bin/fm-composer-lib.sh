@@ -77,6 +77,11 @@
 #                different, self-proving thing: real claude 2.x draws exactly
 #                that (`─` rule, `❯`+NBSP, `─` rule), so the glyph inside the
 #                pair carries the shape and no identity is needed.
+#                Claude writes a named session's title into the TOP rule
+#                (`──── <name> ─`); such a TITLED rule separates like a plain
+#                one only while it is still recognisably a rule
+#                (_fm_composer_titled_rule_row), and a pair it bounds is
+#                proven only by that inner glyph, never by identity alone.
 #
 # THE COMPOSER FOOTER ZONE (task firstmate-doorbell-vals-pending-p1): a
 # harness draws its own furniture BELOW the composer - a user statusLine, a
@@ -752,6 +757,53 @@ _fm_composer_pi_separator_row() {  # <trimmed-row>
   return 1
 }
 
+# _fm_composer_titled_rule_row: a solid `─` rule with a session title embedded
+# near its right end, the shape claude 2.x draws on its composer's TOP rule for
+# any named session (`--name`, `/rename`, or a resumed named session; verified
+# live on claude 2.1.281, see docs/verification/runtime-backends.md):
+# `──────── Main Firstmate session ─`. Accepted only when the row is still
+# recognisably a rule:
+#   - it opens with at least 8 rule glyphs (the plain rule's own floor) and
+#     closes with at least one;
+#   - exactly one space pads each side of the title, and the title itself is
+#     non-blank and holds no rule glyph, so the two rule runs are unambiguous;
+#   - the rule glyphs outnumber every other column on the row, counting each
+#     non-ASCII title character as two columns so a wide title can only make
+#     the row read LESS like a rule.
+# Prose that merely contains dashes, a title with no rule before it, and a
+# title long enough to crowd out the rule (claude lets a long name eat the
+# whole rule) all fail, and a row that fails is no separator at all.
+_fm_composer_titled_rule_row() {  # <trimmed-row>
+  local row=$1 rest lead=0 tail=0 title width
+  case "$row" in
+    ────────*' '*' '*─) ;;
+    *) return 1 ;;
+  esac
+  rest=$row
+  while [ "${rest#─}" != "$rest" ]; do rest=${rest#─}; lead=$((lead + 1)); done
+  while [ "${rest%─}" != "$rest" ]; do rest=${rest%─}; tail=$((tail + 1)); done
+  case "$rest" in
+    ' '*' ') title=${rest#' '}; title=${title%' '} ;;
+    *) return 1 ;;
+  esac
+  case "$title" in
+    ''|' '*|*' '|*─*) return 1 ;;
+  esac
+  width=$(printf '%s' "$title" | LC_ALL=C awk '
+    {
+      n = length($0); w = 0
+      for (i = 1; i <= n; i++) {
+        c = substr($0, i, 1)
+        if (c < "\200") w += 1
+        else if (c >= "\300") w += 2
+      }
+      printf "%d", w
+    }
+  ')
+  case "$width" in ''|*[!0-9]*) return 1 ;; esac
+  [ $((lead + tail)) -gt $((width + 2)) ]
+}
+
 # Row-scan results are returned through FM_COMPOSER_SCAN_* globals (bash 3.2
 # has no nameref); they are internal to this owner.
 _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
@@ -777,6 +829,7 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
   FM_COMPOSER_SCAN_PI_OPEN=-1
   FM_COMPOSER_SCAN_PI_CLOSE=-1
   FM_COMPOSER_SCAN_PI_LAST_SEPARATOR=-1
+  FM_COMPOSER_SCAN_PI_TITLED=0
   # The glyph PROOF of each envelope: the first row strictly inside it whose
   # content leads with an agent prompt glyph once its side borders are
   # stripped, and that glyph. This is what tells a composer container from a
@@ -789,7 +842,7 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
   FM_COMPOSER_SCAN_LEFTBAR_GLYPH_ROW=-1
   FM_COMPOSER_SCAN_LEFTBAR_GLYPH=
   local leftbar_start=-1 pi_open=-1 pi_lines=0 pi_max
-  local probe row_glyph row_glyph_row
+  local probe row_glyph row_glyph_row row_titled pi_open_titled=0
   local box_glyph_row=-1 box_glyph='' pi_glyph_row=-1 pi_glyph=''
   pi_max=$FM_COMPOSER_PI_MAX_LINES
   case "$pi_max" in ''|*[!0-9]*|0) pi_max=8 ;; esac
@@ -834,12 +887,18 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
     # Pi separator rows: a solid `─` rule at least 8 columns wide. A separator
     # closes the preceding candidate and immediately opens the next, so an
     # earlier transcript rule can never outrank the live bottom composer pair.
-    if _fm_composer_pi_separator_row "$trimmed"; then
+    # A TITLED rule (claude's named-session top rule) separates the same way,
+    # but a pair it bounds is recorded as titled: only the agent glyph inside
+    # it can prove that pair, never pi's identity-gated blank region.
+    row_titled=0
+    if _fm_composer_pi_separator_row "$trimmed" \
+       || { _fm_composer_titled_rule_row "$trimmed" && row_titled=1; }; then
       FM_COMPOSER_SCAN_PI_LAST_SEPARATOR=$row
       if [ "$pi_open" -ge 0 ]; then
         FM_COMPOSER_SCAN_PI_PAIR_FOUND=1
         FM_COMPOSER_SCAN_PI_OPEN=$pi_open
         FM_COMPOSER_SCAN_PI_CLOSE=$row
+        FM_COMPOSER_SCAN_PI_TITLED=$((pi_open_titled | row_titled))
         if [ "$pi_lines" -le "$pi_max" ]; then
           FM_COMPOSER_SCAN_PI_PAIR_VALID=1
         else
@@ -849,6 +908,7 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
         FM_COMPOSER_SCAN_PI_GLYPH=$pi_glyph
       fi
       pi_open=$row
+      pi_open_titled=$row_titled
       pi_lines=0
       pi_glyph_row=-1
       pi_glyph=''
@@ -1810,7 +1870,8 @@ _fm_composer_pi_verdict() {  # <screen> <styled> <has_identity> <identity>
   fi
   agent=${identity%%$'\t'*}
   agent_status=${identity#*$'\t'}
-  if [ "$agent" != pi ] || [ "$FM_COMPOSER_SCAN_PI_PAIR_VALID" != 1 ]; then
+  if [ "$agent" != pi ] || [ "$FM_COMPOSER_SCAN_PI_PAIR_VALID" != 1 ] \
+     || [ "$FM_COMPOSER_SCAN_PI_TITLED" = 1 ]; then
     printf 'unknown'
     return 0
   fi
