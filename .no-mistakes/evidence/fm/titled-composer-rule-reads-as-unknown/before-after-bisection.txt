@@ -1,0 +1,13 @@
+=== BASE d4f3b78e (before) ===
+1a supervisor capture as-is (titled top rule)                            unknown
+1b supervisor, title in TOP rule replaced by plain ─                   empty
+2a worker capture as-is (plain rules)                                    empty
+2b worker, single-char title 'x' inserted into TOP rule                  unknown
+3  worker, same title inserted into BOTTOM rule only                     empty
+
+=== TARGET 281d3785 (after) ===
+1a supervisor capture as-is (titled top rule)                            empty
+1b supervisor, title in TOP rule replaced by plain ─                   empty
+2a worker capture as-is (plain rules)                                    empty
+2b worker, single-char title 'x' inserted into TOP rule                  empty
+3  worker, same title inserted into BOTTOM rule only                     empty

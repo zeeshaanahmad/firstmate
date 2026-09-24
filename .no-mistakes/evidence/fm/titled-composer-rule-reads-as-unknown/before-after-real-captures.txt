@@ -1,0 +1,55 @@
+=== BASE d4f3b78e (before) (/var/folders/3m/025g2l697z5gxqyzmlnt2w140000gn/T//fm-titled-verify.dm23H4/base-composer-lib.sh) ===
+CAPTURE                        ADAPTER                VERDICT
+herdr-resumed-named-idle       herdr                  unknown
+herdr-resumed-named-idle       zellij                 unknown
+herdr-resumed-named-idle       cmux/orca              unknown
+tmux-named-idle                herdr                  unknown
+tmux-named-idle                zellij                 unknown
+tmux-named-idle                cmux/orca              unknown
+tmux-named-idle                tmux                   empty
+tmux-renamed-idle              herdr                  unknown
+tmux-renamed-idle              zellij                 unknown
+tmux-renamed-idle              cmux/orca              unknown
+tmux-renamed-idle              tmux                   empty
+tmux-plain-idle                herdr                  empty
+tmux-plain-idle                zellij                 empty
+tmux-plain-idle                cmux/orca              empty
+tmux-plain-idle                tmux                   empty
+tmux-named-draft               herdr                  unknown
+tmux-named-draft               zellij                 unknown
+tmux-named-draft               cmux/orca              unknown
+tmux-named-draft               tmux                   pending
+--- non-composer panes (must NOT read empty) ---
+tmux-exited-to-shell           herdr                  unknown
+tmux-shell-decorative-running  herdr                  unknown
+tmux-shell-decorative-running  cmux/orca              unknown
+--- real composer under decorative titled separators in transcript (should read empty on the fix) ---
+tmux-named-decorative-scrollback herdr                  unknown
+
+=== TARGET 281d3785 (after) (/Users/muhammadzahmed/.no-mistakes/worktrees/c3eda0adcf59/01M39QN1ZKE64VD0TWCB885DZX/bin/fm-composer-lib.sh) ===
+CAPTURE                        ADAPTER                VERDICT
+herdr-resumed-named-idle       herdr                  empty
+herdr-resumed-named-idle       zellij                 empty
+herdr-resumed-named-idle       cmux/orca              empty
+tmux-named-idle                herdr                  empty
+tmux-named-idle                zellij                 empty
+tmux-named-idle                cmux/orca              empty
+tmux-named-idle                tmux                   empty
+tmux-renamed-idle              herdr                  empty
+tmux-renamed-idle              zellij                 empty
+tmux-renamed-idle              cmux/orca              empty
+tmux-renamed-idle              tmux                   empty
+tmux-plain-idle                herdr                  empty
+tmux-plain-idle                zellij                 empty
+tmux-plain-idle                cmux/orca              empty
+tmux-plain-idle                tmux                   empty
+tmux-named-draft               herdr                  pending
+tmux-named-draft               zellij                 pending
+tmux-named-draft               cmux/orca              unknown
+tmux-named-draft               tmux                   pending
+--- non-composer panes (must NOT read empty) ---
+tmux-exited-to-shell           herdr                  unknown
+tmux-shell-decorative-running  herdr                  unknown
+tmux-shell-decorative-running  cmux/orca              unknown
+--- real composer under decorative titled separators in transcript (should read empty on the fix) ---
+tmux-named-decorative-scrollback herdr                  empty

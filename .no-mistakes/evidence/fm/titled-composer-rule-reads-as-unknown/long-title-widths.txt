@@ -1,0 +1,21 @@
+=== BASE d4f3b78e (before) ===
+COLS      TITLE_LEN   LEAD_RULE VERDICT_herdr/cmux
+120       50          66        unknown / unknown
+120       60          56        unknown / unknown
+120       80          36        unknown / unknown
+80        30          46        unknown / unknown
+80        38          38        unknown / unknown
+60        22          34        unknown / unknown
+60        34          22        unknown / unknown
+120       110         5         unknown / unknown   (fewer than 8 leading glyphs: stays unknown by design)
+
+=== TARGET 281d3785 (after) ===
+COLS      TITLE_LEN   LEAD_RULE VERDICT_herdr/cmux
+120       50          66        empty / empty
+120       60          56        empty / empty
+120       80          36        empty / empty
+80        30          46        empty / empty
+80        38          38        empty / empty
+60        22          34        empty / empty
+60        34          22        empty / empty
+120       110         5         unknown / unknown   (fewer than 8 leading glyphs: stays unknown by design)

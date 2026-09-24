@@ -1,0 +1,22 @@
+### live verdicts on real Claude Code 2.1.281 (Claude Code)
+plain (no name)                    tmux-adapter(base)=empty    tmux-adapter(fix)=empty    cursorless(base)=empty    cursorless(fix)=empty
+--name 'fm composer title probe'   tmux-adapter(base)=empty    tmux-adapter(fix)=empty    cursorless(base)=unknown  cursorless(fix)=empty
+--name <60-char descriptive name>  tmux-adapter(base)=empty    tmux-adapter(fix)=empty    cursorless(base)=unknown  cursorless(fix)=empty
+### after typing an unsent draft into the named session
+named + unsent draft               tmux-adapter(base)=pending  tmux-adapter(fix)=pending  cursorless(base)=unknown  cursorless(fix)=pending
+
+### real pane, window named (tmux capture-pane -p, non-blank rows)
+|                                                                                                                       tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reattach for focus tracking
+| ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── fm composer title probe ─
+| ❯ draft text not sent
+| ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+|   Sonnet 5 │ firstmate
+|   ⏵⏵ auto mode on (shift+tab to cycle)
+
+### real pane, window renamed-long (tmux capture-pane -p, non-blank rows)
+|                                                                                                                       tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reattach for focus tracking
+| ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Main Firstmate session: away supervision and captain relay ─
+| ❯ 
+| ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+|   Sonnet 5 │ firstmate
+|   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
