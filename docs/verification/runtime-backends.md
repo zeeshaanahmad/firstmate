@@ -712,35 +712,6 @@ Cursor is deliberately outside this cursor-anchored empty-composer matrix becaus
 
 `zellij action dump-screen --pane-id <id> --ansi` was verified at zellij 0.44.0 to preserve ANSI styling (real Claude Code rendered inside a zellij pane dumped `ESC[m` `❯` U+00A0 for its idle composer row), which is the capability the zellij composer classifier reads.
 
-### 2026-09-24 claude named-session title in the composer's top rule
-
-Verified on 2026-09-24 on macOS arm64 (Darwin 25.6.0) against Claude Code 2.1.281 on a private tmux 3.6b socket and a resumed Claude Code 2.1.274 session on Herdr 0.9.0.
-Claude draws a named session's display name into its composer's TOP rule as `<rule glyphs> <name> ─`, and it does so for every named session: a fresh `claude --name <name>` launch, a fresh unnamed session renamed with `/rename <name>`, and a resumed named session all drew it.
-A plain `─` rule is the only separator the cursorless read used to accept, so on a titled pane it found only the closing rule, took that lone rule below the `❯` row as evidence of a stale candidate, and answered `unknown` for an idle composer.
-Every caller that needs a proven `empty` composer refused that pane, including the away-mode injector and `bin/fm-control.sh`'s exit command, and Herdr's Claude delivery proof and zellij's pre-send check failed every steer outright because they could not read the composer back.
-The doorbell and secondmate rings defer only on `pending`, so they could not see a draft in a titled composer; that draft now reads `pending` on the styled readers (tmux, Herdr, zellij) and defers them, while plain-text cmux and orca still degrade a glyph row carrying trailing text to `unknown`, as they do for an untitled composer.
-The tmux adapter was never affected, because its cursor anchors the `❯` row directly.
-
-The classifier now accepts a titled rule only when it is still recognisably a rule (`_fm_composer_titled_rule_row` in `bin/fm-composer-lib.sh` owns the exact test), and a separator pair that a titled rule bounds is proven only by the agent glyph inside it, never by Pi's identity-gated blank region.
-The test is structural, so a title of any length still reads as a rule; only a name so long that fewer than 8 leading rule glyphs remain (at 200 columns a 240-character name left none) still reads `unknown`.
-One limitation is known and unchanged in kind: on the cursorless read, a pane that is not showing a real composer but whose visible tail ends with a separator directly above a bare agent-glyph row and a rule can read `empty`, and the titled shape now joins the plain shape in that (see `_fm_composer_titled_rule_row` in `bin/fm-composer-lib.sh`).
-The real captures and their provenance are in `tests/captures/claude-titled-composer-rule/`, replayed by `test_matrix_claude_titled_top_rule`, `test_titled_rule_guard_still_guards`, `test_titled_rule_decoration_is_not_a_composer`, and `test_titled_rule_lookalike_known_limitation` in `tests/fm-composer-lib.test.sh`.
-
-The live refresh is the composer-matrix guard's `claude-named` arm, which launches `claude --name 'fm composer title probe'`, requires the pane to show that titled rule, and requires its cursorless read to be exactly `empty`:
-
-```sh
-FM_COMPOSER_MATRIX_LIVE=1 tests/fm-composer-matrix-live-e2e.test.sh
-```
-
-Observed `claude-named` output on the unmodified classifier, then with the fix:
-
-```text
-not ok - claude-named (2.1.281 (Claude Code)): a proven-idle composer read cursorless as unknown, expected empty
-ok - claude-named (2.1.281 (Claude Code)): the same idle pane read cursorless is empty
-```
-
-The same run confirmed plain `claude` 2.1.281, codex-cli 0.154.0, and opencode 1.18.18 unchanged; Pi 0.85.1 parked on its own folder-trust dialog for the unregistered task checkout and was not verified.
-
 ### 2026-09-20 claude 2.1.236 statusLine footer through Herdr
 
 Verified on 2026-09-20 on macOS arm64 (Darwin 25.6.0) against Claude Code 2.1.236 running as Firstmate workers in Herdr 0.8.0 panes, read through Herdr's ANSI capture with its exact capability descriptor (`styled=1`, `cursor=0`, `identity=1`, `rows=20`).

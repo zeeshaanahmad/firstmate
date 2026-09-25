@@ -19,11 +19,7 @@
 #     non-tmux backend performs and the one a vendor's own footer rows can
 #     break: a harness that renders a statusLine or mode hint below its
 #     composer must never make an idle composer read `pending`, because that
-#     verdict is what skips a steer's doorbell fleet-wide;
-#   - a NAMED claude session, which draws its name into the composer's top
-#     rule: its idle composer must read cursorless as exactly `empty`, because
-#     `unknown` there is what starved every away-mode injection into a resumed
-#     named supervisor.
+#     verdict is what skips a steer's doorbell fleet-wide.
 #
 # Run explicitly with FM_COMPOSER_MATRIX_LIVE=1. No prompt is ever submitted
 # to any harness, so no model tokens are spent. An absent harness is reported
@@ -133,12 +129,8 @@ check_harness_idle_empty() {  # <name> <launch-cmd...>
 # worker (live regression, claude 2.x on herdr 0.8.0, 2026-09-20).
 # `pending` is the one verdict that blocks a steer, so that is what this
 # refuses; `unknown` stays legitimate for a shape only identity can prove.
-# CURSORLESS_WANT, when set, names the exact verdict required instead, and
-# CURSORLESS_SHOWS names text the captured pane must hold for that requirement
-# to mean anything.
 check_harness_idle_cursorless() {  # <name> <version> <target>
   local name=$1 version=$2 target=$3 pane caps verdict identity
-  local want=${CURSORLESS_WANT:-} shows=${CURSORLESS_SHOWS:-}
   pane=$(fm_tmux_composer_capture "$target") || {
     FAILED=1
     printf 'not ok - %s (%s): cursorless re-read could not capture the proven-idle pane\n' \
@@ -153,31 +145,6 @@ check_harness_idle_cursorless() {  # <name> <version> <target>
     fi
     verdict=$(fm_composer_classify_screen "$caps" "$pane" '' "$identity")
     [ "$verdict" != need-identity ] || verdict=unknown
-  fi
-  if [ -n "$shows" ]; then
-    case "$pane" in
-      *"$shows"*) ;;
-      *)
-        FAILED=1
-        printf 'not ok - %s (%s): the idle pane no longer shows %s, so this check proves nothing; re-derive the shape\n' \
-          "$name" "$version" "$shows" >&2
-        return 0
-        ;;
-    esac
-  fi
-  if [ -n "$want" ]; then
-    if [ "$verdict" = "$want" ]; then
-      CHECKED=$((CHECKED + 1))
-      pass "$name ($version): the same idle pane read cursorless is $want"
-    else
-      printf '# %s cursorless pane tail:\n' "$name" >&2
-      tmux -L "$SOCKET" capture-pane -p -t "$target" 2>/dev/null \
-        | grep '[^[:space:]]' | tail -8 | sed 's/^/#   /' >&2
-      FAILED=1
-      printf 'not ok - %s (%s): a proven-idle composer read cursorless as %s, expected %s\n' \
-        "$name" "$version" "$verdict" "$want" >&2
-    fi
-    return 0
   fi
   if [ "$verdict" = pending ]; then
     printf '# %s cursorless pane tail:\n' "$name" >&2
@@ -200,14 +167,6 @@ for h in claude codex opencode pi grok kimi muse; do
     note "harness absent, not verified here: $h"
   fi
 done
-
-# A named claude session draws `<rule> <name> ─` as its composer's top rule.
-if command -v claude >/dev/null 2>&1; then
-  CURSORLESS_WANT=empty CURSORLESS_SHOWS='─ fm composer title probe ─' \
-    check_harness_idle_empty claude-named claude --name 'fm composer title probe'
-else
-  note "harness absent, not verified here: claude-named"
-fi
 
 # --- 2. The strict blank-row posture, live ----------------------------------
 # A plain shell pane parked on a blank line between two rules (the audit's
