@@ -1111,6 +1111,7 @@ crew_dispatch_validate() {
       else "use profile model and effort must be non-empty strings when present"
       end
     elif $typed and malformed_profile_floors([(.rules // [])[]? | profiles(.use?)[]?]) then "use profile floor needs scope and min_percent 0..100"
+    elif $typed and (configured_profiles | any(type == "object" and has("quota_scope") and ((.quota_scope | type) != "string" or (.quota_scope | length) == 0 or (.quota_scope | test("^\\s|\\s$"))))) then "profile quota_scope must be a non-empty string without surrounding whitespace when present"
     elif $typed and ([(.rules // [])[]? | select(has("approval") and .approval != "captain")] | length > 0) then "approval must be \"captain\" when present"
     elif $typed and ([(.rules // [])[]? | select(has("floor") and floor_bad(.floor; true))] | length > 0) then "rule floor needs scope, min_percent 0..100, and provider matching ^[a-z0-9]+(-[a-z0-9]+)*\\z"
     elif $typed and ([(.rules // [])[]? | select(has("min_confidence") and ((.min_confidence | type) != "number" or .min_confidence < 0 or .min_confidence > 1))] | length > 0) then "min_confidence must be a number from 0 through 1 when present"
