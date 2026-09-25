@@ -882,6 +882,13 @@ for bad in \
   '{"rules":[{"when":"x","use":{"harness":"codex","floor":{"scope":"all_models","min_percent":20,"provider":"claude"}}}]}|each use profile needs harness; model, effort, and floor must be well formed, and provider must match ^[a-z0-9]+(-[a-z0-9]+)*\z when present' \
   '{"rules":[{"when":"x","use":[{"harness":"codex","model":"gpt-5.5","effort":"high"},{"harness":"codex","model":"gpt-5.5","effort":"high"}]}]}|each rule use must not contain duplicate harness, model, and effort profiles' \
   '{"rules":[{"when":"x","use":{"harness":"codex"}}],"default":[{"harness":"claude","model":"opus"},{"harness":"claude","model":"opus"}]}|default must not contain duplicate harness, model, and effort profiles' \
+  '{"rules":[{"when":"x","use":{"harness":"agy","quota_scope":""}}]}|profile quota_scope must be a non-empty string without surrounding whitespace when present' \
+  '{"rules":[{"when":"x","use":[{"harness":"agy","quota_scope":" gemini"}]}]}|profile quota_scope must be a non-empty string without surrounding whitespace when present' \
+  '{"rules":[{"when":"x","use":{"harness":"agy","quota_scope":"gemini\n"}}]}|profile quota_scope must be a non-empty string without surrounding whitespace when present' \
+  '{"rules":[{"when":"x","use":{"harness":"agy","quota_scope":5}}]}|profile quota_scope must be a non-empty string without surrounding whitespace when present' \
+  '{"rules":[{"when":"x","use":{"harness":"claude"}}],"default":{"harness":"agy","quota_scope":""}}|profile quota_scope must be a non-empty string without surrounding whitespace when present' \
+  '{"rules":[{"when":"x","use":{"harness":"claude"}}],"default":[{"harness":"claude"},{"harness":"agy","quota_scope":"gemini "}]}|profile quota_scope must be a non-empty string without surrounding whitespace when present' \
+  '{"default":{"harness":"agy","quota_scope":["gemini"]}}|profile quota_scope must be a non-empty string without surrounding whitespace when present' \
   '{"rules":[{"when":"x","use":{"harness":"spaceship"}}]}|each use profile must name a verified harness' \
   '{"rules":[{"when":"x","use":{"harness":"grok","effort":"max"}}]}|each use profile effort must be supported by its harness and model' \
   '{"rules":[{"when":"x","use":{"harness":"opencode","model":"anthropic/claude-sonnet-4-5"}}]}|use profiles whose harness lacks one authoritative provider family require provider: opencode' \
@@ -942,11 +949,29 @@ assert_contains "$out" 'candidate: agy:gemini-3-pro  provider=agy  scope=gemini 
 assert_contains "$out" 'eligible, unranked: spendPriority missing or non-numeric at gemini' "unknown spendPriority tier stays eligible and unranked"
 assert_contains "$out" 'declared quota_scope gone_tier not in the quota snapshot for provider agy: not rankable' "a declared scope absent from the snapshot is disclosed uncertainty"
 assert_contains "$out" "  profile: --harness 'claude' --model 'sonnet'" "the ranked candidate wins over unranked tiers"
-cp "$BASE_RULES" "$RULES"
-printf '%s\n' '{"rules":[{"when":"x","use":{"harness":"agy","quota_scope":""}}]}' > "$RULES"
-TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
-expect_code 2 "$code" "empty quota_scope exits 2"
-assert_contains "$err" 'profile quota_scope must be a non-empty string without surrounding whitespace when present' "malformed quota_scope is named"
+cat > "$RULES" <<'JSON'
+{
+  "rules": [
+    { "when": "New feature work on the app.", "use": { "harness": "claude", "model": "sonnet" } },
+    { "when": "Bug fix.", "use": { "harness": "claude", "model": "sonnet" } },
+    { "when": "Docs.", "use": { "harness": "claude", "model": "sonnet" } },
+    { "when": "Chores.", "use": { "harness": "claude", "model": "sonnet" } }
+  ],
+  "default": [
+    { "harness": "agy", "model": "claude-opus-4-6-thinking", "quota_scope": "claude_gpt" },
+    { "harness": "agy", "model": "gemini-3-pro", "quota_scope": "gemini" },
+    { "harness": "claude", "model": "sonnet" }
+  ]
+}
+JSON
+reset_log
+write_response "$RESPONSE" default 0.95
+QUOTA_AXI_FIXTURE=$AGY_QUOTA TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --project pager
+expect_code 0 "$code" "declared quota_scope on a default profile resolves"
+assert_contains "$out" '  note: no rule matched' "the default profiles are the ones resolved"
+assert_contains "$out" '-> not eligible: runway exhausted_now at claude_gpt' "an exhausted declared tier blocks a default profile and names the scope"
+assert_contains "$out" 'candidate: agy:gemini-3-pro  provider=agy  scope=gemini  remaining=76%' "a healthy declared tier on a default profile shows its real remaining percentage"
+assert_contains "$out" "  profile: --harness 'claude' --model 'sonnet'" "the ranked default candidate wins over the blocked and unranked tiers"
 cp "$BASE_RULES" "$RULES"
 pass "declared quota_scope binds an agy candidate to its own tier row"
 

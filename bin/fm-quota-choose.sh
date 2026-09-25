@@ -15,13 +15,6 @@
 # candidate is printed as "<harness> <model>" and the script exits 0.
 # If no candidate is quota-eligible, it prints "none" and exits 1.
 #
-# A candidate may be followed by `--scope <quota-scope>`, an explicit declaration
-# of the quota row scope that binds it (for example an Antigravity tier such as
-# claude_gpt). The scope joins the ordinary provider-wide and model scopes as
-# applicable evidence; a declared scope absent from the snapshot leaves the
-# candidate unmeasured and therefore not chosen. Nothing infers a scope from a
-# model name.
-#
 # Candidates are accepted as `--candidate <harness:model>` or as positional
 # colon-separated arguments, with earlier candidates preferred.
 # This script is deterministic and safe: it performs no side effects and exits
@@ -74,7 +67,6 @@ usage() {
 }
 
 CANDIDATES=()
-SCOPES=()
 SNAPSHOT_SOURCE=
 
 while [ "$#" -gt 0 ]; do
@@ -87,25 +79,18 @@ while [ "$#" -gt 0 ]; do
     --candidate)
       [ -n "${2-}" ] || die "--candidate needs a value"
       CANDIDATES+=("$2")
-      SCOPES+=("")
-      shift 2
-      ;;
-    --scope)
-      [ -n "${2-}" ] || die "--scope needs a value"
-      [ "${#CANDIDATES[@]}" -gt 0 ] || die "--scope must follow a candidate"
-      SCOPES[${#CANDIDATES[@]}-1]=$2
       shift 2
       ;;
     -h|--help|help) usage ;;
     --) shift; break ;;
     -*) die "unknown option: $1" ;;
-    *) CANDIDATES+=("$1") ; SCOPES+=("") ; shift ;;
+    *) CANDIDATES+=("$1") ; shift ;;
   esac
 done
 
 # Positional args after an explicit -- are also candidates.
 while [ "$#" -gt 0 ]; do
-  CANDIDATES+=("$1"); SCOPES+=(""); shift
+  CANDIDATES+=("$1"); shift
 done
 
 [ "${#CANDIDATES[@]}" -gt 0 ] || die "no candidates supplied"
@@ -116,11 +101,6 @@ done
 for c in "${CANDIDATES[@]}"; do
   case "$c" in
     ''|:*|*[!A-Za-z0-9._/:-]*) die "invalid candidate: $c" ;;
-  esac
-done
-for sc in "${SCOPES[@]}"; do
-  case "$sc" in
-    *[!A-Za-z0-9._/:-]*) die "invalid --scope: $sc" ;;
   esac
 done
 
@@ -347,29 +327,24 @@ provider_for_harness() {
   fm_quota_provider_for_harness "$@"
 }
 
-# effective_for_provider_model <provider> <model> <lane> [<declared scope>]
+# effective_for_provider_model <provider> <model> <lane>
 # Print the most constraining applicable quota evidence for the provider/model
 # tuple, including provider-wide and exact model or product scopes. The row is
 # bound through quota_row from bin/fm-quota-axi-lib.sh, so <lane> matters only
 # on a schema 6 snapshot.
 effective_for_provider_model() {
-  local provider=$1 model=${2:-default} lane=${3:-} declared=${4:-}
-  printf '%s\n' "$QUOTA_JSON" | jq -c --arg provider "$provider" --arg model "$model" --arg lane "$lane" --arg declared "$declared" "$FM_QUOTA_ROW_JQ"'
+  local provider=$1 model=${2:-default} lane=${3:-}
+  printf '%s\n' "$QUOTA_JSON" | jq -c --arg provider "$provider" --arg model "$model" --arg lane "$lane" "$FM_QUOTA_ROW_JQ"'
     ($model | sub("^model:"; "")) as $model_token |
     quota_row(.; $provider; $lane) as $p |
     if ($p // null) == null then {status: "unknown"}
-    else ($p.quotaSemantics.effectiveAvailability // []) as $all |
-    if $declared != "" and ($all | map(select(.scope == $declared)) | length) == 0
-    then {status: "unknown"}
-    else
-    ($all |
+    else ($p.quotaSemantics.effectiveAvailability // []) |
     map(select(.scope as $scope |
-      ($declared != "" and $scope == $declared) or
       $scope == "all_models" or $scope == "all_products" or
       ($model_token != "" and $model_token != "default" and
        (($scope | startswith("model:")) or ($scope | startswith("product:"))) and
        ($model_token == ($scope | sub("^(model|product):"; ""))))
-    ))) as $applicable |
+    )) as $applicable |
     ($applicable | map(select(.status == "known"))) as $known |
     if ($applicable | length) == 0 then {status: "unknown"}
     elif any($applicable[]; (.runway.status // "") == "exhausted_now") then
@@ -378,7 +353,6 @@ effective_for_provider_model() {
     elif any($known[]; .effectivePercentRemaining == 0) then
       ($known | map(select(.effectivePercentRemaining == 0)) | first)
     else ($known | min_by(.effectivePercentRemaining))
-    end
     end
     end
   ' 2>/dev/null
@@ -397,8 +371,7 @@ for c in "${CANDIDATES[@]}"; do
 done
 
 chosen="none"
-for i in "${!CANDIDATES[@]}"; do
-  c=${CANDIDATES[$i]}
+for c in "${CANDIDATES[@]}"; do
   harness=${c%%:*}
   model=${c#*:}
   [ "$model" = "$c" ] && model="default"
@@ -406,7 +379,7 @@ for i in "${!CANDIDATES[@]}"; do
   scope_model=$model
   [ "$harness" != omp ] || scope_model=${model#*/}
   lane=$(jq -rn --arg h "$harness" --arg m "$model" "$FM_QUOTA_ROW_JQ"'quota_lane($h; $m)')
-  effective=$(effective_for_provider_model "$provider" "$scope_model" "$lane" "${SCOPES[$i]}")
+  effective=$(effective_for_provider_model "$provider" "$scope_model" "$lane")
   if [ -z "$effective" ] || [ "$effective" = "null" ]; then
     continue
   fi

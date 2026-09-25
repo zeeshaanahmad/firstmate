@@ -555,7 +555,6 @@ The declared row joins the provider-wide and model rows as ordinary applicable e
 A declared scope absent from the snapshot leaves the candidate unrankable and reports the declared scope as disclosed uncertainty, never a silent pass.
 The link from model to scope is only ever this declaration; nothing infers a tier from a model name, and a profile without `quota_scope` behaves exactly as before.
 Antigravity meters per tier with its own clock, so an `agy` profile declares its tier, for example `{ "harness": "agy", "model": "claude-opus-4-6-thinking", "quota_scope": "claude_gpt" }` for the Claude/GPT tier and `{ "harness": "agy", "model": "gemini-3-pro", "quota_scope": "gemini" }` for the Gemini tier.
-`fm-quota-choose.sh` accepts the same declaration as `--scope <quota-scope>` immediately after a `--candidate`.
 Bootstrap validates resolver-only `approval`, `min_confidence`, `floor`, `quota_scope`, and present `provider` values only while typed resolution is active; without the key those inert fields and the pre-existing verified-harness baseline preserve bootstrap behavior.
 Typed resolution additively recognizes `gemini` because AGENTS.md section 4 verifies it for crewmate and scout dispatch.
 The opted-in resolver has authoritative single-provider mappings for `claude`, `codex`, `grok`, `kimi`, `cursor`, `agy`, and `muse`; every other verified harness must declare `provider` explicitly, including multi-provider `pi`, `pi-signed`, `omp`, and `opencode` and unmapped `gemini`, `rovo`, and `devin`.
