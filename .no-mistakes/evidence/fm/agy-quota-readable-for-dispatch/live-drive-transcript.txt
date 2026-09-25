@@ -1,0 +1,286 @@
+live quota-axi agy rows at 2026-09-25T00:08:57Z:
+{"status":"known","rows":[{"scope":"gemini","pct":76,"runway":"unknown","spend":"unknown"},{"scope":"claude_gpt","pct":0,"runway":"exhausted_now","spend":"unknown"}]}
+
+################################################################
+## S1 declared quota_scope on rule profiles (claude_gpt exhausted live, gemini healthy live, gone_tier absent)
+## config: {"rules":[{"when":"New feature work on the app.","use":[{"harness":"agy","model":"claude-opus-4-6-thinking","quota_scope":"claude_gpt"},{"harness":"agy","model":"gemini-3-pro","quota_scope":"gemini"},{"harness":"agy","model":"gemini-3-flash","quota_scope":"gone_tier"}]}]}
+---- before (base 2ccd74314a0b22ca61a7351a8b52f70e9d2ecd1e)
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 316   tokens: 100/10
+  rule: rule_1 (New feature work on the app.)   confidence: 0.95
+  probabilities: rule_1=0.01 default=0.99
+  reason: no rankable eligible candidate
+  note: rule matched
+  candidate: agy:claude-opus-4-6-thinking  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
+  candidate: agy:gemini-3-pro  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
+  candidate: agy:gemini-3-flash  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
+  [exit=0]
+---- after (worktree HEAD)
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 21   tokens: 100/10
+  rule: rule_1 (New feature work on the app.)   confidence: 0.95
+  probabilities: rule_1=0.01 default=0.99
+  reason: no rankable eligible candidate
+  note: rule matched
+  candidate: agy:claude-opus-4-6-thinking  provider=agy  scope=claude_gpt  remaining=0%  spendPriority=-  runway=exhausted_now  -> not eligible: runway exhausted_now at claude_gpt
+  candidate: agy:gemini-3-pro  provider=agy  scope=gemini  remaining=76%  spendPriority=-  runway=unknown  -> eligible, unranked: spendPriority missing or non-numeric at gemini: not rankable: disclosed uncertainty
+  candidate: agy:gemini-3-flash  provider=agy  scope=gone_tier  remaining=-%  spendPriority=-  runway=-  -> eligible, unranked: declared quota_scope gone_tier not in the quota snapshot for provider agy: not rankable: disclosed uncertainty
+  [exit=0]
+
+################################################################
+## S2 agy profile WITHOUT quota_scope (backward compatible: nothing inferred from the model name)
+## config: {"rules":[{"when":"New feature work on the app.","use":[{"harness":"agy","model":"claude-opus-4-6-thinking"},{"harness":"agy","model":"gemini-3-pro"}]}]}
+---- before (base 2ccd74314a0b22ca61a7351a8b52f70e9d2ecd1e)
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 20   tokens: 100/10
+  rule: rule_1 (New feature work on the app.)   confidence: 0.95
+  probabilities: rule_1=0.01 default=0.99
+  reason: no rankable eligible candidate
+  note: rule matched
+  candidate: agy:claude-opus-4-6-thinking  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
+  candidate: agy:gemini-3-pro  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
+  [exit=0]
+---- after (worktree HEAD)
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 19   tokens: 100/10
+  rule: rule_1 (New feature work on the app.)   confidence: 0.95
+  probabilities: rule_1=0.01 default=0.99
+  reason: no rankable eligible candidate
+  note: rule matched
+  candidate: agy:claude-opus-4-6-thinking  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
+  candidate: agy:gemini-3-pro  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
+  [exit=0]
+
+################################################################
+## S3 only the exhausted claude_gpt tier is offered (must not clear)
+## config: {"rules":[{"when":"New feature work on the app.","use":{"harness":"agy","model":"claude-sonnet-4-6","quota_scope":"claude_gpt"}}]}
+---- before (base 2ccd74314a0b22ca61a7351a8b52f70e9d2ecd1e)
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 21   tokens: 100/10
+  rule: rule_1 (New feature work on the app.)   confidence: 0.95
+  probabilities: rule_1=0.01 default=0.99
+  reason: no rankable eligible candidate
+  note: rule matched
+  candidate: agy:claude-sonnet-4-6  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
+  [exit=0]
+---- after (worktree HEAD)
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 19   tokens: 100/10
+  rule: rule_1 (New feature work on the app.)   confidence: 0.95
+  probabilities: rule_1=0.01 default=0.99
+  reason: no rankable eligible candidate
+  note: rule matched
+  candidate: agy:claude-sonnet-4-6  provider=agy  scope=claude_gpt  remaining=0%  spendPriority=-  runway=exhausted_now  -> not eligible: runway exhausted_now at claude_gpt
+  [exit=0]
+
+################################################################
+## S4 blocked claude_gpt tier alongside healthy gemini tier: blocked one is ineligible, healthy one stays eligible (unranked: live spendPriority is unknown)
+## config: {"rules":[{"when":"New feature work on the app.","use":[{"harness":"agy","model":"claude-opus-4-6-thinking","quota_scope":"claude_gpt"},{"harness":"agy","model":"gemini-3-pro","quota_scope":"gemini"}]}]}
+---- before (base 2ccd74314a0b22ca61a7351a8b52f70e9d2ecd1e)
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 18   tokens: 100/10
+  rule: rule_1 (New feature work on the app.)   confidence: 0.95
+  probabilities: rule_1=0.01 default=0.99
+  reason: no rankable eligible candidate
+  note: rule matched
+  candidate: agy:claude-opus-4-6-thinking  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
+  candidate: agy:gemini-3-pro  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
+  [exit=0]
+---- after (worktree HEAD)
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 20   tokens: 100/10
+  rule: rule_1 (New feature work on the app.)   confidence: 0.95
+  probabilities: rule_1=0.01 default=0.99
+  reason: no rankable eligible candidate
+  note: rule matched
+  candidate: agy:claude-opus-4-6-thinking  provider=agy  scope=claude_gpt  remaining=0%  spendPriority=-  runway=exhausted_now  -> not eligible: runway exhausted_now at claude_gpt
+  candidate: agy:gemini-3-pro  provider=agy  scope=gemini  remaining=76%  spendPriority=-  runway=unknown  -> eligible, unranked: spendPriority missing or non-numeric at gemini: not rankable: disclosed uncertainty
+  [exit=0]
+
+################################################################
+## S5 declared quota_scope on a default profile (no rule matches)
+## config: {"rules":[{"when":"New feature work on the app.","use":{"harness":"codex"}}],"default":[{"harness":"agy","model":"claude-opus-4-6-thinking","quota_scope":"claude_gpt"},{"harness":"agy","model":"gemini-3-pro","quota_scope":"gemini"}]}
+---- before (base 2ccd74314a0b22ca61a7351a8b52f70e9d2ecd1e)
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 18   tokens: 100/10
+  rule: default (No listed rule applies to this task.)   confidence: 0.95
+  probabilities: rule_1=0.01 default=0.99
+  reason: no rankable eligible candidate
+  note: no rule matched
+  candidate: agy:claude-opus-4-6-thinking  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
+  candidate: agy:gemini-3-pro  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
+  [exit=0]
+---- after (worktree HEAD)
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 20   tokens: 100/10
+  rule: default (No listed rule applies to this task.)   confidence: 0.95
+  probabilities: rule_1=0.01 default=0.99
+  reason: no rankable eligible candidate
+  note: no rule matched
+  candidate: agy:claude-opus-4-6-thinking  provider=agy  scope=claude_gpt  remaining=0%  spendPriority=-  runway=exhausted_now  -> not eligible: runway exhausted_now at claude_gpt
+  candidate: agy:gemini-3-pro  provider=agy  scope=gemini  remaining=76%  spendPriority=-  runway=unknown  -> eligible, unranked: spendPriority missing or non-numeric at gemini: not rankable: disclosed uncertainty
+  [exit=0]
+
+################################################################
+## S6 malformed quota_scope="" on a rule profile
+## config: {"rules":[{"when":"x","use":{"harness":"agy","quota_scope":""}}]}
+---- before (base 2ccd74314a0b22ca61a7351a8b52f70e9d2ecd1e)
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 22   tokens: 100/10
+  rule: rule_1 (x)   confidence: 0.95
+  probabilities: rule_1=0.01 default=0.99
+  reason: no rankable eligible candidate
+  note: rule matched
+  candidate: agy:-  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
+  [exit=0]
+---- after (worktree HEAD)
+  [exit=2]
+  [stderr] error: malformed rules file: /var/folders/3m/025g2l697z5gxqyzmlnt2w140000gn/T//agy-live.6Q4ah1/home/config/crew-dispatch.json - profile quota_scope must be a non-empty string without surrounding whitespace when present
+
+################################################################
+## S6 malformed quota_scope=" gemini" on a rule profile
+## config: {"rules":[{"when":"x","use":{"harness":"agy","quota_scope":" gemini"}}]}
+---- before (base 2ccd74314a0b22ca61a7351a8b52f70e9d2ecd1e)
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 21   tokens: 100/10
+  rule: rule_1 (x)   confidence: 0.95
+  probabilities: rule_1=0.01 default=0.99
+  reason: no rankable eligible candidate
+  note: rule matched
+  candidate: agy:-  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
+  [exit=0]
+---- after (worktree HEAD)
+  [exit=2]
+  [stderr] error: malformed rules file: /var/folders/3m/025g2l697z5gxqyzmlnt2w140000gn/T//agy-live.6Q4ah1/home/config/crew-dispatch.json - profile quota_scope must be a non-empty string without surrounding whitespace when present
+
+################################################################
+## S6 malformed quota_scope="gemini\n" on a rule profile
+## config: {"rules":[{"when":"x","use":{"harness":"agy","quota_scope":"gemini\n"}}]}
+---- before (base 2ccd74314a0b22ca61a7351a8b52f70e9d2ecd1e)
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 21   tokens: 100/10
+  rule: rule_1 (x)   confidence: 0.95
+  probabilities: rule_1=0.01 default=0.99
+  reason: no rankable eligible candidate
+  note: rule matched
+  candidate: agy:-  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
+  [exit=0]
+---- after (worktree HEAD)
+  [exit=2]
+  [stderr] error: malformed rules file: /var/folders/3m/025g2l697z5gxqyzmlnt2w140000gn/T//agy-live.6Q4ah1/home/config/crew-dispatch.json - profile quota_scope must be a non-empty string without surrounding whitespace when present
+
+################################################################
+## S6 malformed quota_scope=5 on a rule profile
+## config: {"rules":[{"when":"x","use":{"harness":"agy","quota_scope":5}}]}
+---- before (base 2ccd74314a0b22ca61a7351a8b52f70e9d2ecd1e)
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 20   tokens: 100/10
+  rule: rule_1 (x)   confidence: 0.95
+  probabilities: rule_1=0.01 default=0.99
+  reason: no rankable eligible candidate
+  note: rule matched
+  candidate: agy:-  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
+  [exit=0]
+---- after (worktree HEAD)
+  [exit=2]
+  [stderr] error: malformed rules file: /var/folders/3m/025g2l697z5gxqyzmlnt2w140000gn/T//agy-live.6Q4ah1/home/config/crew-dispatch.json - profile quota_scope must be a non-empty string without surrounding whitespace when present
+
+################################################################
+## S6 malformed quota_scope=["gemini"] on a rule profile
+## config: {"rules":[{"when":"x","use":{"harness":"agy","quota_scope":["gemini"]}}]}
+---- before (base 2ccd74314a0b22ca61a7351a8b52f70e9d2ecd1e)
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 20   tokens: 100/10
+  rule: rule_1 (x)   confidence: 0.95
+  probabilities: rule_1=0.01 default=0.99
+  reason: no rankable eligible candidate
+  note: rule matched
+  candidate: agy:-  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
+  [exit=0]
+---- after (worktree HEAD)
+  [exit=2]
+  [stderr] error: malformed rules file: /var/folders/3m/025g2l697z5gxqyzmlnt2w140000gn/T//agy-live.6Q4ah1/home/config/crew-dispatch.json - profile quota_scope must be a non-empty string without surrounding whitespace when present
+
+################################################################
+## S6 malformed quota_scope=null on a rule profile
+## config: {"rules":[{"when":"x","use":{"harness":"agy","quota_scope":null}}]}
+---- before (base 2ccd74314a0b22ca61a7351a8b52f70e9d2ecd1e)
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 26   tokens: 100/10
+  rule: rule_1 (x)   confidence: 0.95
+  probabilities: rule_1=0.01 default=0.99
+  reason: no rankable eligible candidate
+  note: rule matched
+  candidate: agy:-  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
+  [exit=0]
+---- after (worktree HEAD)
+  [exit=2]
+  [stderr] error: malformed rules file: /var/folders/3m/025g2l697z5gxqyzmlnt2w140000gn/T//agy-live.6Q4ah1/home/config/crew-dispatch.json - profile quota_scope must be a non-empty string without surrounding whitespace when present
+
+################################################################
+## S6 malformed quota_scope on a default profile
+## config: {"rules":[{"when":"x","use":{"harness":"codex"}}],"default":{"harness":"agy","quota_scope":""}}
+---- before (base 2ccd74314a0b22ca61a7351a8b52f70e9d2ecd1e)
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 21   tokens: 100/10
+  rule: default (No listed rule applies to this task.)   confidence: 0.95
+  probabilities: rule_1=0.01 default=0.99
+  reason: no rankable eligible candidate
+  note: no rule matched
+  candidate: agy:-  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
+  [exit=0]
+---- after (worktree HEAD)
+  [exit=2]
+  [stderr] error: malformed rules file: /var/folders/3m/025g2l697z5gxqyzmlnt2w140000gn/T//agy-live.6Q4ah1/home/config/crew-dispatch.json - profile quota_scope must be a non-empty string without surrounding whitespace when present
+
+################################################################
+## S8 blocked claude_gpt tier + healthy-but-unranked gemini tier + live-ranked codex: clear pick is codex, blocked tier shown ineligible
+## config: {"rules":[{"when":"New feature work on the app.","use":[{"harness":"agy","model":"claude-opus-4-6-thinking","quota_scope":"claude_gpt"},{"harness":"agy","model":"gemini-3-pro","quota_scope":"gemini"},{"harness":"codex","model":"gpt-5.5"}]}]}
+---- before (base 2ccd74314a0b22ca61a7351a8b52f70e9d2ecd1e)
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 21   tokens: 100/10
+  rule: rule_1 (New feature work on the app.)   confidence: 0.95
+  probabilities: rule_1=0.01 default=0.99
+  note: rule matched
+  note: 2 eligible candidate(s) unranked (agy)
+  candidate: agy:claude-opus-4-6-thinking  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
+  candidate: agy:gemini-3-pro  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
+  candidate: codex:gpt-5.5  provider=codex  scope=all_models  remaining=10%  spendPriority=-4.1402  runway=projected_exhaustion  -> eligible
+  profile: --harness 'codex' --model 'gpt-5.5'
+  [exit=0]
+---- after (worktree HEAD)
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 21   tokens: 100/10
+  rule: rule_1 (New feature work on the app.)   confidence: 0.95
+  probabilities: rule_1=0.01 default=0.99
+  note: rule matched
+  note: 1 eligible candidate(s) unranked (agy)
+  candidate: agy:claude-opus-4-6-thinking  provider=agy  scope=claude_gpt  remaining=0%  spendPriority=-  runway=exhausted_now  -> not eligible: runway exhausted_now at claude_gpt
+  candidate: agy:gemini-3-pro  provider=agy  scope=gemini  remaining=76%  spendPriority=-  runway=unknown  -> eligible, unranked: spendPriority missing or non-numeric at gemini: not rankable: disclosed uncertainty
+  candidate: codex:gpt-5.5  provider=codex  scope=all_models  remaining=10%  spendPriority=-4.1401  runway=projected_exhaustion  -> eligible
+  profile: --harness 'codex' --model 'gpt-5.5'
+  [exit=0]
+
+################################################################
+## S7 no TYPESAFE_API_KEY: resolver is off, prints nothing on stdout
+  [exit=0] stdout=[]
+  [stderr] dispatch-resolve: off (TYPESAFE_API_KEY absent from the environment and /var/folders/3m/025g2l697z5gxqyzmlnt2w140000gn/T//agy-live.6Q4ah1/home/.env)
