@@ -1,0 +1,8 @@
+fm-composer-lib rc=0 14s
+fm-dispatch-resolve rc=0 21s
+fm-composer-ghost rc=0 28s
+fm-session-lock-ancestry rc=0 51s
+fm-bearings-board rc=0 83s
+fm-claude-stop-autoarm rc=0 92s
+fm-bootstrap rc=0 376s
+fm-procevent rc=1 431s

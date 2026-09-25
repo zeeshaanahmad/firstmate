@@ -1,0 +1,42 @@
+##### BASE 3363dbee (pre-revert, fork-only quota_scope binding present)
+repo=/private/var/folders/3m/025g2l697z5gxqyzmlnt2w140000gn/T/fm-nm-base.zy8zcK
+--- case1: declared tier row is exhausted (quota_scope="claude_gpt")
+exit=0
+  out| dispatch-resolve:
+  out|   status: clear
+  out|   model: jev-1.13.0   latency_ms: 390   tokens: 100/10
+  out|   rule: rule_1 (Feature work that suits the Claude/GPT tier on Antigravity.)   confidence: 0.95
+  out|   probabilities: rule_1=0.97 default=0.03
+  out|   note: rule matched
+  out|   candidate: agy:claude-opus-4-6-thinking  provider=agy  scope=claude_gpt  remaining=0%  spendPriority=-  runway=exhausted_now  bounds=all_models:64%/through_reset,claude_gpt:0%/exhausted_now  -> not eligible: runway exhausted_now at claude_gpt
+  out|   candidate: cursor:cursor-grok-4.6-medium  provider=cursor  scope=all_models  remaining=91%  spendPriority=0.3  runway=through_reset  -> eligible
+  out|   profile: --harness 'cursor' --model 'cursor-grok-4.6-medium'
+--- case2: whitespace-padded quota_scope (quota_scope=" claude_gpt ")
+exit=2
+  out| 
+  err| error: malformed rules file: /private/var/folders/3m/025g2l697z5gxqyzmlnt2w140000gn/T/fm-quota-scope.25TnMM/home/config/crew-dispatch.json - profile quota_scope must be a non-empty string without surrounding whitespace when present
+
+##### HEAD bb386cb3 (change under test)
+repo=/Users/muhammadzahmed/.no-mistakes/worktrees/c3eda0adcf59/01M3B0KS0E0SHEMY41BVK8QHBF
+--- case1: declared tier row is exhausted (quota_scope="claude_gpt")
+exit=0
+  out| dispatch-resolve:
+  out|   status: clear
+  out|   model: jev-1.13.0   latency_ms: 285   tokens: 100/10
+  out|   rule: rule_1 (Feature work that suits the Claude/GPT tier on Antigravity.)   confidence: 0.95
+  out|   probabilities: rule_1=0.97 default=0.03
+  out|   note: rule matched
+  out|   candidate: agy:claude-opus-4-6-thinking  provider=agy  scope=all_models  remaining=64%  spendPriority=0.4  runway=through_reset  -> eligible
+  out|   candidate: cursor:cursor-grok-4.6-medium  provider=cursor  scope=all_models  remaining=91%  spendPriority=0.3  runway=through_reset  -> eligible
+  out|   profile: --harness 'agy' --model 'claude-opus-4-6-thinking'
+--- case2: whitespace-padded quota_scope (quota_scope=" claude_gpt ")
+exit=0
+  out| dispatch-resolve:
+  out|   status: clear
+  out|   model: jev-1.13.0   latency_ms: 18   tokens: 100/10
+  out|   rule: rule_1 (Feature work that suits the Claude/GPT tier on Antigravity.)   confidence: 0.95
+  out|   probabilities: rule_1=0.97 default=0.03
+  out|   note: rule matched
+  out|   candidate: agy:claude-opus-4-6-thinking  provider=agy  scope=all_models  remaining=64%  spendPriority=0.4  runway=through_reset  -> eligible
+  out|   candidate: cursor:cursor-grok-4.6-medium  provider=cursor  scope=all_models  remaining=91%  spendPriority=0.3  runway=through_reset  -> eligible
+  out|   profile: --harness 'agy' --model 'claude-opus-4-6-thinking'

@@ -1,0 +1,32 @@
+lab=fm-lab-nm-composer-base-66094-8409 target=fm-lab-nm-composer-base-66094-8409:w1:p1 repo=/private/var/folders/3m/025g2l697z5gxqyzmlnt2w140000gn/T/fm-nm-base.zy8zcK herdr=herdr 0.9.1
+== nm-composer-base ==
+plain-idle       verdict=empty    (expected empty   ) MATCH
+    | assistant: earlier transcript row
+    | ────────────────────────────────────────────────────────────
+    | ❯
+    | ────────────────────────────────────────────────────────────
+    |   Haiku 4.5
+    |   ⏵ manual mode on · ↓ for agents
+titled-idle      verdict=empty    (expected empty   ) MATCH
+    | assistant: earlier transcript row
+    | ──────────────────────────────────────────────── Fresh named ─
+    | ❯
+    | ────────────────────────────────────────────────────────────
+    |   Haiku 4.5
+    |   ⏵ manual mode on · ↓ for agents
+titled-draft     verdict=pending  (expected pending ) MATCH
+    | assistant: earlier transcript row
+    | ──────────────────────────────────────────────── Fresh named ─
+    | ❯ draft text not sent
+    | ────────────────────────────────────────────────────────────
+    |   Haiku 4.5
+    |   ⏵ manual mode on · ↓ for agents
+titled-longname  verdict=unknown  (expected unknown ) MATCH
+    | assistant: earlier transcript row
+    | ──── a-very-long-session-name-that-ate-the-rule-glyphs ─
+    | ❯
+    | ────────────────────────────────────────────────────────────
+    |   Haiku 4.5
+    |   ⏵ manual mode on · ↓ for agents
+RESULTS: plain-idle=empty;titled-idle=empty;titled-draft=pending;titled-longname=unknown;
+teardown ok: fm-lab-nm-composer-base-66094-8409 (default-session tripwire verified identical)

@@ -1,0 +1,32 @@
+lab=fm-lab-nm-composer-head-56914-11913 target=fm-lab-nm-composer-head-56914-11913:w1:p1 repo=/Users/muhammadzahmed/.no-mistakes/worktrees/c3eda0adcf59/01M3B0KS0E0SHEMY41BVK8QHBF herdr=herdr 0.9.1
+== nm-composer-head ==
+plain-idle       verdict=empty    (expected empty   ) MATCH
+    | assistant: earlier transcript row
+    | ────────────────────────────────────────────────────────────
+    | ❯
+    | ────────────────────────────────────────────────────────────
+    |   Haiku 4.5
+    |   ⏵ manual mode on · ↓ for agents
+titled-idle      verdict=unknown  (expected unknown ) MATCH
+    | assistant: earlier transcript row
+    | ──────────────────────────────────────────────── Fresh named ─
+    | ❯
+    | ────────────────────────────────────────────────────────────
+    |   Haiku 4.5
+    |   ⏵ manual mode on · ↓ for agents
+titled-draft     verdict=unknown  (expected unknown ) MATCH
+    | assistant: earlier transcript row
+    | ──────────────────────────────────────────────── Fresh named ─
+    | ❯ draft text not sent
+    | ────────────────────────────────────────────────────────────
+    |   Haiku 4.5
+    |   ⏵ manual mode on · ↓ for agents
+titled-longname  verdict=unknown  (expected unknown ) MATCH
+    | assistant: earlier transcript row
+    | ──── a-very-long-session-name-that-ate-the-rule-glyphs ─
+    | ❯
+    | ────────────────────────────────────────────────────────────
+    |   Haiku 4.5
+    |   ⏵ manual mode on · ↓ for agents
+RESULTS: plain-idle=empty;titled-idle=unknown;titled-draft=unknown;titled-longname=unknown;
+teardown ok: fm-lab-nm-composer-head-56914-11913 (default-session tripwire verified identical)

@@ -1,0 +1,17 @@
+HEAD (target) : bb386cb30a690b5893ddb8c9a076a4534395d130
+upstream tip  : b42d4fa8a752fad9a5f0235783b02534bce29219
+tree(HEAD)    : 30f97bd7d078d6d3b2643445c00f8da725aa073f
+tree(upstream): 30f97bd7d078d6d3b2643445c00f8da725aa073f
+git diff upstream..HEAD: EMPTY (byte-identical tree)
+diff --stat lines vs upstream: 0
+merge parents : 83db02da b42d4fa8
+upstream commit 31c47af5 is in HEAD: yes (fix(bin): start a successor when the Claude Stop-hook arm's attached cycle ends )
+upstream commit b42d4fa8 is in HEAD: yes (fix(bin): report a Lavish source armed only after its listener is running (#5566)
+-- net effect of the two fork-only commits (57ba4995, 3363dbee) relative to upstream:
+  files they touched: identical to upstream
+-- upstream commits the fork lacks (should be none):
+0
+-- git status:
+0
+upstream main (read-only ls-remote):
+b42d4fa8a752fad9a5f0235783b02534bce29219	refs/heads/main
