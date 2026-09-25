@@ -23,9 +23,9 @@
 #   after that is jq: the confidence floor (0.6 on the answer confidence, or a
 #   rule's declared `min_confidence` on that rule's probability, falling to the
 #   most probable other option that clears its own floor), the rule's declared
-#   `approval` and `floor`, each profile's declared `provider`, `quota_scope`, and `floor`, the
-#   quota rows from ONE quota-axi --json snapshot (schema 5 or 6; each
-#   candidate binds to one row through quota_row in
+#   `approval` and `floor`, each profile's declared `provider`, `quota_scope`,
+#   and `floor`, the quota rows from ONE quota-axi --json snapshot (schema 5
+#   or 6; each candidate binds to one row through quota_row in
 #   bin/fm-quota-axi-lib.sh, so a Pi lane such as openai-codex-work/...
 #   reads its own account's row and an expanded provider with no row for the
 #   candidate is unmeasured, never blocked), and the spendPriority argmax over
