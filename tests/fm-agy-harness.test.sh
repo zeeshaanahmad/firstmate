@@ -193,7 +193,7 @@ test_agy_busy_signatures_are_harness_scoped() {
 test_agy_idle_bare_composer_needs_native_idle_identity() {
   local caps screen out pending
   caps=$(printf 'styled=1\ncursor=0\nidentity=1\nrows=0')
-  screen=$(cat "$ROOT/tests/fixtures/agy-idle-composer.txt")
+  screen=$(cat "$ROOT/tests/fixtures/agy-idle-composer.screen")
   out=$(fm_composer_classify_screen "$caps" "$screen" '' "$(printf 'agy\tidle')")
   [ "$out" = empty ] \
     || fail "an identity-proven idle agy bare composer should be empty, got '$out'"
