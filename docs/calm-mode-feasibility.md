@@ -17,7 +17,7 @@ Pi 0.81.1 was installed when Calm was first built, and Pi 0.82.0 was the later r
 The inspected Pi CHANGELOG shows no relevant presentation API introduced at either version, so those versions remain verification evidence rather than compatibility bounds.
 The exported classes used by the adapters (`AssistantMessageComponent` and `InteractiveMode`) are undocumented internals with no stated version guarantee.
 `tests/fm-calm-pi-extension.test.sh` records the installed Pi version as evidence without gating on it and covers both newer synthetic versions and an unavailable adapter seam.
-This host tracks Pi latest, so the version the evidence is pinned to moves; the [2026-09-07 record](#2026-09-07-pi-0851-renderer-and-export-dom-verification) owns the currently pinned version and the renderer comparison behind it.
+This host tracks Pi latest, so the version the evidence is pinned to moves; the [2026-10-04 record](#2026-10-04-pi-102-renderer-and-export-compatibility) owns the currently pinned version and the renderer comparison behind it.
 
 ### Built-in tool override constraints
 
@@ -245,7 +245,7 @@ The test fixture enumerates every class below through the centralized policy, an
 | `unknown` | Future or unclassified transcript component | Policy-hidden, but no generic renderer exists; never claimed as covered. |
 
 The installed extension API has no supported global transcript filter, user-message renderer, assistant-message renderer, chat-container API, or generic custom-tool wrapper.
-Pi 0.81.1 through 0.82.0, Pi 0.84.4, and Pi 0.85.1 export `AssistantMessageComponent` and `InteractiveMode`, so Calm uses separate idempotent, API-probed adapters for assistant thinking layout and the complete operational-user transcript row while leaving all message data and non-Calm rendering unchanged; see the [compatibility contract](calm.md#pi-compatibility) for how a future Pi lacking one of those exports is handled.
+Pi 0.81.1 through 0.82.0, Pi 0.84.4, Pi 0.85.1, and Pi 1.0.2 export `AssistantMessageComponent` and `InteractiveMode`, so Calm uses separate idempotent, API-probed adapters for assistant thinking layout and the complete operational-user transcript row while leaving all message data and non-Calm rendering unchanged; see the [compatibility contract](calm.md#pi-compatibility) for how a future Pi lacking one of those exports is handled.
 General component replacement, ANSI cursor erasure, provider-context mutation, and installed-file patching remain rejected as unsupported or preservation-breaking workarounds.
 
 ## Cross-harness verification record
@@ -640,6 +640,37 @@ ok - Pi Calm native /skill:ahoy geometry keeps every collapsed thinking and tool
 ok - Pi Calm working ship moves on a slow independent cadence over faster fixed-cell blue water, paints the complete boat standard yellow with balanced resets, keeps ANSI-stripped width exact, flips the directional sail on the exact bounce at both edges and every width, clamps visible and hidden resizes, falls back deterministically when narrow, freezes and resumes column/direction across settle/start without hidden-time jumps or duplicate timers, resets only on a fresh session, and installs and removes one scheduler-owning widget across starts, settle, abort, failure, shutdown, reload, replacement, and Calm toggles while leaving Calm-off visibility untouched
 ok - the rendered-export-DOM guard renders in one pass, retries a bounded number of Chrome start-up failures, and reports the Chrome binary, Chrome version, Pi version, exit status, and Chrome diagnostic when every attempt fails
 ok - Pi calm native E2E replaces the stock working row with a moving, resize-clamped working ship that freezes and resumes across two working periods in one Pi session, clears on abort, keeps captain turns visible, hides exact operational user rows without changing persistence, restores stock rendering Calm-off, survives restart, and preserves export plus Ctrl+O behavior
+```
+
+## 2026-10-04 Pi 1.0.2 renderer and export compatibility
+
+The first attempt of [main CI run 36561758420](https://github.com/zeeshaanahmad/firstmate/actions/runs/36561758420) passed on 2026-09-29 after its unbounded npm install resolved `@earendil-works/pi-coding-agent` 0.87.1.
+Rerunning the unchanged commit on 2026-10-04 resolved Pi 1.0.2 and failed the stock outcome-renderer comparison plus Calm's HTML-export comparison.
+This establishes the dependency move independently of the unchanged Firstmate commit.
+
+Pi 1.0.2 made four relevant presentation changes.
+Its stock custom-tool call fallback now formats arguments beside the tool name, its HTML renderer dependency renamed `getToolDefinition` to `getToolRenderers`, its export viewer retains terminal-hidden custom messages behind a default-off hidden-message control, and its Ctrl+O status now says `Tool output: expanded`.
+Firstmate's self-rendering outcomes tools now obtain their call component from the installed Pi's own fallback, so Calm-off behavior follows the installed renderer rather than copying either version's format.
+The HTML-consumer fixtures supply both lookup names, preserving the older API while exercising the current one.
+The rendered-DOM guard accepts hidden custom-message provenance only when every such row retains Pi's hidden class and the viewer has not enabled its reveal state, while still requiring that provenance in the session tree.
+The real-TUI fixture uses a tall initial and restart viewport so Pi 1.0's additional stock spacing cannot turn restoration assertions into viewport-clipping assertions.
+
+The compatibility run used macOS 26.6.2 arm64, Node v22.22.3, tmux 3.6b, Google Chrome 154.0.8037.93, and TypeScript 7.0.2.
+Pi was installed in an isolated package directory and placed first on `PATH`; the global Pi installation was not changed.
+
+```sh
+PATH=<pi-1.0.2-bin> FM_PI_PACKAGE_DIR=<pi-1.0.2-package> bash tests/fm-pi-branch-extension.test.sh
+PATH=<pi-1.0.2-bin> FM_PI_PACKAGE_DIR=<pi-1.0.2-package> bash tests/fm-calm-pi-extension.test.sh
+FM_PI_PACKAGE_DIR=<pi-1.0.2-package> npm exec --yes --package=typescript -- bash tests/fm-pi-primary-types.test.sh
+```
+
+```text
+ok - fm_branch_outcomes hides through ToolExecutionComponent while Calm-off and HTML export stay stock
+ok - Pi calm centralizes transcript visibility, preserves execution/export data, keeps Pi's stock working row visible while no run is active, and persists its choice across session starts
+ok - Pi 1.0.2 with Calm on keeps a queued Firstmate notification unlisted, out of the editor on Escape, and delivers it once in a new announced turn, while Calm off stays stock
+ok - the rendered-export-DOM guard renders in one pass, retries a bounded number of Chrome start-up failures, and reports the Chrome binary, Chrome version, Pi version, exit status, and Chrome diagnostic when every attempt fails
+ok - Pi calm native E2E replaces the stock working row with a moving, resize-clamped working ship that freezes and resumes across two working periods in one Pi session, clears on abort, keeps captain turns visible, hides exact operational user rows without changing persistence, restores stock rendering Calm-off, survives restart, and preserves export plus Ctrl+O behavior
+ok - tracked Pi extensions pass strict no-emit typecheck against Pi 1.0.2
 ```
 
 ## 2026-09-24 Pi 0.87.1 queued-row retention verification
