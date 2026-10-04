@@ -1729,7 +1729,7 @@ EOF
 
 # agy is the one verified harness whose live composer uses a shell glyph with
 # no enclosing box. The glyph alone remains unsafe: this exception needs the
-# exact rendered idle shape and Herdr's native identity/status in conjunction.
+# exact rendered idle or done shape and Herdr's native identity/status in conjunction.
 # Text after `>`, a busy/blocked/done status, another harness identity, a
 # missing identity probe, or a changed footer all stay unknown. Return 1 only
 # when the screen is not the agy shape at all, so ordinary classification can
@@ -1761,7 +1761,7 @@ _fm_composer_classify_agy_bare_row() {  # <screen> <styled> <has-identity> <iden
     return 0
   fi
   case "$identity" in
-    agy$'\t'idle) printf 'empty' ;;
+    agy$'\t'idle|agy$'\t'done) printf 'empty' ;;
     *) printf 'unknown' ;;
   esac
   return 0

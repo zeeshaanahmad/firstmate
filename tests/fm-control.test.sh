@@ -316,7 +316,7 @@ test_idle_agy_herdr_exit_uses_native_identity_proof() {
   [ "$(literals "$dir")" = /quit ] \
     || fail "idle agy exit should type exactly /quit, got: $(literals "$dir")"
   assert_contains "$out" "stopped t1 harness=agy" "idle agy exit should report the proven stop"
-  pass "fm-control exit: native-idle agy with the captured bare composer reaches /quit"
+  pass "fm-control exit: native-idle or done agy with the captured bare composer reaches /quit"
 }
 
 alive_as() {  # <case-dir> <command-name>
