@@ -243,6 +243,7 @@ add_task() {
 run_control() {
   local dir=$1; shift
   env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
+    FM_FAKE_AGY_SCREEN="$ROOT/tests/fixtures/agy-idle-composer.screen" \
     FM_CONTROL_POLL=0.01 FM_CONTROL_SETTLE_WAIT=0.05 \
     FM_CONTROL_EXIT_WAIT=0.05 FM_CONTROL_LAUNCH_WAIT=0.05 \
     FM_FAKE_MUSE_LOG="${FM_FAKE_MUSE_LOG:-}" \
@@ -250,6 +251,72 @@ run_control() {
     FM_FAKE_INTERRUPT_STOPS_AGENT="${FM_FAKE_INTERRUPT_STOPS_AGENT:-}" \
     FM_FAKE_DEVIN_PICKER_STUCK="${FM_FAKE_DEVIN_PICKER_STUCK:-}" \
     "$CONTROL" "$@" 2>&1
+}
+
+make_idle_agy_herdr_stub() {  # <case-dir>
+  local dir=$1
+  cat > "$dir/fakebin/herdr" <<'SH'
+#!/usr/bin/env bash
+set -u
+D=$FM_FAKE_DIR
+printf '%s\n' "$*" >> "$D/herdr-calls"
+case "$*" in
+  *"status --json"*)
+    printf '%s\n' '{"client":{"protocol":22,"version":"0.9.0"},"server":{"running":true,"protocol":22,"version":"0.9.0","compatible":true}}'
+    ;;
+  *"pane get w9:p1"*)
+    printf '%s\n' '{"result":{"pane":{"pane_id":"w9:p1"}}}'
+    ;;
+  *"agent get w9:p1"*)
+    if [ "$(cat "$D/agy-control-state")" = alive ]; then
+      printf '%s\n' '{"result":{"agent":{"agent":"agy","agent_status":"idle","pane_id":"w9:p1"}}}'
+    else
+      printf '%s\n' '{"error":{"code":"agent_not_found","message":"agent target w9:p1 not found"}}'
+    fi
+    ;;
+  *"pane process-info --pane w9:p1"*)
+    printf '%s\n' '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w9:p1","shell_pid":424242,"foreground_processes":[{"pid":424243,"name":"agy","argv":["agy","--prompt-interactive"],"argv0":"agy","cmdline":"agy --prompt-interactive"}]}}}'
+    ;;
+  *"pane read w9:p1 --source visible"*)
+    cat "$FM_FAKE_AGY_SCREEN"
+    ;;
+  *"pane send-text w9:p1 "*)
+    payload=${4:-}
+    printf '%s\n' "$payload" >> "$D/literal"
+    ;;
+  *"pane send-keys w9:p1 enter"*)
+    printf '%s\n' Enter >> "$D/keys"
+    if [ "$(tail -n 1 "$D/literal")" = /quit ]; then
+      printf stopped > "$D/agy-control-state"
+    fi
+    printf '%s\n' '{"result":{}}'
+    ;;
+  *) printf '%s\n' '{"result":{}}' ;;
+esac
+SH
+  chmod +x "$dir/fakebin/herdr"
+  : > "$dir/fake/herdr-calls"
+  printf alive > "$dir/fake/agy-control-state"
+}
+
+test_idle_agy_herdr_exit_uses_native_identity_proof() {
+  local dir out rc meta
+  dir=$(new_case agy-herdr-exit)
+  add_task "$dir" t1 agy ship herdr testsession:w9:p1
+  meta="$dir/home/state/t1.meta"
+  {
+    printf 'herdr_session=testsession\n'
+    printf 'herdr_workspace_id=w1\n'
+    printf 'herdr_tab_id=w1:t1\n'
+    printf 'herdr_pane_id=w9:p1\n'
+  } >> "$meta"
+  make_idle_agy_herdr_stub "$dir"
+  out=$(run_control "$dir" t1 exit); rc=$?
+  expect_code 0 "$rc" "idle agy exit should succeed through its native identity proof"$'\n'"$out"
+  [ "$(literals "$dir")" = /quit ] \
+    || fail "idle agy exit should type exactly /quit, got: $(literals "$dir")"
+  assert_contains "$out" "stopped t1 harness=agy" "idle agy exit should report the proven stop"
+  pass "fm-control exit: native-idle agy with the captured bare composer reaches /quit"
 }
 
 alive_as() {  # <case-dir> <command-name>
@@ -1069,6 +1136,7 @@ EOF
 }
 
 test_exit_types_each_harness_verified_command
+test_idle_agy_herdr_exit_uses_native_identity_proof
 test_interrupt_sends_each_harness_verified_key
 test_devin_interrupt_invalidates_busy
 test_devin_idle_interrupt_sends_one_press

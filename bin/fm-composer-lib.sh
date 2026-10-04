@@ -57,7 +57,11 @@
 #                tolerated, including Grok 1.0.5's three-column title overhang.
 #   bare       - an agent prompt glyph row with no border at all (claude `❯`,
 #                codex `›`, muse `⟩`, cursor `→`). The agent glyph is itself the container
-#                proof; a bare SHELL glyph (`>` `$` `%` `#`) never is.
+#                proof; a bare SHELL glyph (`>` `$` `%` `#`) never is on its
+#                own. agy's exact idle footer is the one exception: native
+#                identity must report `agy` and `idle`, the row must be exactly
+#                `>`, and its verified separator plus shortcut footer must
+#                follow.
 #                A bare composer's WRAP region (typed input continuing on the
 #                rows beneath the glyph row) is bounded by blank rows, by
 #                structural edges, and by the FURNITURE rows a harness draws
@@ -120,7 +124,8 @@
 # what a pane shows once its agent has exited to a plain login shell - is a
 # genuine empty agent composer ONLY inside a bordered container. On a bare row
 # it is a dead-shell prompt and classifies `unknown` (never a safe injection
-# target). A `$` followed immediately by a digit is Pi's cost footer, not this
+# target) unless the identity-gated agy conjunction above proves it. A `$`
+# followed immediately by a digit is Pi's cost footer, not this
 # prompt (`FM_COMPOSER_PI_STATUS_RE_DEFAULT`).
 # The AGENT glyphs `❯` (claude), `›` (codex), `⟩` (U+27E9, muse),
 # `→` (U+2192, cursor), and `❭` (U+276D, devin) are a genuine empty agent
@@ -1630,6 +1635,9 @@ EOF
   fi
   plain=$(printf '%s\n' "$screen" | fm_composer_strip_ansi)
   _fm_composer_scan_screen "$plain" "$cy"
+  if _fm_composer_classify_agy_bare_row "$screen" "$styled" "$has_identity" "$identity"; then
+    return 0
+  fi
   if [ -n "$cy" ]; then
     # Cursor mode (tmux): the shape CONTAINING the cursor is the composer.
     if [ "$FM_COMPOSER_SCAN_UNSAFE" = 1 ]; then
@@ -1717,6 +1725,46 @@ EOF
         "$FM_COMPOSER_SELECTED_FIRST" "$FM_COMPOSER_SELECTED_LAST"
       ;;
   esac
+}
+
+# agy is the one verified harness whose live composer uses a shell glyph with
+# no enclosing box. The glyph alone remains unsafe: this exception needs the
+# exact rendered idle shape and Herdr's native identity/status in conjunction.
+# Text after `>`, a busy/blocked/done status, another harness identity, a
+# missing identity probe, or a changed footer all stay unknown. Return 1 only
+# when the screen is not the agy shape at all, so ordinary classification can
+# continue; once the shape matches, print the fail-closed verdict and return 0.
+_fm_composer_classify_agy_bare_row() {  # <screen> <styled> <has-identity> <identity>
+  local screen=$1 styled=$2 has_identity=$3 identity=$4 row raw content next footer
+  row=$FM_COMPOSER_SCAN_SHELL_ROW
+  [ "$row" -ge 0 ] || return 1
+  raw=$(_fm_composer_screen_row "$row" "$screen")
+  content=$(_fm_composer_row_content "$raw" "$styled")
+  [ "$content" = '>' ] || return 1
+  next=$(_fm_composer_screen_row "$((row + 1))" "$screen")
+  next=$(printf '%s\n' "$next" | fm_composer_strip_ansi)
+  fm_composer_normalize_trim_var next
+  _fm_composer_pi_separator_row "$next" || return 1
+  footer=$(_fm_composer_screen_row "$((row + 2))" "$screen")
+  footer=$(printf '%s\n' "$footer" | fm_composer_strip_ansi)
+  fm_composer_normalize_trim_var footer
+  case "$footer" in
+    '? for shortcuts'*) ;;
+    *) return 1 ;;
+  esac
+  if [ "$has_identity" != 1 ]; then
+    printf 'unknown'
+    return 0
+  fi
+  if [ -z "$identity" ]; then
+    printf 'need-identity'
+    return 0
+  fi
+  case "$identity" in
+    agy$'\t'idle) printf 'empty' ;;
+    *) printf 'unknown' ;;
+  esac
+  return 0
 }
 
 # fm_composer_submit_retry_core: the ONE verify-and-retry-Enter submit loop
