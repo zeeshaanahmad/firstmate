@@ -122,7 +122,13 @@ test_agy_claims_no_inherited_launcher_marker() {
   local fakebin out
   # AGENT=1 was observed on a live agy TUI as inherited launcher state, so it
   # must never promote to an agy identity the way GEMINI_CLI does for gemini.
-  out=$(AGENT=1 "$HARNESS")
+  local tmp_fakebin; tmp_fakebin=$(fm_fakebin "$TMP_ROOT/anc-agy-clear")
+  cat > "$tmp_fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' bash; exit 0
+SH
+  chmod +x "$tmp_fakebin/ps"
+  out=$(PATH="$tmp_fakebin:$PATH" AGENT=1 "$HARNESS")
   [ "$out" != agy ] \
     || fail "an inherited AGENT=1 must never claim the agy identity, got '$out'"
   # Drive the hazard the other way: agy does not clear an inherited CLAUDECODE,
@@ -190,7 +196,7 @@ test_agy_busy_signatures_are_harness_scoped() {
   pass "fm-composer-lib: agy delivery signatures never cross harnesses"
 }
 
-test_agy_idle_bare_composer_needs_native_idle_identity() {
+test_agy_bare_composer_needs_native_idle_or_done_identity() {
   local caps screen out pending
   caps=$(printf 'styled=1\ncursor=0\nidentity=1\nrows=0')
   screen=$(cat "$ROOT/tests/fixtures/agy-idle-composer.screen")
@@ -198,9 +204,16 @@ test_agy_idle_bare_composer_needs_native_idle_identity() {
   [ "$out" = empty ] \
     || fail "an identity-proven idle agy bare composer should be empty, got '$out'"
 
+  out=$(fm_composer_classify_screen "$caps" "$screen" '' "$(printf 'agy\tdone')")
+  [ "$out" = empty ] \
+    || fail "an identity-proven done agy bare composer should be empty, got '$out'"
+
   out=$(fm_composer_classify_screen "$caps" "$screen" '' "$(printf 'agy\tworking')")
   [ "$out" = unknown ] \
     || fail "a working agy bare row must stay unknown, got '$out'"
+  out=$(fm_composer_classify_screen "$caps" "$screen" '' "$(printf 'agy\tblocked')")
+  [ "$out" = unknown ] \
+    || fail "a blocked agy bare row must stay unknown, got '$out'"
   out=$(fm_composer_classify_screen "$caps" "$screen" '' "$(printf 'claude\tidle')")
   [ "$out" = unknown ] \
     || fail "agy's bare-row exception must not loosen another harness, got '$out'"
@@ -212,7 +225,10 @@ test_agy_idle_bare_composer_needs_native_idle_identity() {
   out=$(fm_composer_classify_screen "$caps" "$pending" '' "$(printf 'agy\tidle')")
   [ "$out" = unknown ] \
     || fail "an idle agy composer with text after > must stay unknown, got '$out'"
-  pass "fm-composer-lib: only native-idle agy with an empty bare row is writable"
+  out=$(fm_composer_classify_screen "$caps" "$pending" '' "$(printf 'agy\tdone')")
+  [ "$out" = unknown ] \
+    || fail "a done agy composer with text after > must stay unknown, got '$out'"
+  pass "fm-composer-lib: only native-idle or done agy with an empty bare row is writable"
 }
 
 test_agy_classify_reports_unknown_when_the_marker_scrolls_out() {
@@ -918,7 +934,7 @@ test_agy_claims_no_inherited_launcher_marker
 test_agy_control_mechanics_are_the_verified_ones
 test_agy_busy_tail_needs_the_pinned_status_row
 test_agy_busy_signatures_are_harness_scoped
-test_agy_idle_bare_composer_needs_native_idle_identity
+test_agy_bare_composer_needs_native_idle_or_done_identity
 test_agy_classify_reports_unknown_when_the_marker_scrolls_out
 test_agy_tmux_names_the_native_binary_an_agent
 test_herdr_done_with_live_registry_stays_live

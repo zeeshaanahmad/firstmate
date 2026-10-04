@@ -139,8 +139,8 @@ agy stays out of the session-lock name vocabulary in `bin/fm-session-lock-lib.sh
 
 Byte-level capture of the idle pane shows a bare unstyled `>` between two full-width `─` rules, with an unstyled `? for shortcuts` cell and a dim (`SGR 2`) model cell in the status row below.
 The shared classifier keeps that bare `>` as `unknown` under the dead-shell rule when the row stands alone.
-On an identity-capable backend it returns `empty` only for the conjunction of the exact empty `>` row, the following separator and shortcut footer, and native identity reporting exactly `agy` with `agent_status=idle`.
-Text after `>`, a working or otherwise non-idle agy, another harness identity, a missing identity probe, or a changed footer remains `unknown`.
+On an identity-capable backend it returns `empty` only for the conjunction of the exact empty `>` row, the following separator and shortcut footer, and native identity reporting exactly `agy` with `agent_status=idle` or `agent_status=done`.
+Text after `>`, a working or otherwise busy agy, another harness identity, a missing identity probe, or a changed footer remains `unknown`.
 That positive proof makes `fm-control exit` and the stop phase of `relaunch` reachable without weakening any other harness or treating a dead shell as writable.
 Steering still confirms delivery: the Herdr submit core leads with the native `idle`-to-`working` transition, which agy performs, and the delivery footer regex covers the tmux path.
 agy renders the busy footer late for that confirm loop - about 1.5 s after Enter for a short steer and 4-5 s for a realistic longer brief, measured live on `agy 1.2.1` (2026-09-12) against the shared budget's 3 x 0.4 s - so `bin/fm-send.sh` gives agy typed targets a longer default submit-confirm budget (20 retries, about 8 s at the default cadence); an explicit `FM_SEND_RETRIES` still wins and every other harness keeps the shared 3-retry default.
@@ -151,11 +151,11 @@ The portable regression was refreshed on 2026-10-04 against the agy 1.2.1 captur
 
 ```
 $ bin/fm-test-run.sh tests/fm-agy-harness.test.sh
-ok - fm-composer-lib: only native-idle agy with an empty bare row is writable
+ok - fm-composer-lib: only native-idle or done agy with an empty bare row is writable
 FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0
 
 $ bin/fm-test-run.sh tests/fm-control.test.sh
-ok - fm-control exit: native-idle agy with the captured bare composer reaches /quit
+ok - fm-control exit: native-idle or done agy with the captured bare composer reaches /quit
 FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0
 ```
 

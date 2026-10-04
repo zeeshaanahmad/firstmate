@@ -253,8 +253,8 @@ run_control() {
     "$CONTROL" "$@" 2>&1
 }
 
-make_idle_agy_herdr_stub() {  # <case-dir>
-  local dir=$1
+make_idle_agy_herdr_stub() {  # <case-dir> <native-status>
+  local dir=$1 status=${2:-idle}
   cat > "$dir/fakebin/herdr" <<'SH'
 #!/usr/bin/env bash
 set -u
@@ -269,7 +269,7 @@ case "$*" in
     ;;
   *"agent get w9:p1"*)
     if [ "$(cat "$D/agy-control-state")" = alive ]; then
-      printf '%s\n' '{"result":{"agent":{"agent":"agy","agent_status":"idle","pane_id":"w9:p1"}}}'
+      printf '{"result":{"agent":{"agent":"agy","agent_status":"%s","pane_id":"w9:p1"}}}\n' "$(cat "$D/agy-native-status")"
     else
       printf '%s\n' '{"error":{"code":"agent_not_found","message":"agent target w9:p1 not found"}}'
     fi
@@ -297,26 +297,29 @@ SH
   chmod +x "$dir/fakebin/herdr"
   : > "$dir/fake/herdr-calls"
   printf alive > "$dir/fake/agy-control-state"
+  printf '%s' "$status" > "$dir/fake/agy-native-status"
 }
 
 test_idle_agy_herdr_exit_uses_native_identity_proof() {
-  local dir out rc meta
-  dir=$(new_case agy-herdr-exit)
-  add_task "$dir" t1 agy ship herdr testsession:w9:p1
-  meta="$dir/home/state/t1.meta"
-  {
-    printf 'herdr_session=testsession\n'
-    printf 'herdr_workspace_id=w1\n'
-    printf 'herdr_tab_id=w1:t1\n'
-    printf 'herdr_pane_id=w9:p1\n'
-  } >> "$meta"
-  make_idle_agy_herdr_stub "$dir"
-  out=$(run_control "$dir" t1 exit); rc=$?
-  expect_code 0 "$rc" "idle agy exit should succeed through its native identity proof"$'\n'"$out"
-  [ "$(literals "$dir")" = /quit ] \
-    || fail "idle agy exit should type exactly /quit, got: $(literals "$dir")"
-  assert_contains "$out" "stopped t1 harness=agy" "idle agy exit should report the proven stop"
-  pass "fm-control exit: native-idle agy with the captured bare composer reaches /quit"
+  local status dir out rc meta
+  for status in idle 'done'; do
+    dir=$(new_case "agy-herdr-exit-$status")
+    add_task "$dir" t1 agy ship herdr testsession:w9:p1
+    meta="$dir/home/state/t1.meta"
+    {
+      printf 'herdr_session=testsession\n'
+      printf 'herdr_workspace_id=w1\n'
+      printf 'herdr_tab_id=w1:t1\n'
+      printf 'herdr_pane_id=w9:p1\n'
+    } >> "$meta"
+    make_idle_agy_herdr_stub "$dir" "$status"
+    out=$(run_control "$dir" t1 exit); rc=$?
+    expect_code 0 "$rc" "$status agy exit should succeed through its native identity proof"$'\n'"$out"
+    [ "$(literals "$dir")" = /quit ] \
+      || fail "$status agy exit should type exactly /quit, got: $(literals "$dir")"
+    assert_contains "$out" "stopped t1 harness=agy" "$status agy exit should report the proven stop"
+  done
+  pass "fm-control exit: native-idle or done agy with the captured bare composer reaches /quit"
 }
 
 alive_as() {  # <case-dir> <command-name>

@@ -21,7 +21,7 @@ Verified as a CREWMATE and SCOUT adapter only; `../../../../../bin/fm-spawn.sh` 
 | Resume | `--continue` and `--conversation` exist but carry no verified pane-resume contract; use deterministic relaunch. |
 | Model | `--model <id>` with the bare catalog id from `agy models` (for example `gemini-3.8-flash-high`); `bin/fm-spawn.sh` refuses a requested id a reachable listing omits. The listing is a remote fetch, so the probe runs stdin-detached under the shared hard bound and an unreachable or hung listing launches unvalidated with a notice. |
 | Effort | `--effort low\|medium\|high`; `xhigh` and `max` stay in task metadata under the record-and-omit contract. |
-| Composer | Borderless bare `>` row followed by a separator and `? for shortcuts`. The row alone stays `unknown` under the dead-shell rule. On an identity-capable backend, the shared classifier reads it as `empty` only when native identity reports exactly `agy` and `idle`; text after `>`, another identity, or any other state stays `unknown`. Steering still prefers native agent-state and the delivery footer, while this positive proof lets lifecycle exit and relaunch type `/quit` safely. |
+| Composer | Borderless bare `>` row followed by a separator and `? for shortcuts`. The row alone stays `unknown` under the dead-shell rule. On an identity-capable backend, the shared classifier reads it as `empty` only when native identity reports exactly `agy` and `idle` or `done`; text after `>`, another identity, or any other state stays `unknown`. Steering still prefers native agent-state and the delivery footer, while this positive proof lets lifecycle exit and relaunch type `/quit` safely. |
 
 ## Trust, and where the decision persists
 
