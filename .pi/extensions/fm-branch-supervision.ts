@@ -99,7 +99,7 @@ import {
   type ExtensionCommandContext,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { Box, Container, fuzzyFilter, Input, SelectList, Text } from "@earendil-works/pi-tui";
+import { Box, type Component, Container, fuzzyFilter, Input, SelectList, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { registerFirstmateTool } from "./lib/fm-native-contract.ts";
 import { runCommandAsync } from "./lib/fm-async-exec.ts";
@@ -2150,10 +2150,44 @@ ${context.command}
     return stockOutcomesPreviewLines ?? undefined;
   };
 
+  const renderStockToolCall = (
+    name: string,
+    args: unknown,
+    context: Parameters<NonNullable<ToolDefinition["renderCall"]>>[2],
+  ): Component => {
+    // Delegate call formatting to the installed Pi rather than copying it.
+    // Pi 1.0 added arguments to this fallback, while older supported releases
+    // used only the tool name; this private method is present in both shapes.
+    const probeDefinition: ToolDefinition = {
+      name,
+      label: name,
+      description: name,
+      parameters: Type.Object({}),
+      execute: async () => ({ content: [], details: undefined }),
+    };
+    const probe = new ToolExecutionComponent(
+      name,
+      `${context.toolCallId}-stock-call-probe`,
+      args,
+      { showImages: context.showImages },
+      probeDefinition,
+      { requestRender() {} } as ConstructorParameters<typeof ToolExecutionComponent>[5],
+      context.cwd,
+    );
+    const stockProbe = probe as unknown as {
+      setExpanded?: (expanded: boolean) => void;
+      createCallFallback?: () => Component;
+    };
+    stockProbe.setExpanded?.(context.expanded);
+    const createCallFallback = stockProbe.createCallFallback;
+    if (typeof createCallFallback === "function") return createCallFallback.call(probe);
+    throw new Error("Unsupported Pi ToolExecutionComponent: createCallFallback() is unavailable");
+  };
+
   type OutcomesToolShellState = {
     shell?: Box;
-    call?: Text;
-    result?: Text | Container;
+    call?: Component;
+    result?: Component;
   };
   const refreshOutcomesToolShell = (
     shellState: OutcomesToolShellState,
@@ -2184,11 +2218,11 @@ ${context.command}
       recent: Type.Optional(Type.Number({ description: "How many most-recent outcomes to read (default 20)" })),
     }),
     renderShell: "self",
-    renderCall: (_args, theme, context) => {
+    renderCall: (args, theme, context) => {
       if (calmPresentation.stockExportRendering) throw new Error("Use Pi stock export rendering");
       if (calmHides("assistant-tool-call")) return new Container();
       const shellState = context.state as OutcomesToolShellState;
-      shellState.call = new Text(theme.fg("toolTitle", theme.bold("fm_branch_outcomes")), 0, 0);
+      shellState.call = renderStockToolCall("fm_branch_outcomes", args, context);
       return refreshOutcomesToolShell(shellState, theme, context);
     },
     renderResult: (result, options, theme, context) => {
@@ -2246,11 +2280,11 @@ ${context.command}
       through: Type.Number({ description: "The highest outcome sequence number this conversation has processed" }),
     }),
     renderShell: "self",
-    renderCall: (_args, theme, context) => {
+    renderCall: (args, theme, context) => {
       if (calmPresentation.stockExportRendering) throw new Error("Use Pi stock export rendering");
       if (calmHides("assistant-tool-call")) return new Container();
       const shellState = context.state as OutcomesToolShellState;
-      shellState.call = new Text(theme.fg("toolTitle", theme.bold("fm_branch_processed")), 0, 0);
+      shellState.call = renderStockToolCall("fm_branch_processed", args, context);
       return refreshOutcomesToolShell(shellState, theme, context);
     },
     renderResult: (result, _options, theme, context) => {

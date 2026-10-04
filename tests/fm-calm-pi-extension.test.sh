@@ -1649,8 +1649,10 @@ for (const { name, actual } of rows) {
 async function assertStockHtmlRendering(command, submitData) {
   editorText = command;
   terminalInputHandler(submitData);
+  const getToolRenderers = (name) => tools.find((tool) => tool.name === name);
   const htmlRenderer = createToolHtmlRenderer({
-    getToolDefinition: (name) => tools.find((tool) => tool.name === name),
+    getToolDefinition: getToolRenderers,
+    getToolRenderers,
     theme,
     cwd: process.cwd(),
   });
@@ -1680,8 +1682,10 @@ await assertStockHtmlRendering("/export calm.html", "\r");
 getKeybindings().setUserBindings({ "tui.input.submit": "alt+s" });
 editorText = "/export remapped.html";
 terminalInputHandler("\r");
+const getUnmatchedToolRenderers = (name) => tools.find((tool) => tool.name === name);
 const unmatchedRenderer = createToolHtmlRenderer({
-  getToolDefinition: (name) => tools.find((tool) => tool.name === name),
+  getToolDefinition: getUnmatchedToolRenderers,
+  getToolRenderers: getUnmatchedToolRenderers,
   theme,
   cwd: process.cwd(),
 });
@@ -3913,7 +3917,9 @@ SH
 
   : >"$dir/attempts-hang"
   : >"$out_file"
-  if FM_FAKE_CHROME_ATTEMPTS="$dir/attempts-hang" FM_CHROME_RENDER_WAIT_TICKS=3 \
+  # Leave enough time for the fake executable itself to be scheduled on a busy
+  # test host; the assertion is about bounded timeout retries, not a 300 ms wall.
+  if FM_FAKE_CHROME_ATTEMPTS="$dir/attempts-hang" FM_CHROME_RENDER_WAIT_TICKS=10 \
     render_export_dom "$dir/chrome-hang" "$source_file" "$out_file" 9.9.9 >"$dir/report-hang"
   then
     fail "render_export_dom accepted a Chrome that never finished the DOM"
@@ -4174,7 +4180,10 @@ TS
 {"type":"message","id":"a0000016","parentId":"a0000015","timestamp":"$now","message":{"role":"assistant","content":[{"type":"text","text":"The deterministic tool example is complete."}],"api":"anthropic-messages","provider":"anthropic","model":"claude-sonnet-4-5","usage":{"input":2,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":3,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":16}}
 JSON
 
-  tmux -L "$TMUX_SOCKET" new-session -d -s "$TMUX_SESSION" -x 180 -y 44 \
+  # Pi 1.0's stock tool layout uses enough additional vertical spacing that the
+  # complete Calm-off fixture no longer fits in 44 rows; keep the whole restored
+  # transcript visible so this case tests presentation rather than viewport clipping.
+  tmux -L "$TMUX_SOCKET" new-session -d -s "$TMUX_SESSION" -x 180 -y 180 \
     "cd '$project' && env FM_HOME='$home' PI_CODING_AGENT_DIR='$config' FM_OPERATIONAL_INPUT_SCRIPT='$OPERATIONAL_INPUT' PI_OFFLINE=1 pi --approve --no-skills --no-prompt-templates --no-context-files --session '$session_file'; rc=\$?; printf '\nPI_EXIT=%s\n' \"\$rc\"; sleep 30"
   wait_for_text "$default_snapshot" "The deterministic tool example is complete." \
     || fail "Pi calm E2E did not reach the restored session transcript"
@@ -4187,8 +4196,13 @@ JSON
   assert_not_contains "$(cat "$default_snapshot")" 'Run `bin/fm-session-start.sh` now' \
     "native session-start context unexpectedly rendered while Calm was off"
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" C-o
-  wait_for_text "$expanded_snapshot" "escape to interrupt" \
-    || fail "Ctrl+O did not retain Pi's ordinary startup and tool expansion behavior"
+  if ! wait_for_text "$expanded_snapshot" "Tool output: expanded" &&
+    ! wait_for_text "$expanded_snapshot" "escape to interrupt" &&
+    ! wait_for_text "$expanded_snapshot" "escape interrupt"; then
+    printf '%s\n' '--- output ---' >&2
+    cat "$expanded_snapshot" >&2
+    fail "Ctrl+O did not retain Pi's ordinary startup and tool expansion behavior"
+  fi
   # The expansion redraw lands a frame or two after the footer hint, so wait for the
   # tool output this block actually asserts instead of assuming one implies the other.
   wait_for_text "$expanded_snapshot" "CALM_E2E_OUTPUT" \
@@ -4386,15 +4400,29 @@ JS
 const dom = require("node:fs").readFileSync(process.argv[2], "utf8");
 const messages = dom.match(/<div id="messages">([\s\S]*?)<\/main>/)?.[1];
 const tree = dom.match(/<div[^>]*id="tree-container"[^>]*>([\s\S]*?)<div[^>]*id="tree-status"/)?.[1];
-if (!messages || !tree) process.exit(1);
-if (!/<div class="user-message"[^>]*>[\s\S]*Show a deterministic tool example\./.test(messages)) process.exit(1);
-if (!/<div class="assistant-message"[^>]*>[\s\S]*The deterministic tool example is complete\./.test(messages)) process.exit(1);
-if (messages.includes('<div class="hook-message"')) process.exit(1);
-if (messages.includes("[firstmate-synthetic-input]")) process.exit(1);
-for (const current of ["CURRENT_WATCHER_E2E", "CURRENT_TURN_END_E2E", "CURRENT_AWAY_E2E", "CURRENT_FROM_FIRSTMATE_E2E", "CURRENT_LAUNCH_BRIEF_E2E"]) {
-  if (!messages.includes(current)) process.exit(1);
+const fail = (reason) => {
+  console.error(reason);
+  process.exit(1);
+};
+if (!messages || !tree) fail("export DOM lacks the message or tree container");
+if (!/<div class="user-message"[^>]*>[\s\S]*Show a deterministic tool example\./.test(messages)) fail("export DOM lost the genuine user message");
+if (!/<div class="assistant-message"[^>]*>[\s\S]*The deterministic tool example is complete\./.test(messages)) fail("export DOM lost the genuine assistant message");
+if (/<div class="hook-message(?![^"]*\bhook-message-hidden\b)/.test(messages)) {
+  fail("export DOM rendered a visible hook message in the conversation");
 }
-if (!tree.includes("firstmate-synthetic-input") || !tree.includes("/tmp/probe.status")) process.exit(1);
+if (
+  messages.includes("[firstmate-synthetic-input]") &&
+  !/<div class="hook-message[^"]*\bhook-message-hidden\b"[^>]*>[\s\S]*\[firstmate-synthetic-input\]/.test(messages)
+) {
+  fail("export DOM exposed synthetic provenance outside Pi's hidden-message boundary");
+}
+if (/<body[^>]*class="[^"]*\bshow-hidden-messages\b/.test(dom)) {
+  fail("export DOM opened Pi's hidden-message boundary by default");
+}
+for (const current of ["CURRENT_WATCHER_E2E", "CURRENT_TURN_END_E2E", "CURRENT_AWAY_E2E", "CURRENT_FROM_FIRSTMATE_E2E", "CURRENT_LAUNCH_BRIEF_E2E"]) {
+  if (!messages.includes(current)) fail(`export DOM lost the current operational row ${current}`);
+}
+if (!tree.includes("firstmate-synthetic-input") || !tree.includes("/tmp/probe.status")) fail("export DOM lost synthetic provenance from the session tree");
 JS
   # Calm returns the transcript to its own presentation once the export has been
   # rendered. That repaint runs on the macrotask right after Pi prints the export
@@ -4451,7 +4479,11 @@ JS
   assert_not_contains "$(cat "$restored_snapshot")" "Navigated to selected point" "second /calm added a navigation status row"
   assert_contains "$(cat "$restored_snapshot")" "Thinking..." "second /calm did not restore Pi's collapsed thinking labels"
   assert_contains "$(cat "$restored_snapshot")" "I will run one command." "second /calm did not restore the mid-turn assistant working note"
-  assert_contains "$(cat "$restored_snapshot")" "escape to interrupt" "/calm changed the active Ctrl+O expansion state"
+  if ! grep -Fq "escape to interrupt" "$restored_snapshot" &&
+    ! grep -Fq "escape interrupt" "$restored_snapshot" &&
+    ! grep -Fq "Tool output: expanded" "$restored_snapshot"; then
+    fail "/calm changed the active Ctrl+O expansion state"
+  fi
 
   hash_after=$(shasum -a 256 "$session_file" | awk '{print $1}')
   [ "$hash_before" = "$hash_after" ] || fail "/calm changed the persisted session or context data"
@@ -4779,7 +4811,7 @@ JS
     active_screen_wait=$((active_screen_wait + 1))
   done
   [ "$(cat "$home/config/calm")" = on ] || fail "Calm was not restored before the persistence restart"
-  tmux -L "$TMUX_SOCKET" resize-window -t "$TMUX_SESSION" -x 180 -y 44
+  tmux -L "$TMUX_SOCKET" resize-window -t "$TMUX_SESSION" -x 180 -y 180
 
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" -l "/quit"
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" M-s
@@ -4787,7 +4819,7 @@ JS
     || fail "Pi did not exit cleanly before the Calm persistence restart"
   tmux -L "$TMUX_SOCKET" kill-session -t "$TMUX_SESSION" 2>/dev/null || true
 
-  tmux -L "$TMUX_SOCKET" new-session -d -s "$TMUX_SESSION" -x 180 -y 44 \
+  tmux -L "$TMUX_SOCKET" new-session -d -s "$TMUX_SESSION" -x 180 -y 180 \
     "cd '$project' && env FM_HOME='$home' PI_CODING_AGENT_DIR='$config' FM_OPERATIONAL_INPUT_SCRIPT='$OPERATIONAL_INPUT' PI_OFFLINE=1 pi --approve --no-skills --no-prompt-templates --no-context-files --session '$session_file'; rc=\$?; printf '\nPI_EXIT=%s\n' \"\$rc\"; sleep 30"
   wait_for_text "$restarted_snapshot" "CALM_WORKING_E2E_RESPONSE" \
     || fail "Pi did not restore the persisted session after restart"
