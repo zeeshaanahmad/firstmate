@@ -2302,6 +2302,11 @@ ok - under the away-posture record the wake carries the verbatim read-back tail,
 
 The merge suite and the security suite dominate the wall time.
 
+### 2026-10-04 Pi 1.0.2 renderer compatibility
+
+The focused branch extension suite and strict Pi extension typecheck passed against `@earendil-works/pi-coding-agent` 1.0.2 after the outcomes renderer resumed delegating its call header to Pi's stock fallback.
+[`calm-mode-feasibility.md`](../calm-mode-feasibility.md#2026-10-04-pi-102-renderer-and-export-compatibility) owns the dependency-move evidence, exact commands, environment, Calm and branch renderer output, and the current export-DOM verification.
+
 ## Native Codex through Pi
 
 Verified on 2026-09-08 with Pi 0.85.1 and the installed `pi-codex-native` 0.2.1 adapter.

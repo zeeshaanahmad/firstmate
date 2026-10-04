@@ -81,6 +81,16 @@ export function keyHint(_keybinding, description) {
 }
 
 export class ToolExecutionComponent {
+  constructor(name, _id, args) {
+    this.name = name;
+    this.args = args;
+  }
+  setExpanded(expanded) {
+    this.expanded = expanded;
+  }
+  createCallFallback() {
+    return { text: this.name, render: () => [this.name] };
+  }
   updateResult(result) {
     this.result = result;
   }
@@ -5132,8 +5142,20 @@ if (JSON.stringify(actualRow.render(100)) !== JSON.stringify(stockRow.render(100
 }
 
 pi.events.emit("firstmate:calm-presentation", { active: true, stockExportRendering: true });
-const stockHtml = createToolHtmlRenderer({ getToolDefinition: () => stockDefinition, theme, cwd: process.cwd() });
-const actualHtml = createToolHtmlRenderer({ getToolDefinition: () => actualDefinition, theme, cwd: process.cwd() });
+const stockLookup = () => stockDefinition;
+const actualLookup = () => actualDefinition;
+const stockHtml = createToolHtmlRenderer({
+  getToolDefinition: stockLookup,
+  getToolRenderers: stockLookup,
+  theme,
+  cwd: process.cwd(),
+});
+const actualHtml = createToolHtmlRenderer({
+  getToolDefinition: actualLookup,
+  getToolRenderers: actualLookup,
+  theme,
+  cwd: process.cwd(),
+});
 const stockCall = stockHtml.renderCall("stock-html", "fm_branch_outcomes", args);
 const actualCall = actualHtml.renderCall("actual-html", "fm_branch_outcomes", args);
 const stockResult = stockHtml.renderResult("stock-html", "fm_branch_outcomes", result.content, result.details, false);
