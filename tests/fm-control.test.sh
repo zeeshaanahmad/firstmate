@@ -302,7 +302,7 @@ SH
 
 test_idle_agy_herdr_exit_uses_native_identity_proof() {
   local status dir out rc meta
-  for status in idle done; do
+  for status in idle 'done'; do
     dir=$(new_case "agy-herdr-exit-$status")
     add_task "$dir" t1 agy ship herdr testsession:w9:p1
     meta="$dir/home/state/t1.meta"
