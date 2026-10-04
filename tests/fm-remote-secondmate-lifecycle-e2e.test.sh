@@ -33,7 +33,12 @@ mkdir -p "$PARENT/data" "$PARENT/state" "$PARENT/config" "$PARENT/projects" "$RE
 cleanup() {
   local worker_pid=''
   touch "$TMP_ROOT/provision.release" "$TMP_ROOT/seed.release" "$TMP_ROOT/handoff.release" \
-    "$TMP_ROOT/inherit.release" "$TMP_ROOT/launch.release" "$TMP_ROOT/race-clone.release" 2>/dev/null || true
+    "$TMP_ROOT/inherit.release" "$TMP_ROOT/launch.release" "$TMP_ROOT/race-clone.release" \
+    "$TMP_ROOT/repack-churn.stop" 2>/dev/null || true
+  if [ -n "${repack_churn_pid:-}" ]; then
+    kill "$repack_churn_pid" 2>/dev/null || true
+    wait "$repack_churn_pid" 2>/dev/null || true
+  fi
   # A watcher leg cut short by a failed assertion is still polling the root.
   if [ -n "${watch_pid:-}" ]; then
     kill "$watch_pid" 2>/dev/null || true
@@ -477,6 +482,68 @@ if find "$TMP_ROOT" -maxdepth 1 -name '.fm-home-provisioning.*' -print -quit | g
   fail "appeared-home provisioning left staging litter beside the home"
 fi
 pass "a home that appears mid-provision makes the provision die without touching it"
+
+# The code root is a live checkout whose detached auto-maintenance can repack it
+# at any moment, deleting loose objects that a pack now holds, so that churn
+# must never break provisioning. The root keeps thousands of loose objects on a
+# side ref, as accumulated history would, while its cloned branch stays small;
+# a loop repeats the maintenance cycle under every provisioning clone below.
+REPACK_ROOT="$TMP_ROOT/repack-root"
+REPACK_LOOSE="$TMP_ROOT/repack-loose"
+git init -q -b main "$REPACK_ROOT"
+awk 'BEGIN {
+  n = 4000
+  printf "blob\nmark :1\ndata 7\nfixture\n"
+  printf "commit refs/heads/main\nmark :2\ncommitter Test <test@example.com> 0 +0000\ndata 5\nroot\nM 100644 :1 README\n"
+  for (i = 1; i <= n; i++) printf "blob\nmark :%d\ndata %d\nobject %d\n", i + 2, length("object " i) + 1, i
+  printf "commit refs/keep/bulk\ncommitter Test <test@example.com> 0 +0000\ndata 5\nbulk\n"
+  for (i = 1; i <= n; i++) printf "M 100644 :%d objects/%d.txt\n", i + 2, i
+}' | git -C "$REPACK_ROOT" -c fastimport.unpackLimit=100000 fast-import --quiet \
+  || fail "could not build the loose-object code root"
+mkdir "$REPACK_LOOSE"
+cp -R "$REPACK_ROOT/.git/objects/." "$REPACK_LOOSE/"
+rm -rf -- "$REPACK_LOOSE/pack" "$REPACK_LOOSE/info"
+[ "$(find "$REPACK_LOOSE" -type f | wc -l | tr -d ' ')" -gt 4000 ] \
+  || fail "the code root should start with its objects loose"
+git -C "$REPACK_ROOT" repack -a -d -q || fail "could not pack the code root"
+(
+  while [ -d "$REPACK_ROOT/.git" ] && [ ! -f "$TMP_ROOT/repack-churn.stop" ]; do
+    cp -R "$REPACK_LOOSE/." "$REPACK_ROOT/.git/objects/" 2>/dev/null || true
+    git -C "$REPACK_ROOT" prune-packed 2>/dev/null || true
+    printf 'cycle\n' >> "$TMP_ROOT/repack-churn.cycles"
+  done
+) &
+repack_churn_pid=$!
+churn_wait=0
+until [ -s "$TMP_ROOT/repack-churn.cycles" ]; do
+  churn_wait=$((churn_wait + 1))
+  [ "$churn_wait" -le 1500 ] || fail "the code-root maintenance loop never completed a cycle"
+  sleep 0.02
+done
+for attempt in 1 2 3 4 5 6 7 8; do
+  churned_home="$TMP_ROOT/churned-home-$attempt"
+  FM_HOME="$churned_home" FM_ROOT_OVERRIDE="$REPACK_ROOT" \
+    "$REMOTE_ROOT/bin/fm-remote-home-provision.sh" < "$TMP_ROOT/race.manifest" \
+    > "$TMP_ROOT/churn-provision.out" 2>&1 \
+    || { sed 's/^/churn-provision: /' "$TMP_ROOT/churn-provision.out"; fail "code-root maintenance during the home clone broke remote provisioning (attempt $attempt)"; }
+  if [ "$(git -C "$churned_home" rev-parse HEAD)" = "$(git -C "$REPACK_ROOT" rev-parse main)" ] \
+    && git -C "$churned_home" fsck --full --no-progress >/dev/null 2>&1 \
+    && git -C "$churned_home" diff --quiet HEAD -- \
+    && [ "$(cat "$churned_home/.fm-secondmate-home")" = race ]; then
+    :
+  else
+    fail "code-root maintenance during the home clone published an incomplete home (attempt $attempt)"
+  fi
+done
+kill -0 "$repack_churn_pid" 2>/dev/null \
+  || fail "the code-root maintenance loop stopped before the provisioning clones finished"
+touch "$TMP_ROOT/repack-churn.stop"
+wait "$repack_churn_pid" 2>/dev/null || true
+repack_churn_pid=
+if find "$TMP_ROOT" -maxdepth 1 -name '.fm-home-provisioning.*' -print -quit | grep -q .; then
+  fail "provisioning under code-root maintenance left staging litter beside the home"
+fi
+pass "code-root maintenance repacking loose objects during the home clone cannot break remote provisioning"
 if [ "${FM_TEST_PROVISION_ONLY:-0}" = 1 ]; then
   echo "ALL TESTS PASSED"
   exit 0
