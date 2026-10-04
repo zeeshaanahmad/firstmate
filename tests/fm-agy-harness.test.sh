@@ -190,6 +190,31 @@ test_agy_busy_signatures_are_harness_scoped() {
   pass "fm-composer-lib: agy delivery signatures never cross harnesses"
 }
 
+test_agy_idle_bare_composer_needs_native_idle_identity() {
+  local caps screen out pending
+  caps=$(printf 'styled=1\ncursor=0\nidentity=1\nrows=0')
+  screen=$(cat "$ROOT/tests/fixtures/agy-idle-composer.txt")
+  out=$(fm_composer_classify_screen "$caps" "$screen" '' "$(printf 'agy\tidle')")
+  [ "$out" = empty ] \
+    || fail "an identity-proven idle agy bare composer should be empty, got '$out'"
+
+  out=$(fm_composer_classify_screen "$caps" "$screen" '' "$(printf 'agy\tworking')")
+  [ "$out" = unknown ] \
+    || fail "a working agy bare row must stay unknown, got '$out'"
+  out=$(fm_composer_classify_screen "$caps" "$screen" '' "$(printf 'claude\tidle')")
+  [ "$out" = unknown ] \
+    || fail "agy's bare-row exception must not loosen another harness, got '$out'"
+  out=$(fm_composer_classify_screen "$caps" "$screen" '' probe-absent)
+  [ "$out" = unknown ] \
+    || fail "agy's bare row without native identity must stay unknown, got '$out'"
+
+  pending=$(printf '%s\n' "$screen" | sed 's/^>$/> unsubmitted draft/')
+  out=$(fm_composer_classify_screen "$caps" "$pending" '' "$(printf 'agy\tidle')")
+  [ "$out" = unknown ] \
+    || fail "an idle agy composer with text after > must stay unknown, got '$out'"
+  pass "fm-composer-lib: only native-idle agy with an empty bare row is writable"
+}
+
 test_agy_classify_reports_unknown_when_the_marker_scrolls_out() {
   local statedir busy idle
   statedir="$TMP_ROOT/classify"; mkdir -p "$statedir"
@@ -893,6 +918,7 @@ test_agy_claims_no_inherited_launcher_marker
 test_agy_control_mechanics_are_the_verified_ones
 test_agy_busy_tail_needs_the_pinned_status_row
 test_agy_busy_signatures_are_harness_scoped
+test_agy_idle_bare_composer_needs_native_idle_identity
 test_agy_classify_reports_unknown_when_the_marker_scrolls_out
 test_agy_tmux_names_the_native_binary_an_agent
 test_herdr_done_with_live_registry_stays_live
